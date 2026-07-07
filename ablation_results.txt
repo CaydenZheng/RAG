@@ -1,0 +1,443 @@
+============================================================
+RAG ABLATION STUDY RESULTS
+============================================================
+Questions: 50
+
+--- A. Vector Only ---
+Avg answer length: 320 chars
+Avg contexts:      5.0 chunks
+RAGAS metrics:
+  context_precision: 0.7314
+  context_recall: 0.8300
+  faithfulness: 0.9668
+  answer_relevancy: 0.8033
+
+--- B. BM25 Only ---
+Avg answer length: 266 chars
+Avg contexts:      5.0 chunks
+RAGAS metrics:
+  context_precision: 0.7427
+  context_recall: 0.8133
+  faithfulness: 0.9713
+  answer_relevancy: 0.8058
+
+--- C. Hybrid (RRF) ---
+Avg answer length: 267 chars
+Avg contexts:      4.4 chunks
+RAGAS metrics:
+  context_precision: 0.8227
+  context_recall: 0.9205
+  faithfulness: 0.9833
+  answer_relevancy: 0.8498
+
+--- D. Hybrid + Rerank ---
+Avg answer length: 264 chars
+Avg contexts:      4.4 chunks
+RAGAS metrics:
+  context_precision: 0.8557
+  context_recall: 0.9205
+  faithfulness: 0.9614
+  answer_relevancy: 0.8659
+
+------------------------------------------------------------
+PER-QUESTION DETAILS
+------------------------------------------------------------
+
+Q1: In France, what is the maximum duration of police custody for cases involving terrorism, and what additional condition must be met for the initial 24-hour extension?
+Ground Truth: For terrorism cases, police custody can last up to 96 hours. The initial 24-hour extension requires the consent of the prosecutor (the procureur), who consents in the vast majority of cases....
+  [A. Vector Only] In France, for cases involving terrorism, police custody can last up to 96 hours [1]. For the initial 24-hour extension beyond the standard 24 hours, the police need the consent of the prosecutor (the *procureur*) [1].
+  [B. BM25 Only] In France, for cases involving terrorism, police custody can last up to 96 hours [1]. For the initial 24-hour extension beyond the standard 24 hours, the police need the consent of the prosecutor (the *procureur*) [1].
+  [C. Hybrid (RRF)] In France, police custody can last up to 96 hours in cases involving terrorism [1]. For the initial 24-hour extension beyond the standard 24 hours, the police must have the consent of the prosecutor (the *procureur*) [1].
+  [D. Hybrid + Rerank] In France, the maximum duration of police custody for cases involving terrorism is up to 96 hours [1]. For the initial 24-hour extension beyond the standard 24-hour limit, the police must have the consent of the prosecutor (the *procureur*) [1].
+
+Q2: What is the connection between John Montagu, 4th Earl of Sandwich, and the year 1792?
+Ground Truth: John Montagu, 4th Earl of Sandwich, died in 1792. He was an English politician who served as Secretary of State for the Northern Department....
+  [A. Vector Only] According to the context, John Montagu, 4th Earl of Sandwich, died in 1792 [1]. He was also the head of the Royal Navy from 1771 to 1782 during the American Revolutionary War [2].
+  [B. BM25 Only] According to the context, John Montagu, 4th Earl of Sandwich, died in 1792 [1].
+  [C. Hybrid (RRF)] According to the context, John Montagu, 4th Earl of Sandwich, died in 1792 [1]. He was an English politician who served as Secretary of State for the Northern Department [1] and, as noted in another source, was head of the Royal Navy from 1771 to 1782 during the American Revolutionary War [2].
+  [D. Hybrid + Rerank] According to the context, John Montagu, 4th Earl of Sandwich, died in 1792 [1]. He is also mentioned as the head of the Royal Navy from 1771 to 1782 during the American Revolutionary War [5].
+
+Q3: Why is the 'paid the restaurant bill of' relation considered antisymmetric, and what must be true for it to remain antisymmetric?
+Ground Truth: The 'paid the restaurant bill of' relation is considered antisymmetric because typically no two people pay each other's bills; as long as no two people pay each other's bills, the relation is antisymm...
+  [A. Vector Only] Based on the context, the "paid the restaurant bill of" relation is considered antisymmetric because typically no two people pay each other's bills [1]. For this relation to remain antisymmetric, it must be true that no two people pay each other's bills [1].
+  [B. BM25 Only] The 'paid the restaurant bill of' relation is considered antisymmetric because, typically, no two people pay each other's bills [1]. For the relation to remain antisymmetric, it must hold that as long as no two people pay each other's bills, the relation is antisymmetric [1]. In other words, if pers...
+  [C. Hybrid (RRF)] 
+  [D. Hybrid + Rerank] 
+
+Q4: What is an example of a relation that is neither symmetric nor antisymmetric, according to the passage?
+Ground Truth: The 'preys on' relation on biological species is an example of a relation that is neither symmetric nor antisymmetric....
+  [A. Vector Only] According to the passage, an example of a relation that is neither symmetric nor antisymmetric is the "preys on" relation on biological species [5].
+  [B. BM25 Only] According to the passage, an example of a relation that is neither symmetric nor antisymmetric is the "preys on" relation on biological species [1].
+  [C. Hybrid (RRF)] According to the passage, an example of a relation that is neither symmetric nor antisymmetric is the "preys on" relation on biological species [4].
+  [D. Hybrid + Rerank] According to the passage, an example of a relation that is neither symmetric nor antisymmetric is the "preys on" relation on biological species [1].
+
+Q5: What has happened to reported antimony production in China, and what is the outlook for the coming years?
+Ground Truth: Reported production of antimony in China has fallen and is unlikely to increase in the coming years, according to the Roskill report....
+  [A. Vector Only] According to the context, reported production of antimony in China has fallen and is unlikely to increase in the coming years [1]. This decline is expected to continue as mines and smelters are closed by the government due to pollution control, particularly after an environmental protection law took...
+  [B. BM25 Only] According to the context, reported production of antimony in China has fallen and is unlikely to increase in the coming years [1].
+  [C. Hybrid (RRF)] According to the context, reported production of antimony in China has fallen and is unlikely to increase in the coming years [1]. Additionally, Chinese production is expected to decline further as mines and smelters are closed by the government due to pollution control, particularly following stric...
+  [D. Hybrid + Rerank] According to the context, reported production of antimony in China has fallen and is unlikely to increase in the coming years [1]. This decline is expected to continue as mines and smelters are closed by the government as part of pollution control, particularly due to stricter environmental laws ena...
+
+Q6: When was Alumni dissolved, and what was the last year it played a game?
+Ground Truth: Alumni played its last game in 1911 and was definitely dissolved on April 24, 1913....
+  [A. Vector Only] Based on the context provided, Alumni played its last game in 1911 and was dissolved on April 24, 1913 [1].
+  [B. BM25 Only] Based on the context, Alumni was dissolved on April 24, 1913 [1]. Its last game was played in 1911 [1].
+  [C. Hybrid (RRF)] Based on the provided context, Alumni played its last game in 1911 and was dissolved on April 24, 1913 [1].
+  [D. Hybrid + Rerank] Based on the provided context, Alumni played its last game in 1911 and was definitely dissolved on April 24, 1913 [1].
+
+Q7: According to Shi'a Muslim belief, where is Abel buried, and who built the mosque at that location in 1599?
+Ground Truth: Abel is buried in the Nabi Habeel Mosque on the west mountains of Damascus, near the Zabadani Valley, and the mosque was built by Ottoman Wali Ahmad Pasha in 1599....
+  [A. Vector Only] According to Shi'a Muslim belief, Abel is buried in the Nabi Habeel Mosque, located on the west mountains of Damascus, near the Zabadani Valley, overlooking the villages of the Barada river in Syria [1]. The mosque was built by Ottoman Wali Ahmad Pasha in 1599 [1].
+  [B. BM25 Only] According to Shi'a Muslim belief, Abel ("Habeel") is buried in the Nabi Habeel Mosque, located on the west mountains of Damascus, near the Zabadani Valley, in Syria [1]. The mosque was built by Ottoman Wali Ahmad Pasha in 1599 [1].
+  [C. Hybrid (RRF)] According to Shi'a Muslim belief, Abel is buried in the Nabi Habeel Mosque, located on the west mountains of Damascus, Syria [1]. The mosque was built by Ottoman Wali Ahmad Pasha in 1599 [1].
+  [D. Hybrid + Rerank] According to Shi'a Muslim belief, Abel is buried in the Nabi Habeel Mosque, located on the west mountains of Damascus, near the Zabadani Valley, overlooking the villages of the Barada river in Syria [1]. The mosque was built by Ottoman Wali Ahmad Pasha in 1599 [1].
+
+Q8: Which two sports organizations are listed in the passage under the 'Sports' section of the Atlantic disambiguation page?
+Ground Truth: The two sports organizations are the Atlantic Championship (a developmental open-wheel racing series in North America) and the Atlantic League of Professional Baseball (an American professional baseba...
+  [A. Vector Only] Based on the provided context, the two sports organizations listed under the 'Sports' section of the Atlantic disambiguation page are:
+
+1. **Atlantic Championship**, a developmental open-wheel racing series in North America [1].
+2. **Atlantic League of Professional Baseball**, an American profession...
+  [B. BM25 Only] Based on the provided context, there is no information about an "Atlantic disambiguation page" or any sports organizations listed under its 'Sports' section. The context snippets cover sports in Afghanistan [1], Andorra [2], Aarhus [3], auto racing [4], and Alberta [5], but none of these are from an...
+  [C. Hybrid (RRF)] Based on the provided context, the two sports organizations listed under the 'Sports' section are:
+
+- Atlantic Championship [2]
+- Atlantic League of Professional Baseball [2]
+  [D. Hybrid + Rerank] The provided context does not contain a 'Sports' section for an Atlantic disambiguation page. The snippets include an "Atlantic (disambiguation)" entry [1], but it only lists "See also" links and no sports organizations. Therefore, I cannot answer the question based on the given context.
+
+Q9: How does the use of the term 'allocution' in the United States differ from the process in many other jurisdictions?
+Ground Truth: The term 'allocution' is used generally only in jurisdictions in the United States, whereas in many other jurisdictions, it is the defense lawyer who mitigates on their client's behalf, and the defend...
+  [A. Vector Only] In the United States, "allocution" refers to a formal statement made by the defendant before sentencing, often as an absolute right, allowing them to explain why the sentence should be lenient [1][2][4]. In many other jurisdictions, the defense lawyer typically mitigates on the client's behalf, and ...
+  [B. BM25 Only] In the United States, "allocution" allows the defendant to speak directly to the court to explain why the sentence should be lenient, and in plea bargains, the defendant may be required to explicitly admit their actions and reasons in detail [1], [3]. In many other jurisdictions, the defense lawyer ...
+  [C. Hybrid (RRF)] In the United States, "allocution" refers to a formal statement made by the defendant to the court before sentencing, allowing them to explain why the sentence should be lenient [1][2]. In many other jurisdictions, the process differs: it is the defense lawyer who mitigates on the client's behalf, a...
+  [D. Hybrid + Rerank] In the United States, "allocution" refers to a formal statement made by the defendant before sentencing, often allowing them to explain why the sentence should be lenient [1][2]. It is considered an absolute right in some jurisdictions, and in the federal system, the court must personally address th...
+
+Q10: What is the half-life of purified actinium, and what types of radiation does it primarily emit?
+Ground Truth: Purified actinium has a half-life of 21.772 years and decays by emitting mostly beta particles (98.62%) and some alpha particles (1.38%)....
+  [A. Vector Only] Based on the context, purified actinium (specifically actinium-227) has a half-life of 21.772 years [1]. It primarily emits beta radiation (98.62% of decays) and a small amount of alpha radiation (1.38%) [1].
+  [B. BM25 Only] Based on the context, purified actinium-227 has a half-life of 21.772 years [1]. It primarily emits beta radiation (98.62%) and some alpha particles (1.38%) [1].
+  [C. Hybrid (RRF)] Based on the provided context, purified actinium (specifically the isotope ²²⁷Ac) has a half-life of 21.772 years [1]. It primarily emits beta radiation (98.62% of decays) and a small amount of alpha radiation (1.38%) [1].
+  [D. Hybrid + Rerank] Based on the context, purified actinium (specifically actinium-227) has a half-life of 21.772 years [1]. It primarily emits beta radiation (98.62% of decays) and some alpha particles (1.38% of decays) [1].
+
+Q11: What happened to the group Analog Brothers after the release of Pimp to Eat, and what is the status of the group Live Black's first album?
+Ground Truth: After Pimp to Eat, the Analog Brothers continued performing together in various line ups. Live Black's first album has yet to be released....
+  [A. Vector Only] Based on the context, after the release of *Pimp to Eat*, the Analog Brothers continued performing together in various line ups [1]. Additionally, members Ice-T and Black Silver toured together as Black Ice in 2008 and released an album [3], and Black Silver collaborated with Kiew Kurzweil on a join...
+  [B. BM25 Only] Based solely on the provided context:
+
+After the release of *Pimp to Eat*, the Analog Brothers continued performing together in various line ups [1]. Kool Keith and Marc Live joined with Jacky Jasper to release two albums as KHM, and Marc Live rapped with Ice-T's group SMG [1].
+
+The context does not...
+  [C. Hybrid (RRF)] After the release of *Pimp to Eat*, the Analog Brothers continued performing together in various line-ups [1]. Members Kool Keith and Marc Live joined with Jacky Jasper to release two albums as KHM, and Marc Live also rapped with Ice-T's group SMG [1][2]. Additionally, Marc formed a group with Black...
+  [D. Hybrid + Rerank] After the release of *Pimp to Eat*, the Analog Brothers continued performing together in various line ups [1]. Members Kool Keith and Marc Live joined with Jacky Jasper to release two albums as KHM, and Marc Live also rapped with Ice-T's group SMG [1][2].
+
+Regarding Live Black, which Marc Live forme...
+
+Q12: According to the passage, what two principles did Fresnel combine to restate Huygens's principle, and how did he describe the vibration at each point on a wavefront?
+Ground Truth: Fresnel combined Huygens's principle with the superposition principle, stating that the vibration at each point on a wavefront is the sum of the vibrations that would be sent to it by all the elements...
+  [A. Vector Only] According to the passage, Fresnel restated Huygens's principle by combining it with the **superposition principle** [1]. He described the vibration at each point on a wavefront as **the sum of the vibrations that would be sent to it at that moment by all the elements of the wavefront in any of its p...
+  [B. BM25 Only] According to the passage, Fresnel restated Huygens's principle by combining it with the **superposition principle** [1]. He described the vibration at each point on a wavefront as "the sum of the vibrations that would be sent to it at that moment by all the elements of the wavefront in any of its pr...
+  [C. Hybrid (RRF)] According to the passage, Fresnel restated Huygens's principle by combining it with the **superposition principle** [1]. He described the vibration at each point on a wavefront as **the sum of the vibrations that would be sent to it at that moment by all the elements of the wavefront in any of its p...
+  [D. Hybrid + Rerank] According to the passage, Fresnel restated Huygens's principle by combining it with the **superposition principle** [1]. He described the vibration at each point on a wavefront as **the sum of the vibrations that would be sent to it at that moment by all the elements of the wavefront in any of its p...
+
+Q13: Which Bulgarian rulers expanded their empire's control over parts of the Aegean coast, and which parts of the coast did they control?
+Ground Truth: Under Presian I and Boris I, Bulgaria obtained a small portion of the northern Aegean coast; Simeon I conquered much of the northern and western coasts; and Ivan Asen II of the Second Bulgarian Empire...
+  [A. Vector Only] Based on the provided context, the Bulgarian rulers who expanded their empire's control over parts of the Aegean coast were:
+
+- **Presian I** and his successor **Boris I**, who managed to obtain a small portion of the northern Aegean coast [1].
+- **Simeon I of Bulgaria**, who conquered much of the n...
+  [B. BM25 Only] Based on the provided context, Bulgarian rulers Presian I, his successor Boris I, and Simeon I expanded their empire's control over parts of the Aegean coast [1]. Presian I and Boris I managed to obtain a small portion of the northern Aegean coast [1]. Simeon I led Bulgaria to its greatest territori...
+  [C. Hybrid (RRF)] Based on the context, the following Bulgarian rulers expanded their empire's control over parts of the Aegean coast:
+
+- **Presian I and his successor Boris I**: They managed to obtain a small portion of the northern Aegean coast [1].
+- **Simeon I**: He led Bulgaria to its greatest territorial expans...
+  [D. Hybrid + Rerank] Based on the provided context, the Bulgarian rulers who expanded their empire's control over parts of the Aegean coast were:
+
+- **Presian I** and his successor **Boris I**: They managed to obtain a small portion of the **northern Aegean coast** [1].
+- **Simeon I**: He led Bulgaria to its greatest te...
+
+Q14: What is the birth year and profession of the person who founded the Seagram Company Ltd?
+Ground Truth: Joseph E. Seagram was born in 1841 and was a Canadian businessman and politician who founded the Seagram Company Ltd....
+  [A. Vector Only] Based on the provided context, Joseph E. Seagram, who founded the Seagram Company Ltd, was born in 1841 and was a Canadian businessman and politician [1].
+  [B. BM25 Only] Based on the provided context, Joseph E. Seagram was born in 1841 and was a Canadian businessman and politician [1].
+  [C. Hybrid (RRF)] Joseph E. Seagram, who founded the Seagram Company Ltd, was born in 1841 and was a Canadian businessman and politician [1].
+  [D. Hybrid + Rerank] According to the context, Joseph E. Seagram was born in 1841 and was a Canadian businessman and politician who founded the Seagram Company Ltd [1].
+
+Q15: What are continental fragments, and what is an example given in the passage?
+Ground Truth: Continental fragments are land masses that have separated from a continental mass due to tectonic displacement. The Farallon Islands off the coast of California are an example....
+  [A. Vector Only] The provided context does not contain information about "continental fragments." It only defines "continental archipelagos" as sets of islands formed close to a continent on the same continental shelf, with examples including the Inside Passage and the Canadian Arctic Archipelago [2]. Therefore, I c...
+  [B. BM25 Only] According to the context, continental fragments correspond to land masses that have separated from a continental mass due to tectonic displacement [1]. An example given is the Farallon Islands off the coast of California [1].
+  [C. Hybrid (RRF)] Based on the provided context, continental fragments are land masses that have separated from a continental mass due to tectonic displacement [3]. An example given is the Farallon Islands off the coast of California [3].
+  [D. Hybrid + Rerank] Continental fragments are land masses that have separated from a continental mass due to tectonic displacement [1]. An example given is the Farallon Islands off the coast of California [1].
+
+Q16: What are the two methods commonly used for producing bitumen emulsions, and how do they differ in the order of mixing the phases?
+Ground Truth: The two methods are the 'Colloid mill' method and the 'High Internal Phase Ratio (HIPR)' method. In the Colloid mill method, bitumen is added to a water-emulsifier mixture, while in the HIPR method, t...
+  [A. Vector Only] Based on the context, the two commonly used methods for producing bitumen emulsions are the "Colloid mill" method and the "High Internal Phase Ratio (HIPR)" method [2].
+
+They differ in the order of mixing the phases as follows:
+
+- In the **Colloid mill method**, bitumen and a water-emulsifier mixtur...
+  [B. BM25 Only] Based on the provided context, the two commonly used methods for producing bitumen emulsions are the "Colloid mill" method and the "High Internal Phase Ratio (HIPR)" method [2].
+
+The context only describes the process for the "Colloid mill" method, where bitumen and a water-emulsifier mixture are ad...
+  [C. Hybrid (RRF)] Based on the context, the two methods commonly used for producing bitumen emulsions are the "Colloid mill" method and the "High Internal Phase Ratio (HIPR)" method [1].
+
+The key difference in the order of mixing the phases is:
+- In the **Colloid mill** method, bitumen and a water-emulsifier mixture ...
+  [D. Hybrid + Rerank] Based on the context, the two commonly used methods for producing bitumen emulsions are the "Colloid mill" method and the "High Internal Phase Ratio (HIPR)" method [1].
+
+They differ in the order of mixing the phases as follows:
+
+*   In the **Colloid mill** method, bitumen and a water-emulsifier mixt...
+
+Q17: Who played Abel in the 2009 film Year One, and who played him in the 1966 film The Bible: In the Beginning...?
+Ground Truth: Paul Rudd played Abel in the 2009 film Year One, and Franco Nero played him in the 1966 film The Bible: In the Beginning... ....
+  [A. Vector Only] According to the context, Paul Rudd played Abel in the 2009 film *Year One* [1], and Franco Nero portrayed him in the 1966 film *The Bible: In the Beginning...* [1].
+  [B. BM25 Only] In the 2009 film *Year One*, Abel was played by Paul Rudd [1]. In the 1966 film *The Bible: In the Beginning...*, Abel was portrayed by Franco Nero [1].
+  [C. Hybrid (RRF)] According to the provided context, Abel was played by **Paul Rudd** in the 2009 film *Year One* [1], and by **Franco Nero** in the 1966 film *The Bible: In the Beginning...* [1].
+  [D. Hybrid + Rerank] Based on the provided context, Paul Rudd played Abel in the 2009 film *Year One*, and Franco Nero played him in the 1966 film *The Bible: In the Beginning...* [1].
+
+Q18: What was the score of the Nacional de Clubes final that Alumni won in 2002, and against which team did they play?
+Ground Truth: Alumni won the 2002 Nacional de Clubes final 23–21 against Jockey Club de Rosario....
+  [A. Vector Only] According to the context, in 2002, Alumni won its first Nacional de Clubes title by defeating Jockey Club de Rosario 23–21 in the final [1].
+  [B. BM25 Only] According to the context, in 2002 Alumni won its first Nacional de Clubes title, defeating Jockey Club de Rosario 23–21 in the final [1].
+  [C. Hybrid (RRF)] According to the context, Alumni won the 2002 Nacional de Clubes title by defeating Jockey Club de Rosario 23–21 in the final [1].
+  [D. Hybrid + Rerank] According to the context, in 2002, Alumni won its first Nacional de Clubes title, defeating Jockey Club de Rosario 23–21 in the final [1].
+
+Q19: Which two individuals listed in the passage died in the same year, and what were their occupations?
+Ground Truth: Onogawa Kisaburō and Peter Andreas Heiberg both died in 1806. Onogawa Kisaburō was a Japanese sumo wrestler and the 5th Yokozuna, while Peter Andreas Heiberg was a Danish philologist and author....
+  [A. Vector Only] I cannot answer this question because the provided context snippets only contain the word "Deaths" with no actual names, years, or occupations listed. There is insufficient information to identify any individuals or their details.
+  [B. BM25 Only] The provided context does not mention any individuals dying in the same year or their occupations. The snippets discuss asteroids, a ritual involving Athena, population statistics for Aruba, historical events in Algeria, and assistive technology, but none contain information about deaths or occupati...
+  [C. Hybrid (RRF)] 
+  [D. Hybrid + Rerank] 
+
+Q20: How did Betty May's account of life at the Abbey lead to both Crowley's public vilification and his eventual deportation?
+Ground Truth: Betty May told the press that Loveday was made to drink cat blood and cut himself, leading John Bull to call Crowley 'the wickedest man in the world'; the resulting negative publicity spread across Eu...
+  [A. Vector Only] Betty May reported that at the Abbey, her husband Raoul Loveday was forced to drink the blood of a sacrificed cat and cut himself with razors every time he used the pronoun "I" [2]. After Loveday died from a liver infection, May returned to London and told her story to the press, leading *John Bull*...
+  [B. BM25 Only] Based solely on the provided context, Betty May's account of life at the Abbey contributed to Crowley's public vilification by describing disturbing practices, such as her husband being made to drink the blood of a sacrificed cat and being required to cut themselves with razors [2]. However, the con...
+  [C. Hybrid (RRF)] Based solely on the provided context, Betty May's account of life at the Abbey included claims that her husband, Raoul Loveday, was made to drink the blood of a sacrificed cat and that residents were required to cut themselves with razors every time they used the pronoun "I" [2]. However, the contex...
+  [D. Hybrid + Rerank] Based solely on the provided context, Betty May's account of life at the Abbey contributed to Crowley's public vilification and eventual deportation in the following ways:
+
+Betty May reported that her husband, Raoul Loveday, was made to drink the blood of a sacrificed cat and that residents were req...
+
+Q21: Which type of emulsion is recommended for use with quartz-rich aggregates, and why?
+Ground Truth: Cationic emulsions are recommended because anionic emulsions have adhesion problems when in contact with quartz-rich aggregates, and cationic emulsions achieve better adhesion....
+  [A. Vector Only] Based on the context, cationic emulsions are recommended for use with quartz-rich aggregates because they achieve better adhesion than anionic emulsions, which have reported adhesion problems with such aggregates [1].
+  [B. BM25 Only] Based on the context, cationic emulsions are recommended for use with quartz-rich aggregates because they achieve better adhesion, whereas anionic emulsions have reported adhesion problems with such aggregates [1].
+  [C. Hybrid (RRF)] Based on the context, cationic emulsions are recommended for use with quartz-rich aggregates because they achieve better adhesion than anionic emulsions, which have reported adhesion problems with such aggregates [1].
+  [D. Hybrid + Rerank] Based on the context, **cationic emulsions** are recommended for use with quartz-rich aggregates [1]. This is because anionic emulsions have reported adhesion problems with quartz-rich aggregates, while cationic emulsions achieve better adhesion [1].
+
+Q22: What is an answer in common law, and what may precede it?
+Ground Truth: An answer is the first pleading by a defendant, usually filed after a civil complaint or criminal information or indictment. It may be preceded by an optional 'pre-answer' motion to dismiss or demurre...
+  [A. Vector Only] In the common law, an answer is the first pleading by a defendant, usually filed and served upon the plaintiff within a strict time limit after a civil complaint or criminal information or indictment has been served [1]. It may have been preceded by an optional "pre-answer" motion to dismiss or demu...
+  [B. BM25 Only] In common law, an answer is the first pleading by a defendant, usually filed and served upon the plaintiff within a strict time limit after a civil complaint or criminal information or indictment has been served [1]. It may have been preceded by an optional "pre-answer" motion to dismiss or demurrer...
+  [C. Hybrid (RRF)] In common law, an answer is the first pleading by a defendant, usually filed and served upon the plaintiff within a strict time limit after a civil complaint or criminal information or indictment has been served [1]. It may have been preceded by an optional "pre-answer" motion to dismiss or demurrer...
+  [D. Hybrid + Rerank] In the common law, an answer is the first pleading by a defendant, typically filed and served within a strict time limit after a civil complaint or criminal information or indictment has been served [1]. It may have been preceded by an optional "pre-answer" motion to dismiss or demurrer [1].
+
+Q23: What is the name of the American magazine that was founded as The Atlantic Monthly in 1857?
+Ground Truth: The Atlantic (originally The Atlantic Monthly) is an American magazine founded in 1857....
+  [A. Vector Only] The American magazine founded as *The Atlantic Monthly* in 1857 is **The Atlantic** [2].
+  [B. BM25 Only] The American magazine founded as *The Atlantic Monthly* in 1857 is *The Atlantic* [1].
+  [C. Hybrid (RRF)] The American magazine founded as *The Atlantic Monthly* in 1857 is **The Atlantic** [1].
+  [D. Hybrid + Rerank] The American magazine founded as *The Atlantic Monthly* in 1857 is **The Atlantic** [1].
+
+Q24: What types of tourism has Azerbaijan become a popular destination for in recent years?
+Ground Truth: In recent years, Azerbaijan has become a popular destination for religious, spa, and health care tourism....
+  [A. Vector Only] Based on the provided context, in recent years Azerbaijan has become a popular destination for religious, spa, and health care tourism [1][2].
+  [B. BM25 Only] Based on the provided context, in recent years Azerbaijan has become a popular destination for religious, spa, and health care tourism [1][2].
+  [C. Hybrid (RRF)] Based on the provided context, in recent years Azerbaijan has become a popular destination for religious, spa, and health care tourism [1][3].
+  [D. Hybrid + Rerank] Based on the context, in recent years, Azerbaijan has become a popular destination for religious, spa, and health care tourism [1][2].
+
+Q25: What is the purpose of a video arraignment system, and how does it avoid the need to transport the defendant?
+Ground Truth: The purpose of a video arraignment system is to conduct the arraignment process without transporting the defendant to the courtroom, by using an audio-visual link between the location where the defend...
+  [A. Vector Only] The purpose of a video arraignment system is to allow the court to conduct the arraignment process without transporting the defendant to the courtroom [2]. It achieves this by using an audio-visual link between the location where the defendant is being held and the courtroom [2]. This addresses prob...
+  [B. BM25 Only] Based on the provided context, the purpose of a video arraignment system is to conduct the arraignment process using videoconferencing technology [1]. It avoids the need to transport the defendant to the courtroom by using an audio-visual link between the location where the defendant is being held a...
+  [C. Hybrid (RRF)] The purpose of a video arraignment system is to conduct the arraignment process using videoconferencing technology, which allows the court to proceed without transporting the defendant to the courtroom [1]. It avoids the need for transportation by using an audio-visual link between the location wher...
+  [D. Hybrid + Rerank] The purpose of a video arraignment system is to conduct the arraignment process using videoconferencing technology, allowing the court to proceed without transporting the defendant to the courtroom [1]. It avoids transportation by using an audio-visual link between the location where the defendant i...
+
+Q26: Which two events from the passage involve the establishment of a new state or dynasty, and what are the names of the entities established?
+Ground Truth: In 1782, King Buddha Yodfa Chulaloke established the Chakri dynasty in Siam, and in 1800, the Treaty of Constantinople established the Septinsular Republic, the first autonomous Greek state since the ...
+  [A. Vector Only] Based solely on the provided context, the two events that involve the establishment of a new state or dynasty are:
+
+1. The Qing dynasty promulgating the Qinding Xianfa Dagang, transforming the Qing empire into a constitutional monarchy [5].
+2. The New Kingdom pharaohs establishing a period of unprec...
+  [B. BM25 Only] Based on the provided context, two events involve the establishment of a new state or dynasty:
+
+1. The establishment of the Kingdom of Kongo, based in Angola [1].
+2. The establishment of the 25th Dynasty by the Kushite king Piye [4].
+  [C. Hybrid (RRF)] 
+  [D. Hybrid + Rerank] 
+
+Q27: What was the name of the album released by Ice-T and Black Silver when they toured together as Black Ice in 2008?
+Ground Truth: They released an album called Urban Legends....
+  [A. Vector Only] According to the context, when Ice-T and Black Silver toured together as Black Ice in 2008, they released an album called **Urban Legends** [1].
+  [B. BM25 Only] Based on the provided context, the album released by Ice-T and Black Silver when they toured together as Black Ice in 2008 was called **Urban Legends** [1].
+  [C. Hybrid (RRF)] According to the context, Ice-T and Black Silver toured together as Black Ice in 2008 and released an album called **Urban Legends** [1].
+  [D. Hybrid + Rerank] According to the context, Ice-T and Black Silver toured together as Black Ice in 2008 and released an album called **Urban Legends** [1].
+
+Q28: What are transcendental numbers?
+Ground Truth: Real and complex numbers that are not algebraic, such as π and e, are called transcendental numbers....
+  [A. Vector Only] Based solely on the provided context, transcendental numbers are real and complex numbers that are **not** algebraic [1]. They are the opposite of algebraic numbers, which include all integers, rational numbers, and roots of integers [1]. The context also notes that "almost all" complex numbers are ...
+  [B. BM25 Only] Based on the provided context, transcendental numbers are real and complex numbers that are not algebraic [1]. The context also notes that "almost all" real and complex numbers are transcendental [1][4].
+  [C. Hybrid (RRF)] Based on the provided context, transcendental numbers are real and complex numbers that are not algebraic [1]. For example, the numbers π and e are transcendental [2]. The context also states that "almost all" complex numbers are transcendental, as the set of algebraic numbers is countably infinite ...
+  [D. Hybrid + Rerank] Based on the provided context, transcendental numbers are real and complex numbers that are **not algebraic** [1]. The context also states that "almost all" real and complex numbers are transcendental [1][5].
+
+Q29: What is the consequence if a judge refuses to hear a plea in mitigation?
+Ground Truth: If a judge or magistrate refuses to hear such a plea or does not properly consider it, the sentence can be overturned on appeal....
+  [A. Vector Only] If a judge refuses to hear a plea in mitigation or does not properly consider it, the sentence can be overturned on appeal [1]. In some U.S. jurisdictions, this may result in the need for a new sentencing hearing, though the conviction itself remains [5].
+  [B. BM25 Only] If a judge refuses to hear a plea in mitigation, the sentence can be overturned on appeal [1].
+  [C. Hybrid (RRF)] If a judge or magistrate refuses to hear a plea in mitigation or does not properly consider it, the sentence can be overturned on appeal [1].
+  [D. Hybrid + Rerank] If a judge refuses to hear a plea in mitigation, the sentence can be overturned on appeal [1]. In the United States federal system, the court must permit the defendant to speak or present information to mitigate the sentence under Federal Rules of Criminal Procedure 32(i)(4) [2].
+
+Q30: What caused the Abbey to close?
+Ground Truth: The Fascist government of Benito Mussolini learned of Crowley's activities and issued a deportation notice in April 1923, forcing Crowley to leave Italy, and without him the Abbey closed....
+  [A. Vector Only] The provided context does not contain any information about what caused the Abbey of Thelema to close. It only mentions the years it was active (1920–1923) [5]. Therefore, I cannot answer this question based on the given context.
+  [B. BM25 Only] The provided context does not contain any information about the Abbey closing or the reasons for its closure. Therefore, I cannot answer this question based on the given snippets.
+  [C. Hybrid (RRF)] The provided context does not contain any information about the Abbey closing. [1] only mentions the Abbey of Thelema existed from 1920–1923, but gives no reason for its closure.
+  [D. Hybrid + Rerank] Based solely on the provided context, there is no information about an "Abbey" closing. The context discusses the election of an abbot [2] and abbatial hierarchy [4], but does not mention any closure. Therefore, I cannot answer the question.
+
+Q31: What natural resources are mentioned as being mined on some Aegean islands?
+Ground Truth: Marble and iron are mined on some of the Aegean islands....
+  [A. Vector Only] Based on the context, marble and iron are mentioned as being mined on some Aegean islands [1].
+  [B. BM25 Only] Based on the context, marble and iron are mined on some Aegean islands [1].
+  [C. Hybrid (RRF)] Based on the provided context, marble and iron are mined on some Aegean islands [1].
+  [D. Hybrid + Rerank] Based on the provided context, marble and iron are mined on some Aegean islands [1].
+
+Q32: What is the difference between a direct appeal and a collateral appeal in the criminal context?
+Ground Truth: A direct appeal is filed with the next higher court of review, while a collateral appeal (or post-conviction petition) is filed in a court of first instance, usually the court that tried the case....
+  [A. Vector Only] In the criminal context, a **direct appeal** is the traditional appeal where the appellant challenges the merits of a conviction by filing with the next higher court of review, alleging errors of law or fact that occurred at trial [1][3]. It typically proceeds through state appellate courts, and the...
+  [B. BM25 Only] In the criminal context, a **direct appeal** is the traditional appeal where the appellant files with the next higher court of review, challenging errors that occurred at trial or during the adjudicative process [1][3]. A **collateral appeal** (or post-conviction petition) is filed in a court of fir...
+  [C. Hybrid (RRF)] In the criminal context, a **direct appeal** is the traditional appeal where the appellant challenges the merits of a judgment by alleging errors of law or fact that occurred at trial or during the adjudicative process, and it is filed with the next higher court of review [1][2][4]. A **collateral a...
+  [D. Hybrid + Rerank] The key difference between a direct appeal and a collateral appeal in the criminal context is the court where they are filed and the nature of the challenge. A direct appeal occurs in state courts, where the appellant challenges the conviction based on errors that occurred at trial or in the adjudic...
+
+Q33: Why is actinium difficult to detect directly, and what method is used to trace it instead?
+Ground Truth: Actinium is difficult to detect directly due to its low available amounts, low beta particle energy (maximum 44.8 keV), and low alpha radiation intensity; therefore, it is traced via its decay product...
+  [A. Vector Only] Based on the provided context, actinium is difficult to detect directly because it decays mainly as a beta emitter with very small energy [2]. Instead, it can be readily identified through alpha spectrometry, as in 1.38% of cases it emits an alpha particle [2].
+  [B. BM25 Only] Actinium is difficult to detect directly because of the low available amounts, low energy of its beta particles (maximum 44.8 keV), and low intensity of alpha radiation [2]. Instead, it is traced via its decay products [2].
+  [C. Hybrid (RRF)] Actinium is difficult to detect directly because of the low available amounts, low energy of its beta particles (maximum 44.8 keV), and low intensity of alpha radiation [4]. Instead, it is traced via its decay products [4].
+  [D. Hybrid + Rerank] Actinium is difficult to detect directly because of the low available amounts, low energy of its beta particles (maximum 44.8 keV), and low intensity of alpha radiation [1]. Instead, it is traced via its decay products [1].
+
+Q34: What was the original meaning of the word 'Archipelago', and how did its usage later change?
+Ground Truth: Originally, 'Archipelago' was the proper name for the Aegean Sea. Later, usage shifted to refer to the Aegean Islands, since that sea has a large number of islands....
+  [A. Vector Only] Based on the provided context, the original meaning of "Archipelago" was the proper name for the Aegean Sea [1]. Later, its usage shifted to refer to the Aegean Islands, because that sea has a large number of islands [1].
+  [B. BM25 Only] Based on the provided context, the word 'Archipelago' was originally the proper name for the Aegean Sea [5]. Later, its usage shifted to refer to the Aegean Islands, since that sea has a large number of islands [5].
+  [C. Hybrid (RRF)] Based on the provided context, the original meaning of "Archipelago" was the proper name for the Aegean Sea [1]. Later, usage shifted to refer to the Aegean Islands, because that sea has a large number of islands [1].
+  [D. Hybrid + Rerank] Based on the provided context, the original meaning of "Archipelago" was the proper name for the Aegean Sea [1]. Later, its usage shifted to refer to the Aegean Islands, because that sea has a large number of islands [1].
+
+Q35: Which two individuals born in 1841 are listed in the passage, and what are their notable roles?
+Ground Truth: Mary Grant Roberts, an Australian zoo owner, and Joseph E. Seagram, a Canadian businessman and politician who founded the Seagram Company Ltd, were both born in 1841....
+  [A. Vector Only] The provided context does not contain any information about individuals born in 1841. Therefore, I cannot answer the question.
+  [B. BM25 Only] The provided context does not mention any individuals born in 1841 or their notable roles. The snippets cover Algeria, Aruba, Arthur Schopenhauer, Aristophanes, and aardvarks, but none contain birth years or individuals from 1841.
+  [C. Hybrid (RRF)] 
+  [D. Hybrid + Rerank] 
+
+Q36: How does the production of faience relate to the production of Egyptian blue, and what are the key differences in their materials or methods?
+Ground Truth: Both faience and Egyptian blue involve silica and copper, and both are fired or fused. Faience is a non-clay ceramic made from silica, lime, soda, and a copper colorant, typically applied as a paste o...
+  [A. Vector Only] Based on the provided context, the production of faience and Egyptian blue are related through a similar technique involving the fusing of materials. Faience is a non-clay ceramic made from silica, lime, soda, and a colorant (typically copper) [2], often applied as a paste over a clay core and fired...
+  [B. BM25 Only] Based on the provided context, the production of faience and Egyptian blue are related techniques. Both involve the application or fusing of powdered materials that are then fired [1].
+
+The key difference is in the materials and method:
+- **Faience** is created by applying a paste of powdered materi...
+  [C. Hybrid (RRF)] Based on the provided context, the production of faience and Egyptian blue are related techniques. Both involve fusing silica with other materials. 
+
+Specifically, faience is a non-clay ceramic made from silica, small amounts of lime and soda, and a colorant like copper [3]. It is typically produced...
+  [D. Hybrid + Rerank] Based on the provided context, the production of faience and Egyptian blue are related through a similar technique of fusing silica with other materials. 
+
+Faience is a non-clay ceramic made from a paste of silica, lime, soda, and a colorant (typically copper) applied over a clay core and then fired...
+
+Q37: What happened to the Jewish community in Afghanistan by the end of the twentieth century, and who was the known exception who remained?
+Ground Truth: By the end of the twentieth century, nearly the entire Jewish community had emigrated to Israel and the United States due to warfare and religious persecution, with the exception of Zablon Simintov, w...
+  [A. Vector Only] By the end of the twentieth century, nearly the entire Jewish community in Afghanistan had emigrated to Israel and the United States due to decades of warfare and religious persecution [1]. The known exception who remained was Zablon Simintov, a Herat-born man who served as the caretaker of the only...
+  [B. BM25 Only] By the end of the twentieth century, nearly the entire Jewish community in Afghanistan had emigrated to Israel and the United States due to decades of warfare and religious persecution [1]. The known exception was Zablon Simintov, who remained as the caretaker of the only remaining Afghan synagogue ...
+  [C. Hybrid (RRF)] By the end of the twentieth century, nearly the entire Jewish community in Afghanistan had emigrated to Israel and the United States due to decades of warfare and religious persecution [1]. The known exception who remained was Zablon Simintov, a Herat-born man who stayed for years as the caretaker o...
+  [D. Hybrid + Rerank] By the end of the twentieth century, nearly the entire Jewish community in Afghanistan had emigrated to Israel and the United States due to decades of warfare and religious persecution [1]. The known exception who remained was Zablon Simintov, who stayed as the caretaker of the only remaining Afghan...
+
+Q38: How did the invention of paint in tubes contribute to both the practical methods of Impressionist painters and the origin of their name?
+Ground Truth: Paint in tubes allowed Impressionists to easily carry paints outdoors to paint in the moment, and to sketch directly in oil with speedy, bold brushwork and dabs of separate colors, which led contempor...
+  [A. Vector Only] The invention of paint in tubes allowed Impressionist painters to work quickly and directly outdoors, enabling them to sketch in oil with bold, rapid brushwork and separate dabs of color [1][2]. This freed them from the constraints of studio painting and slow-drying paints [3][4]. The resulting spee...
+  [B. BM25 Only] The invention of paint in tubes allowed Impressionist painters to work outdoors, directly observing natural light and color, and to paint quickly across an entire canvas with bold, separate dabs of color [1][2][5]. This rapid, sketch-like technique led contemporary critics to view their works as mer...
+  [C. Hybrid (RRF)] The invention of paint in tubes contributed to Impressionist methods by allowing painters to work outdoors, directly observing nature, and to paint quickly across an entire canvas with bold, separate brushstrokes [1][3]. This speed and visible brushwork led critics to dismiss their works as mere "im...
+  [D. Hybrid + Rerank] The invention of paint in tubes freed Impressionist painters to work quickly and directly, enabling them to sketch in oil across an entire canvas with bold, speedy brushwork and separate dabs of color [1]. This portable format allowed them to paint outdoors, directly observing natural light and move...
+
+Q39: Who formed the Northern Alliance, and what event led to its creation?
+Ground Truth: Ahmad Shah Massoud and Abdul Rashid Dostum formed the Northern Alliance after the fall of Kabul to the Taliban....
+  [A. Vector Only] The context does not mention a "Northern Alliance." The closest reference is to the "Union" (the North) during the American Civil War, formed by states that had not seceded [1]. No event leading to its creation is described in the provided snippets.
+  [B. BM25 Only] Based on the provided context, Ahmad Shah Massoud and Abdul Rashid Dostum formed the Northern Alliance after the fall of Kabul to the Taliban [1].
+  [C. Hybrid (RRF)] 
+  [D. Hybrid + Rerank] 
+
+Q40: What event occurred on April 6, 1652, and what city did it eventually become?
+Ground Truth: Dutch sailor Jan van Riebeeck established a resupply camp at the Cape of Good Hope, which eventually became Cape Town....
+  [A. Vector Only] On April 6, 1652, Dutch sailor Jan van Riebeeck established a resupply camp at the Cape of Good Hope, which eventually became Cape Town [4].
+  [B. BM25 Only] The provided context does not contain any information about an event on April 6, 1652, or what city it eventually became. I cannot answer this question based on the given snippets.
+  [C. Hybrid (RRF)] On April 6, 1652, Dutch sailor Jan van Riebeeck established a resupply camp at the Cape of Good Hope, which eventually became Cape Town [1].
+  [D. Hybrid + Rerank] On April 6, 1652, Dutch sailor Jan van Riebeeck established a resupply camp at the Cape of Good Hope [1]. This camp eventually became Cape Town [1].
+
+Q41: How did Alexis Carrel's religious views change in his later life, and who influenced this change?
+Ground Truth: He returned to his Catholic roots, influenced by Trappist monk Alexis Presse, and by 1942 he stated belief in God, the immortality of the soul, Revelation, and all Catholic Church teachings....
+  [A. Vector Only] Based on the context, in his later life, Alexis Carrel returned to his Catholic roots and stated, "I believe in the existence of God, in the immortality of the soul, in Revelation and in all the Catholic Church teaches" [1]. This change was influenced by Trappist monk Alexis Presse, whom he met in 1...
+  [B. BM25 Only] According to the context, in his later life Alexis Carrel returned to his Catholic roots [1]. He met with Trappist monk Alexis Presse in 1939 on a recommendation, and Presse had a profound influence on the rest of Carrel's life [1]. By 1942, Carrel stated his belief in God, the immortality of the so...
+  [C. Hybrid (RRF)] In his later life, Alexis Carrel returned to his Catholic roots, influenced by Trappist monk Alexis Presse [1]. Presse had a profound impact on Carrel, leading him to state in 1942: "I believe in the existence of God, in the immortality of the soul, in Revelation and in all the Catholic Church teach...
+  [D. Hybrid + Rerank] Based on the provided context, in his later life Alexis Carrel returned to his Catholic roots [2]. This change was influenced by Trappist monk Alexis Presse, whom Carrel met in 1939 on a recommendation [2]. Although initially skeptical, Presse had a profound influence on Carrel, leading him to state...
+
+Q42: On a direct appeal to the highest state court, what does a prisoner typically challenge, and what discretion does that court have?
+Ground Truth: A prisoner challenges the grounds of the conviction based on an error that occurred at trial or some other stage in the adjudicative process, and the highest state court exercises discretion over whet...
+  [A. Vector Only] On a direct appeal to the highest state court, a prisoner typically challenges the grounds of the conviction based on an error that occurred at trial or some other stage in the adjudicative process [1]. The highest state court exercises discretion over whether it will review the case [1].
+  [B. BM25 Only] On a direct appeal to the highest state court, a prisoner typically challenges the grounds of the conviction based on an error that occurred at trial or some other stage in the adjudicative process [1]. The highest state court exercises discretion over whether it will review the case [1].
+  [C. Hybrid (RRF)] On a direct appeal to the highest state court, a prisoner typically challenges the grounds of the conviction based on an error that occurred at trial or some other stage in the adjudicative process [1]. The highest state court exercises discretion over whether it will review the case [1].
+  [D. Hybrid + Rerank] On a direct appeal to the highest state court, a prisoner typically challenges the grounds of the conviction based on an error that occurred at trial or some other stage in the adjudicative process [1]. The highest state court exercises discretion over whether it will review the case [1].
+
+Q43: What is Egyptian blue, and how was it produced?
+Ground Truth: Egyptian blue, also called blue frit, is a pigment produced by fusing silica, copper, lime, and an alkali such as natron, and it can be ground up for use as a pigment....
+  [A. Vector Only] Based on the context, Egyptian blue, also called blue frit, is a pigment produced by the ancient Egyptians [1]. It was produced by fusing (or sintering) silica, copper, lime, and an alkali such as natron [1].
+  [B. BM25 Only] Based on the context, Egyptian blue, also called blue frit, is a pigment produced by the ancient Egyptians [1]. It was created by fusing (or sintering) silica, copper, lime, and an alkali such as natron [1].
+  [C. Hybrid (RRF)] Based on the provided context, Egyptian blue, also called blue frit, is a pigment produced by the ancient Egyptians [1]. It was made by fusing (or sintering) silica, copper, lime, and an alkali such as natron [1].
+  [D. Hybrid + Rerank] Based on the provided context, Egyptian blue, also called blue frit, is a pigment produced by the ancient Egyptians. It was made by fusing (or sintering) silica, copper, lime, and an alkali such as natron [1].
+
+Q44: What did Pierre-Auguste Renoir say about the importance of paints in tubes?
+Ground Truth: Renoir said that without colors in tubes, there would be no Cézanne, no Monet, no Pissarro, and no Impressionism....
+  [A. Vector Only] Pierre-Auguste Renoir said, “Without colors in tubes, there would be no Cézanne, no Monet, no Pissarro, and no Impressionism” [1].
+  [B. BM25 Only] According to Pierre-Auguste Renoir, “Without colors in tubes, there would be no Cézanne, no Monet, no Pissarro, and no Impressionism.” [1]
+  [C. Hybrid (RRF)] Pierre-Auguste Renoir said, “Without colors in tubes, there would be no Cézanne, no Monet, no Pissarro, and no Impressionism” [1].
+  [D. Hybrid + Rerank] According to the context, Pierre-Auguste Renoir said, “Without colors in tubes, there would be no Cézanne, no Monet, no Pissarro, and no Impressionism.” [1]
+
+Q45: Can all algebraic numbers be obtained from integers using a finite number of basic operations and root extractions?
+Ground Truth: No, the converse is not true: there are algebraic numbers that cannot be obtained in this manner, specifically roots of polynomials of degree 5 or higher, as a result of Galois theory....
+  [A. Vector Only] No, not all algebraic numbers can be obtained in that way. According to the context, "any number that can be obtained from the integers using a finite number of additions, subtractions, multiplications, divisions, and taking (possibly complex) th roots... are algebraic. The converse, however, is not...
+  [B. BM25 Only] No, not all algebraic numbers can be obtained from integers using a finite number of basic operations and root extractions. According to the context, "the converse, however, is not true: there are algebraic numbers that cannot be obtained in this manner" [1]. These numbers are roots of polynomials o...
+  [C. Hybrid (RRF)] No, not all algebraic numbers can be obtained from integers using a finite number of additions, subtractions, multiplications, divisions, and root extractions. While any number obtained this way is algebraic [1], the converse is false: there are algebraic numbers that cannot be expressed in this man...
+  [D. Hybrid + Rerank] No, not all algebraic numbers can be obtained from integers using a finite number of additions, subtractions, multiplications, divisions, and root extractions. While any number obtained this way is algebraic [1], the converse is false: there are algebraic numbers that cannot be expressed in this man...
+
+Q46: What are the largest applications for metallic antimony, and what is a prominent additive use of antimony trioxide?
+Ground Truth: The largest applications for metallic antimony are in alloys with lead and tin for solders, bullets, and plain bearings, while antimony trioxide is a prominent additive for halogen-containing flame re...
+  [A. Vector Only] Based on the provided context, the largest applications for metallic antimony are in alloys with lead and tin for solders, bullets, and plain bearings [1]. A prominent additive use of antimony trioxide is for halogen-containing flame retardants [1].
+  [B. BM25 Only] Based on the provided context, the largest applications for metallic antimony are in alloys with lead and tin, which have improved properties for solders, bullets, and plain bearings, and it also improves the rigidity of lead-alloy plates in lead–acid batteries [1]. A prominent additive use of antim...
+  [C. Hybrid (RRF)] Based on the provided context, the largest applications for metallic antimony are in alloys with lead and tin, which have improved properties for solders, bullets, and plain bearings [1]. A prominent additive use of antimony trioxide is for halogen-containing flame retardants [1].
+  [D. Hybrid + Rerank] Based on the provided context, the largest applications for metallic antimony are in alloys with lead and tin for solders, bullets, and plain bearings, and it also improves the rigidity of lead-alloy plates in lead–acid batteries [1]. A prominent additive use of antimony trioxide is for halogen-cont...
+
+Q47: What did Fresnel recommend to replace reflectors in his first presentation to the commission in August 1819, and why were reflectors considered inadequate?
+Ground Truth: Fresnel recommended what he called lentilles à échelons (lenses by steps) to replace the reflectors, which reflected only about half of the incident light....
+  [A. Vector Only] Based on the context, Fresnel recommended what he called **lentilles à échelons (lenses by steps)** to replace the reflectors [1]. The reflectors were considered inadequate because they **reflected only about half of the incident light** [1].
+  [B. BM25 Only] Based on the context, Fresnel recommended what he called **lentilles à échelons (lenses by steps)** to replace the reflectors [1]. The reflectors were considered inadequate because they **reflected only about half of the incident light** [1].
+  [C. Hybrid (RRF)] 
+  [D. Hybrid + Rerank] 
+
+Q48: What was Alexis Carrel accused of after the Liberation, and why did the trial not occur?
+Ground Truth: He was accused of collaboration due to his proximity to Jacques Doriot's fascist Parti Populaire Français and his role in eugenics policies during Vichy France, but he died before the trial....
+  [A. Vector Only] Based solely on the provided context, there is no information about Alexis Carrel being accused of anything after the Liberation or why a trial did not occur. The context mentions that after World War II, his role with the Vichy regime stained his reputation, leading to the removal of his name from ...
+  [B. BM25 Only] Based on the context, Alexis Carrel was accused of collaboration after the Liberation [1]. The trial did not occur because he died before it could take place [1].
+  [C. Hybrid (RRF)] Based solely on the provided context, Alexis Carrel was suspended by the Minister of Health after the liberation of Paris [2]. The context does not state what he was accused of, nor does it mention a trial or why a trial did not occur.
+  [D. Hybrid + Rerank] Based on the provided context, Alexis Carrel was accused of collaboration after the Liberation [2]. The trial did not occur because he died before it could take place [2].
+
+Q49: How does the pleading process differ between criminal and civil cases according to the passage?
+Ground Truth: In criminal cases, the pleading is usually guilty or not guilty, entered on the record in open court, while in civil cases there is no plea of guilt or innocence, only a judgment granting money damage...
+  [A. Vector Only] According to the passage, the pleading process differs between criminal and civil cases in that in a criminal case, the defendant enters a plea of guilty or not guilty [1]. In contrast, in private civil cases, there is no plea of guilt or innocence; instead, the outcome is a judgment that grants mon...
+  [B. BM25 Only] According to the passage, in criminal cases, a plea (usually guilty or not guilty) is entered on the record in open court, often during an arraignment [3]. In contrast, civil cases generally do not involve a plea of guilt or innocence; instead, the outcome is a judgment granting money damages or oth...
+  [C. Hybrid (RRF)] In criminal cases, the pleading is entered in open court and is usually either guilty or not guilty [1]. In civil cases, there is generally no plea of guilt or innocence; instead, the outcome is a judgment granting money damages or equitable remedies such as restitution or a permanent injunction [1]...
+  [D. Hybrid + Rerank] In criminal cases, the pleading is entered in open court and is usually either guilty or not guilty [1]. In civil cases, there is no plea of guilt or innocence; instead, the outcome is a judgment granting money damages or equitable remedies like restitution or an injunction [1]. Additionally, in cri...
+
+Q50: How did Azerbaijan's industrial development compare to its neighbors during the Soviet period, and what was the consequence of this?
+Ground Truth: Throughout the Soviet period, Azerbaijan was more developed industrially than Armenia and Georgia but less diversified, due to slow investment in the non-oil sector....
+  [A. Vector Only] Based on the provided context, during the Soviet period, Azerbaijan was more developed industrially than its neighbors Armenia and Georgia, but its industry was less diversified due to slow investment in the non-oil sector [1]. This industrial development, with a history of over 100 years, helped Az...
+  [B. BM25 Only] Based on the provided context, during the Soviet period, Azerbaijan was more developed industrially than Armenia and Georgia, but it was also less diversified due to slow investment in the non-oil sector [2]. A consequence of this industrial focus was significant environmental pollution, as the Casp...
+  [C. Hybrid (RRF)] Based on the provided context, during the Soviet period, Azerbaijan was more developed industrially than its neighbors Armenia and Georgia, but its industry was also less diversified due to slow investment in the non-oil sector [1]. A consequence of this industrial development was that Azerbaijan pr...
+  [D. Hybrid + Rerank] Based on the provided context, during the Soviet period, Azerbaijan was more developed industrially than Armenia and Georgia, but its industry was less diversified due to slow investment in the non-oil sector [1]. A consequence of this industrial development is that Azerbaijan proved to be a leading...

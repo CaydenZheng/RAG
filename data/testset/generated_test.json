@@ -1,0 +1,202 @@
+[
+  {
+    "question": "In France, what is the maximum duration of police custody for cases involving terrorism, and what additional condition must be met for the initial 24-hour extension?",
+    "ground_truth": "For terrorism cases, police custody can last up to 96 hours. The initial 24-hour extension requires the consent of the prosecutor (the procureur), who consents in the vast majority of cases."
+  },
+  {
+    "question": "What is the connection between John Montagu, 4th Earl of Sandwich, and the year 1792?",
+    "ground_truth": "John Montagu, 4th Earl of Sandwich, died in 1792. He was an English politician who served as Secretary of State for the Northern Department."
+  },
+  {
+    "question": "Why is the 'paid the restaurant bill of' relation considered antisymmetric, and what must be true for it to remain antisymmetric?",
+    "ground_truth": "The 'paid the restaurant bill of' relation is considered antisymmetric because typically no two people pay each other's bills; as long as no two people pay each other's bills, the relation is antisymmetric."
+  },
+  {
+    "question": "What is an example of a relation that is neither symmetric nor antisymmetric, according to the passage?",
+    "ground_truth": "The 'preys on' relation on biological species is an example of a relation that is neither symmetric nor antisymmetric."
+  },
+  {
+    "question": "What has happened to reported antimony production in China, and what is the outlook for the coming years?",
+    "ground_truth": "Reported production of antimony in China has fallen and is unlikely to increase in the coming years, according to the Roskill report."
+  },
+  {
+    "question": "When was Alumni dissolved, and what was the last year it played a game?",
+    "ground_truth": "Alumni played its last game in 1911 and was definitely dissolved on April 24, 1913."
+  },
+  {
+    "question": "According to Shi'a Muslim belief, where is Abel buried, and who built the mosque at that location in 1599?",
+    "ground_truth": "Abel is buried in the Nabi Habeel Mosque on the west mountains of Damascus, near the Zabadani Valley, and the mosque was built by Ottoman Wali Ahmad Pasha in 1599."
+  },
+  {
+    "question": "Which two sports organizations are listed in the passage under the 'Sports' section of the Atlantic disambiguation page?",
+    "ground_truth": "The two sports organizations are the Atlantic Championship (a developmental open-wheel racing series in North America) and the Atlantic League of Professional Baseball (an American professional baseball league)."
+  },
+  {
+    "question": "How does the use of the term 'allocution' in the United States differ from the process in many other jurisdictions?",
+    "ground_truth": "The term 'allocution' is used generally only in jurisdictions in the United States, whereas in many other jurisdictions, it is the defense lawyer who mitigates on their client's behalf, and the defendant rarely has the opportunity to speak."
+  },
+  {
+    "question": "What is the half-life of purified actinium, and what types of radiation does it primarily emit?",
+    "ground_truth": "Purified actinium has a half-life of 21.772 years and decays by emitting mostly beta particles (98.62%) and some alpha particles (1.38%)."
+  },
+  {
+    "question": "What happened to the group Analog Brothers after the release of Pimp to Eat, and what is the status of the group Live Black's first album?",
+    "ground_truth": "After Pimp to Eat, the Analog Brothers continued performing together in various line ups. Live Black's first album has yet to be released."
+  },
+  {
+    "question": "According to the passage, what two principles did Fresnel combine to restate Huygens's principle, and how did he describe the vibration at each point on a wavefront?",
+    "ground_truth": "Fresnel combined Huygens's principle with the superposition principle, stating that the vibration at each point on a wavefront is the sum of the vibrations that would be sent to it by all the elements of the wavefront in any of its previous positions, all elements acting separately."
+  },
+  {
+    "question": "Which Bulgarian rulers expanded their empire's control over parts of the Aegean coast, and which parts of the coast did they control?",
+    "ground_truth": "Under Presian I and Boris I, Bulgaria obtained a small portion of the northern Aegean coast; Simeon I conquered much of the northern and western coasts; and Ivan Asen II of the Second Bulgarian Empire also controlled the northern and western coasts."
+  },
+  {
+    "question": "What is the birth year and profession of the person who founded the Seagram Company Ltd?",
+    "ground_truth": "Joseph E. Seagram was born in 1841 and was a Canadian businessman and politician who founded the Seagram Company Ltd."
+  },
+  {
+    "question": "What are continental fragments, and what is an example given in the passage?",
+    "ground_truth": "Continental fragments are land masses that have separated from a continental mass due to tectonic displacement. The Farallon Islands off the coast of California are an example."
+  },
+  {
+    "question": "What are the two methods commonly used for producing bitumen emulsions, and how do they differ in the order of mixing the phases?",
+    "ground_truth": "The two methods are the 'Colloid mill' method and the 'High Internal Phase Ratio (HIPR)' method. In the Colloid mill method, bitumen is added to a water-emulsifier mixture, while in the HIPR method, the aqueous phase is introduced into hot bitumen."
+  },
+  {
+    "question": "Who played Abel in the 2009 film Year One, and who played him in the 1966 film The Bible: In the Beginning...?",
+    "ground_truth": "Paul Rudd played Abel in the 2009 film Year One, and Franco Nero played him in the 1966 film The Bible: In the Beginning... ."
+  },
+  {
+    "question": "What was the score of the Nacional de Clubes final that Alumni won in 2002, and against which team did they play?",
+    "ground_truth": "Alumni won the 2002 Nacional de Clubes final 23–21 against Jockey Club de Rosario."
+  },
+  {
+    "question": "Which two individuals listed in the passage died in the same year, and what were their occupations?",
+    "ground_truth": "Onogawa Kisaburō and Peter Andreas Heiberg both died in 1806. Onogawa Kisaburō was a Japanese sumo wrestler and the 5th Yokozuna, while Peter Andreas Heiberg was a Danish philologist and author."
+  },
+  {
+    "question": "How did Betty May's account of life at the Abbey lead to both Crowley's public vilification and his eventual deportation?",
+    "ground_truth": "Betty May told the press that Loveday was made to drink cat blood and cut himself, leading John Bull to call Crowley 'the wickedest man in the world'; the resulting negative publicity spread across Europe and North America, and the Fascist government of Italy learned of his activities, leading to his deportation and the Abbey's closure."
+  },
+  {
+    "question": "Which type of emulsion is recommended for use with quartz-rich aggregates, and why?",
+    "ground_truth": "Cationic emulsions are recommended because anionic emulsions have adhesion problems when in contact with quartz-rich aggregates, and cationic emulsions achieve better adhesion."
+  },
+  {
+    "question": "What is an answer in common law, and what may precede it?",
+    "ground_truth": "An answer is the first pleading by a defendant, usually filed after a civil complaint or criminal information or indictment. It may be preceded by an optional 'pre-answer' motion to dismiss or demurrer."
+  },
+  {
+    "question": "What is the name of the American magazine that was founded as The Atlantic Monthly in 1857?",
+    "ground_truth": "The Atlantic (originally The Atlantic Monthly) is an American magazine founded in 1857."
+  },
+  {
+    "question": "What types of tourism has Azerbaijan become a popular destination for in recent years?",
+    "ground_truth": "In recent years, Azerbaijan has become a popular destination for religious, spa, and health care tourism."
+  },
+  {
+    "question": "What is the purpose of a video arraignment system, and how does it avoid the need to transport the defendant?",
+    "ground_truth": "The purpose of a video arraignment system is to conduct the arraignment process without transporting the defendant to the courtroom, by using an audio-visual link between the location where the defendant is held and the courtroom."
+  },
+  {
+    "question": "Which two events from the passage involve the establishment of a new state or dynasty, and what are the names of the entities established?",
+    "ground_truth": "In 1782, King Buddha Yodfa Chulaloke established the Chakri dynasty in Siam, and in 1800, the Treaty of Constantinople established the Septinsular Republic, the first autonomous Greek state since the Fall of the Byzantine Empire."
+  },
+  {
+    "question": "What was the name of the album released by Ice-T and Black Silver when they toured together as Black Ice in 2008?",
+    "ground_truth": "They released an album called Urban Legends."
+  },
+  {
+    "question": "What are transcendental numbers?",
+    "ground_truth": "Real and complex numbers that are not algebraic, such as π and e, are called transcendental numbers."
+  },
+  {
+    "question": "What is the consequence if a judge refuses to hear a plea in mitigation?",
+    "ground_truth": "If a judge or magistrate refuses to hear such a plea or does not properly consider it, the sentence can be overturned on appeal."
+  },
+  {
+    "question": "What caused the Abbey to close?",
+    "ground_truth": "The Fascist government of Benito Mussolini learned of Crowley's activities and issued a deportation notice in April 1923, forcing Crowley to leave Italy, and without him the Abbey closed."
+  },
+  {
+    "question": "What natural resources are mentioned as being mined on some Aegean islands?",
+    "ground_truth": "Marble and iron are mined on some of the Aegean islands."
+  },
+  {
+    "question": "What is the difference between a direct appeal and a collateral appeal in the criminal context?",
+    "ground_truth": "A direct appeal is filed with the next higher court of review, while a collateral appeal (or post-conviction petition) is filed in a court of first instance, usually the court that tried the case."
+  },
+  {
+    "question": "Why is actinium difficult to detect directly, and what method is used to trace it instead?",
+    "ground_truth": "Actinium is difficult to detect directly due to its low available amounts, low beta particle energy (maximum 44.8 keV), and low alpha radiation intensity; therefore, it is traced via its decay products."
+  },
+  {
+    "question": "What was the original meaning of the word 'Archipelago', and how did its usage later change?",
+    "ground_truth": "Originally, 'Archipelago' was the proper name for the Aegean Sea. Later, usage shifted to refer to the Aegean Islands, since that sea has a large number of islands."
+  },
+  {
+    "question": "Which two individuals born in 1841 are listed in the passage, and what are their notable roles?",
+    "ground_truth": "Mary Grant Roberts, an Australian zoo owner, and Joseph E. Seagram, a Canadian businessman and politician who founded the Seagram Company Ltd, were both born in 1841."
+  },
+  {
+    "question": "How does the production of faience relate to the production of Egyptian blue, and what are the key differences in their materials or methods?",
+    "ground_truth": "Both faience and Egyptian blue involve silica and copper, and both are fired or fused. Faience is a non-clay ceramic made from silica, lime, soda, and a copper colorant, typically applied as a paste over a clay core and fired, while Egyptian blue is a pigment produced by fusing silica, copper, lime, and an alkali such as natron."
+  },
+  {
+    "question": "What happened to the Jewish community in Afghanistan by the end of the twentieth century, and who was the known exception who remained?",
+    "ground_truth": "By the end of the twentieth century, nearly the entire Jewish community had emigrated to Israel and the United States due to warfare and religious persecution, with the exception of Zablon Simintov, who stayed as the caretaker of the only remaining Afghan synagogue."
+  },
+  {
+    "question": "How did the invention of paint in tubes contribute to both the practical methods of Impressionist painters and the origin of their name?",
+    "ground_truth": "Paint in tubes allowed Impressionists to easily carry paints outdoors to paint in the moment, and to sketch directly in oil with speedy, bold brushwork and dabs of separate colors, which led contemporary critics to dismiss their works as mere 'impressions' and thus gave the movement its name."
+  },
+  {
+    "question": "Who formed the Northern Alliance, and what event led to its creation?",
+    "ground_truth": "Ahmad Shah Massoud and Abdul Rashid Dostum formed the Northern Alliance after the fall of Kabul to the Taliban."
+  },
+  {
+    "question": "What event occurred on April 6, 1652, and what city did it eventually become?",
+    "ground_truth": "Dutch sailor Jan van Riebeeck established a resupply camp at the Cape of Good Hope, which eventually became Cape Town."
+  },
+  {
+    "question": "How did Alexis Carrel's religious views change in his later life, and who influenced this change?",
+    "ground_truth": "He returned to his Catholic roots, influenced by Trappist monk Alexis Presse, and by 1942 he stated belief in God, the immortality of the soul, Revelation, and all Catholic Church teachings."
+  },
+  {
+    "question": "On a direct appeal to the highest state court, what does a prisoner typically challenge, and what discretion does that court have?",
+    "ground_truth": "A prisoner challenges the grounds of the conviction based on an error that occurred at trial or some other stage in the adjudicative process, and the highest state court exercises discretion over whether it will review the case."
+  },
+  {
+    "question": "What is Egyptian blue, and how was it produced?",
+    "ground_truth": "Egyptian blue, also called blue frit, is a pigment produced by fusing silica, copper, lime, and an alkali such as natron, and it can be ground up for use as a pigment."
+  },
+  {
+    "question": "What did Pierre-Auguste Renoir say about the importance of paints in tubes?",
+    "ground_truth": "Renoir said that without colors in tubes, there would be no Cézanne, no Monet, no Pissarro, and no Impressionism."
+  },
+  {
+    "question": "Can all algebraic numbers be obtained from integers using a finite number of basic operations and root extractions?",
+    "ground_truth": "No, the converse is not true: there are algebraic numbers that cannot be obtained in this manner, specifically roots of polynomials of degree 5 or higher, as a result of Galois theory."
+  },
+  {
+    "question": "What are the largest applications for metallic antimony, and what is a prominent additive use of antimony trioxide?",
+    "ground_truth": "The largest applications for metallic antimony are in alloys with lead and tin for solders, bullets, and plain bearings, while antimony trioxide is a prominent additive for halogen-containing flame retardants."
+  },
+  {
+    "question": "What did Fresnel recommend to replace reflectors in his first presentation to the commission in August 1819, and why were reflectors considered inadequate?",
+    "ground_truth": "Fresnel recommended what he called lentilles à échelons (lenses by steps) to replace the reflectors, which reflected only about half of the incident light."
+  },
+  {
+    "question": "What was Alexis Carrel accused of after the Liberation, and why did the trial not occur?",
+    "ground_truth": "He was accused of collaboration due to his proximity to Jacques Doriot's fascist Parti Populaire Français and his role in eugenics policies during Vichy France, but he died before the trial."
+  },
+  {
+    "question": "How does the pleading process differ between criminal and civil cases according to the passage?",
+    "ground_truth": "In criminal cases, the pleading is usually guilty or not guilty, entered on the record in open court, while in civil cases there is no plea of guilt or innocence, only a judgment granting money damages or equitable remedies."
+  },
+  {
+    "question": "How did Azerbaijan's industrial development compare to its neighbors during the Soviet period, and what was the consequence of this?",
+    "ground_truth": "Throughout the Soviet period, Azerbaijan was more developed industrially than Armenia and Georgia but less diversified, due to slow investment in the non-oil sector."
+  }
+]

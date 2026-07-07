@@ -1,0 +1,23 @@
+# 敏感信息（含 API Key）
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 本地数据
+data/cache.db
+data/chroma/
+logs/
+memory/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

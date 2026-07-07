@@ -1,0 +1,49 @@
+# ============================================================
+# RAGFlow 依赖清单
+# ============================================================
+
+# PocketFlow 核心框架
+pocketflow>=0.0.1
+
+# LLM 调用与 Embedding
+openai>=1.0.0
+litellm>=1.40.0
+tiktoken>=0.7.0
+
+# 文档解析
+markitdown>=0.0.1
+pymupdf>=1.24.0
+python-docx>=1.1.0
+
+# 向量存储与检索
+chromadb>=0.5.0
+rank-bm25>=0.2.2
+jieba>=0.42.1
+
+# Rerank + Embedding 模型
+sentence-transformers>=3.0.0
+
+# 文本分块
+langchain-text-splitters>=0.3.0
+
+# API 服务
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# 配置与日志
+pydantic-settings>=2.5.0
+python-dotenv>=1.0.0
+loguru>=0.7.0
+pyyaml>=6.0
+
+# 容错与缓存
+tenacity>=9.0.0
+
+# 追踪监控
+langfuse>=2.50.0
+
+# 评估
+ragas>=0.2.0
+pandas>=2.0.0
+datasets>=2.20.0
