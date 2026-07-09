@@ -72,6 +72,20 @@ class PromptManager:
             {"role": "user", "content": rendered["user"]},
         ]
 
+    def get_prompt_config(self, name: str) -> dict:
+        """
+        获取 prompt 模板的完整配置（不含渲染）。
+
+        Returns:
+            {"model": ..., "temperature": ..., "max_tokens": ...}
+        """
+        template = self.load(name)
+        return {
+            "model": template.get("model", settings.llm_model),
+            "temperature": template.get("temperature", 0.3),
+            "max_tokens": template.get("max_tokens", 1024),
+        }
+
 
 # 全局单例
 prompt_manager = PromptManager()

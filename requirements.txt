@@ -43,6 +43,9 @@ tenacity>=9.0.0
 # 追踪监控
 langfuse>=2.50.0
 
+# Agent 网页搜索（可选，不装则走 HTML fallback）
+duckduckgo_search>=3.5
+
 # 评估
 ragas>=0.2.0
 pandas>=2.0.0

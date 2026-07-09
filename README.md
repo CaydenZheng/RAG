@@ -8,11 +8,17 @@
 
 - [1. 项目定位](#1-项目定位)
 - [2. Agent 升级](#2-agent-升级)
+  - [2.1 Agent Harness 设计](#21-agent-harness-设计)
+  - [2.2 Agent 端点](#22-agent-端点)
 - [3. 架构总览](#3-架构总览)
 - [4. 技术选型与复用策略](#4-技术选型与复用策略)
 - [5. 项目结构](#5-项目结构)
 - [6. 子任务拆分与开发计划](#6-子任务拆分与开发计划)
 - [7. 核心设计细节](#7-核心设计细节)
+  - [7.8 Prompt Engineering](#78-prompt-engineering)
+  - [7.9 多轮会话服务](#79-多轮会话服务)
+  - [7.10 异步编排](#710-异步编排)
+  - [7.11 流式响应](#711-流式响应)
 - [8. 评估方案](#8-评估方案)
 - [9. 工程落地](#9-工程落地)
 - [10. 快速开始](#10-快速开始)
@@ -37,59 +43,202 @@
 
 | 模块 | 文件 | 功能 |
 |---|---|---|
-| **Agent 循环** | `harness.py` | Plan → Execute → Observe 循环，LLM JSON 规划 + 最大 5 轮迭代 |
+| **Agent 循环** | `harness.py` | Plan → Execute → Observe 循环，LLM JSON 规划 + 最大 5 轮迭代，支持同步 + **异步流式(SSE)** 两种模式 |
 | **Hook 管线** | `hooks.py` | 9 个生命周期事件 + 正则模式匹配，日志/限流/审计/黑名单阻断解耦 |
 | **结构化记忆** | `memory.py` | 两层记忆（长期偏好 + 短期历史），三级压缩（截断→硬截断→LLM 摘要） |
-| **工具安全** | `tools.py` | 三级审批（白名单/灰名单/黑名单）+ 参数校验 + 30s 去重 |
+| **工具安全** | `tools.py` | 三级审批（白名单/灰名单/黑名单）+ 参数校验 + 30s 去重，内置 **4 个工具**：`search_knowledge_base`、`calculator`、`get_weather`、`search_web` |
 
-**Agent 端点**：
+
 
 | 端点 | 方法 | 功能 |
 |---|---|---|
+| `/agent` | GET | Agent 对话 Web UI（实时展示思考过程） |
 | `/agent/chat` | POST | Agent 对话（Plan-Execute-Observe） |
+| `/agent/chat/stream` | GET | Agent 流式对话（SSE，实时推送规划→工具调用→答案） |
 | `/agent/reset` | POST | 重置会话记忆 |
 | `/agent/memory/{id}` | GET | 查看会话记忆 |
 
 **评测结果**：8 条 Benchmark（规划/安全/记忆/多步推理）通过率 100%，6 项单元测试全部通过。详见 [`AGENT_IMPROVEMENTS.md`](AGENT_IMPROVEMENTS.md)。
+
+**内置工具**：
+
+| 工具 | 功能 | 安全等级 |
+|---|---|---|
+| `search_knowledge_base` | 检索本地知识库（复用 RAG 管线） | WHITELIST |
+| `calculator` | 安全数学计算（受限 eval + 白名单） | WHITELIST |
+| `get_weather` | 查询实时天气（wttr.in 免费 API） | WHITELIST |
+| `search_web` | 搜索互联网（DDG，优先 duckduckgo_search 库，5s 超时后走 HTML fallback） | GRAYLIST |
+
+### 2.1 Agent Harness 设计
+
+Agent 核心循环控制器（`src/agent/harness.py`）实现了经典的 **Plan → Execute → Observe** 自主推理模式，是 Agent 的"大脑"。
+
+#### 核心循环
+
+```
+                     ┌──────────────┐
+                     │  用户输入     │
+                     └──────┬───────┘
+                            ▼
+              ┌─────────────────────────┐
+              │  1. 加载记忆 + 构建 messages │
+              │  (长期偏好 ⊕ 近期历史 ⊕ 当前消息)│
+              └────────────┬────────────┘
+                           ▼
+              ┌─────────────────────────┐
+              │  2. LLM Planner (JSON)  │◄──── 最大 5 轮迭代
+              │  {action, tool_name,    │
+              │   tool_params, reasoning}│
+              └────────────┬────────────┘
+                           ▼
+                   ┌───────┴───────┐
+                   │  action 类型？ │
+                   └───┬───────┬───┘
+               tool_call     final_answer
+                   │               │
+                   ▼               ▼
+    ┌──────────────────────┐  ┌──────────┐
+    │ 3a. Hook 管线检查    │  │ 返回答案  │
+    │  → 日志/限流/黑名单  │  │ 更新记忆  │
+    │  → 阻断则跳过执行    │  └──────────┘
+    ├──────────────────────┤
+    │ 3b. 工具安全执行     │
+    │  → 三级审批          │
+    │  → 参数校验          │
+    │  → 30s 去重          │
+    ├──────────────────────┤
+    │ 3c. 结果注入消息列表 │
+    └──────────┬───────────┘
+               │
+               └────→ 回到步骤 2
+```
+
+#### Planner Prompt 设计
+
+Planner 的 system prompt 采用极简结构：工具描述（JSON Schema）+ 输出格式约束 + 关键规则：
+
+```
+You are an AI Agent. Your ENTIRE response must be a single JSON object.
+
+## Available Tools
+[{name, description, params: [{name, type, description, required}], ...}]
+
+## CRITICAL: Response Format
+Tool call:  {"action":"tool_call","tool_name":"<name>","tool_params":{...},"reasoning":"<why>"}
+Final answer: {"action":"final_answer","answer":"<answer>","reasoning":"<summary>"}
+
+## CRITICAL Rules
+1. 事实类问题 → 必须调用 search_knowledge_base，禁止凭自身知识
+2. 数学计算 → calculator
+3. 天气 → get_weather
+4. 实时/当前事件 → search_web
+5. 仅闲聊时可跳过工具直接回答
+6. 绝不编造信息
+7. search_web 结果必须列出标题和完整 URL
+8. 引用来源
+```
+
+**设计要点**：
+- **JSON-only 输出**：严禁 Planner 输出自然语言前缀/后缀，三级 JSON 解析兜底（代码块提取 → 正则匹配 → 全文降级）
+- **工具描述 JSON Schema 化**：让 LLM 理解每个工具的参数类型、是否必填、默认值
+- **强制检索约束**：规则 1 解决 LLM 过度依赖自身知识而不调用 RAG 的常见问题
+- **工具路由**：规则 3-4 确保 Agent 根据问题类型自动选择合适的工具
+- **低温决策**：Planner temperature=0.1，保证决策稳定可复现
+
+#### Hook 管线架构
+
+```
+Agent 生命周期
+  │
+  ├── SESSION_START  ──→ LoggingHook（记录所有事件）
+  ├── PRE_PLANNING
+  ├── POST_PLANNING
+  ├── PRE_TOOL_USE   ──→ RateLimitHook（30次/分钟限流, priority=10）
+  │                  ──→ BlacklistBlockHook（正则匹配 delete_*/exec/sudo, priority=5）
+  │                  ──→ AuditHook（灰名单工具审计, priority=20, pattern 限定）
+  ├── POST_TOOL_USE
+  ├── PRE_GENERATION
+  ├── POST_GENERATION
+  ├── SESSION_END
+  └── ON_ERROR
+```
+
+**核心设计**：
+- **优先级排序**：priority 越小越先执行，Blacklist(5) > RateLimit(10) > Audit(20) > Logging(1000)
+- **阻断即停**：任一 Hook 设置 `ctx.blocked=True` 后，后续 Hook 不再执行，核心循环跳过该工具
+- **正则模式过滤**：AuditHook 配置 `pattern=r"read_file|web_search"`，只对敏感工具做审计，避免审计风暴
+- **与核心循环解耦**：Hook 管线是独立模块，新增监控/合规需求无需改动 `harness.py`
+
+#### 工具安全体系
+
+```
+三级审批流程：
+  ┌──────────────┐
+  │ 工具调用请求  │
+  └──────┬───────┘
+         ▼
+  ┌──────────────┐
+  │ 1. 参数校验   │ → 类型 + 必填检查，不符合即拒绝
+  └──────┬───────┘
+         ▼
+  ┌──────────────┐     WHITELIST → 自动执行（search_knowledge_base, calculator）
+  │ 2. 安全等级   │─── GRAYLIST  → 审计日志 + 执行（read_file, web_search）
+  └──────┬───────┘     BLACKLIST → 直接阻断（delete_*, execute_code, rm, sudo）
+         ▼
+  ┌──────────────┐
+  │ 3. 去重检查   │ → 同一 session 30s 内相同调用指纹 → 拒绝
+  └──────┬───────┘
+         ▼
+  ┌──────────────┐
+  │ 4. 执行+重试  │
+  └──────────────┘
+```
+
+### 2.2 Agent 端点
 
 ---
 
 ## 3. 架构总览
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      用户 / API                          │
-└────────────────────────┬────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────┐
-│                    FastAPI 服务层                         │
-│   POST /upload    POST /query    GET /query/stream       │
-└────────────────────────┬────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────┐
-│                PocketFlow 编排层 (flow.py)                 │
-│                                                          │
-│  ┌──────────────┐    ┌──────────────┐    ┌────────────┐ │
-│  │ Offline Flow │    │ Online Flow  │    │ Eval Flow  │ │
-│  │ 文档摄入建索引 │    │ 查询检索生成   │    │ 离线评估    │ │
-│  └──────────────┘    └──────────────┘    └────────────┘ │
-└────────────────────────┬────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────┐
-│                   基础设施层 (infra)                       │
-│  LLM Client · Cache · Tracer(Langfuse) · Prompt Manager │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                        用户 / API                            │
+└─────────────────────────┬────────────────────────────────────┘
+                          │
+┌─────────────────────────▼────────────────────────────────────┐
+│                     FastAPI 服务层（异步）                     │
+│   POST /upload    POST /query    GET /query/stream (SSE)     │
+│   GET /agent (UI)  POST /agent/chat  GET /agent/chat/stream │
+│   POST /session/reset  GET /session/{id}                     │
+└─────────────────────────┬────────────────────────────────────┘
+                          │
+┌─────────────────────────▼────────────────────────────────────┐
+│              PocketFlow AsyncFlow 编排层                       │
+│                                                               │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │
+│  │ Offline Flow │  │ Online Flow  │  │ Retrieval    │        │
+│  │ 文档摄入建索引 │  │ 查询→检索→生成│  │ Flow(流式用) │        │
+│  └──────────────┘  └──────────────┘  └──────────────┘        │
+└─────────────────────────┬────────────────────────────────────┘
+                          │
+┌─────────────────────────▼────────────────────────────────────┐
+│                     基础设施层 (infra)                         │
+│  LLM Client (sync+async) · Cache (SQLite) · Tracer           │
+│  Prompt Manager (YAML) · Session Store (SQLite) · Fallback   │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-### 在线查询数据流
+### 在线查询数据流（异步）
 
 ```
 Query ──→ QueryRewriter ──→ HybridRetriever ──→ Reranker ──→ ContextBuilder ──→ Generator
-              │               ┌─────┴─────┐
-           改写+原query        │            │
-                          Vector(ChromaDB)  BM25
-                          元数据过滤        分词索引
+              │  (async)         (sync)            (sync)        (sync)           (async)
+           改写+原query        ┌─────┴─────┐                                  ↓ 流式SSE输出
+                          Vector(ChromaDB)  BM25                         [session_id]
+                          元数据过滤        分词索引                       ↓ 保存会话历史
 ```
+
+> **混合编排**：PocketFlow 的 `AsyncFlow` 自动识别节点类型——涉及 LLM 调用的 `Rewrite`/`Generator` 走 `await` 异步路径，检索/重排等毫秒级节点保持同步，无需全部改造。
 
 ### 离线索引数据流
 
@@ -173,6 +322,7 @@ ragrag/
 │   │   ├── __init__.py
 │   │   ├── tracer.py             #   本地 JSON Lines trace 日志
 │   │   ├── prompt_manager.py     #   YAML Prompt 加载与管理
+│   │   ├── session_store.py      #   SQLite 会话存储（多轮对话历史）
 │   │   └── fallback.py           #   降级链（DeepSeek → Ollama → 原文兜底）
 │   │
 │   ├── agent/                    # Agent 模块
@@ -359,6 +509,228 @@ LLM 调用降级：
   "当前生成服务暂时不可用，以下是检索到的最相关内容供参考：\n\n[1] ...\n[2] ..."
 ```
 
+### 7.8 Prompt Engineering
+
+Prompt 是 LLM 应用中最容易被忽视但影响最大的组件。本项目在 Agent Planner 和 RAG 生成两个关键环节做了精细的 Prompt 设计。
+
+#### 版本管理与 A/B 测试
+
+```
+prompts/
+├── v1/
+│   ├── query_rewrite.yaml      # 查询改写模板
+│   └── answer_generation.yaml  # 答案生成模板
+└── v2/                         # 后续迭代版本
+```
+
+- YAML 文件包含完整配置：`version`, `model`, `temperature`, `max_tokens`, `system`, `user_template`
+- 通过 `PROMPT_VERSION=v2` 环境变量一键切换，支持 A/B 对比
+- Git 版本控制，每次 Prompt 修改有完整 diff 历史
+
+#### 答案生成 Prompt 设计
+
+```yaml
+system: |
+  You are a helpful technical documentation assistant.
+
+  Rules:
+  1. For factual/knowledge questions, only use information from the given context.
+  2. Cite sources using the chunk reference numbers, e.g. [1], [2].
+  3. If the context is insufficient, say so clearly.
+  4. If the user asks about the conversation itself (e.g., "what did I just ask?"),
+     answer from conversation history above — no context needed.
+  5. Use conversation history to resolve pronouns ("it", "they") and follow-ups.
+  6. Be concise but complete.
+
+user_template: |
+  ## Context Snippets
+  {context}
+
+  ## Question
+  {query}
+```
+
+**设计要点**：
+- **引用强约束（规则 2）**：每个 chunk 以 `[N]` 标记，LLM 必须输出带编号的引用，这是 Faithfulness > 0.96 的关键
+- **诚实性约束（规则 1,3）**：明确要求"不知道就说不知道"，避免幻觉
+- **多轮感知（规则 5）**：告诉 LLM 对话历史的存在和用途，使其能理解代词和追问
+- **结构化分隔**：`## Context Snippets` / `## Question` 用 Markdown 标题分隔，让 LLM 明确区分检索内容和用户问题
+
+#### Planner Prompt 设计
+
+Agent Planner 的 Prompt 遵循 **JSON-first** 原则：
+
+1. **输出格式绝对约束**：`Your ENTIRE response must be a single JSON object — no text before or after`
+2. **双 action 模型**：`tool_call` 和 `final_answer` 两种 action，简单明确
+3. **工具描述注入**：将 `ToolRegistry` 的工具列表 JSON Schema 化后注入 prompt，LLM 知道每个工具的参数名、类型、是否必填
+4. **反幻觉约束**：`For ANY factual/知识类 question, you MUST call search_knowledge_base. NEVER answer from your own knowledge.`
+5. **三级 JSON 解析兜底**：
+   - 优先：提取 Markdown 代码块 ` ```json ... ``` `
+   - 其次：正则匹配 `{"action":...}` 模式
+   - 兜底：全文降级为 `final_answer`，避免崩溃
+
+### 7.9 多轮会话服务
+
+从"一问一答的搜索框"升级为"可持续对话的 RAG 助手"。
+
+#### 存储设计
+
+```sql
+-- SQLite 表结构（零额外依赖，与 cache.py 模式一致）
+CREATE TABLE sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,     -- 会话标识
+    role TEXT NOT NULL,           -- "user" | "assistant"
+    content TEXT NOT NULL,        -- 消息内容
+    timestamp REAL NOT NULL,
+    metadata TEXT DEFAULT '{}'
+);
+CREATE INDEX idx_session_id ON sessions(session_id);
+CREATE INDEX idx_session_time ON sessions(session_id, timestamp);
+```
+
+#### 对话历史注入
+
+```
+每次查询的 messages 构建流程：
+
+  [system prompt]                    ← 基础指令
+  [user: "什么是 RRF"]                ┐
+  [assistant: "RRF 是 Reciprocal..."] ├─ 从 SQLite 加载最近 6 条
+  [user: "它的 k 值默认是多少"]        ┘  （3 轮对话）
+  [user: context + query]            ← 当前问题 + 检索到的文档
+```
+
+#### 端点
+
+| 端点 | 方法 | 功能 |
+|---|---|---|
+| `/query` | POST | 查询（传入 `session_id` 启用多轮记忆） |
+| `/query/stream` | GET | 流式查询（同样支持 `session_id`） |
+| `/session/reset` | POST | 清除指定会话的历史 |
+| `/session/{session_id}` | GET | 查看会话历史（调试用） |
+
+#### 前端集成
+
+- 页面首次加载时自动通过 `localStorage` 生成/恢复 `session_id`
+- "新会话"按钮清除 localStorage 并生成新 ID
+- 所有 `/query` 请求自动携带 `session_id`，用户无感知
+
+### 7.10 异步编排
+
+将同步阻塞的 RAG 管线升级为异步并发架构。
+
+#### 改造策略：只改造 I/O 密集节点
+
+```
+节点异步化判断矩阵：
+
+  QueryRewriterNode    → ✅ AsyncNode（LLM 调用，3-5s）
+  HybridRetrieverNode  → ❌ 保持 Node（毫秒级检索）
+  RerankerNode         → ❌ 保持 Node（CPU 推理，同步更简单）
+  ContextBuilderNode   → ❌ 保持 Node（纯内存操作）
+  GeneratorNode        → ✅ AsyncNode（LLM 调用，3-5s）
+```
+
+#### PocketFlow AsyncFlow 混合编排
+
+```python
+# AsyncFlow 自动识别节点类型，无需全部改造
+class AsyncFlow(Flow, AsyncNode):
+    async def _orch_async(self, shared, params=None):
+        while curr:
+            if isinstance(curr, AsyncNode):
+                last_action = await curr._run_async(shared)  # 异步
+            else:
+                last_action = curr._run(shared)               # 同步
+            curr = self.get_next_node(curr, last_action)
+```
+
+#### 并发收益
+
+```
+改造前（同步，单线程排队）：
+  请求1 ──→ [检索50ms] ──→ [LLM 5s 阻塞══════════] ──→ 返回
+  请求2 ──→ [检索50ms] ──→ [LLM 5s 阻塞══════════] ──→ 返回
+  总耗时: 10s+
+
+改造后（异步，事件循环并发）：
+  请求1 ──→ [检索] ──→ [LLM 5s══════] ──→ 返回
+  请求2 ──→ [检索] ──→ [LLM 5s══════] ──→ 返回
+              ↑ 请求2 在请求1 等 LLM 时并发执行检索
+  总耗时: ~5.5s
+```
+
+#### LLM Client 双模式
+
+```python
+class LLMClient:
+    # 同步（兼容 Agent harness 等旧代码）
+    def chat(self, messages, ...) -> str: ...
+
+    # 异步（供 AsyncNode 使用）
+    async def chat_async(self, messages, ...) -> str: ...
+
+    # 异步流式（供 SSE 端点使用）
+    async def chat_stream_async(self, messages, ...) -> AsyncGenerator[str]: ...
+```
+
+### 7.11 流式响应
+
+基于 SSE（Server-Sent Events）的 Token 级流式输出，实现 ChatGPT 式的逐字显示体验。
+
+#### 两阶段架构
+
+```
+GET /query/stream?query=什么是RRF&session_id=abc
+
+  ┌─ 阶段 1: 检索（~50ms，异步）─────────────────────┐
+  │ RetrievalFlow.run_async(shared)                  │
+  │   Rewriter(async) → Hybrid(sync) → Rerank(sync)  │
+  │   → ContextBuilder(sync)                        │
+  └─→ shared["context"] + shared["sources"]          │
+                                                     │
+  ┌─ 阶段 2: 流式生成（逐 token SSE）─────────────────┐
+  │ async for chunk in llm_client.chat_stream_async():│
+  │   yield f"data: {{\"chunk\": \"Reciprocal\"}}\n\n"│
+  │   yield f"data: {{\"chunk\": \" Rank\"}}\n\n"     │
+  │   ...                                            │
+  │   yield f"data: {{\"done\": true, \"sources\": [...]}}\n\n"│
+  └─ 保存 session ──────────────────────────────────┘
+```
+
+#### 为什么分两阶段
+
+- 检索阶段必须完整执行才能获得 context（无法流式化）
+- 生成阶段天然适合流式（LLM 逐 token 输出）
+- 分两阶段避免检索失败时已经开始流式输出的尴尬
+
+#### SSE 响应格式
+
+```
+data: {"chunk": "RRF"}
+data: {"chunk": "（Reciprocal"}
+data: {"chunk": " Rank"}
+data: {"chunk": " Fusion"}
+...
+data: {"done": true, "answer": "完整答案文本", "sources": [...], "session_id": "abc123"}
+```
+
+#### 前端消费
+
+```javascript
+// 标准 EventSource API，零依赖
+const evtSource = new EventSource('/query/stream?query=什么是RRF');
+evtSource.onmessage = (e) => {
+  const data = JSON.parse(e.data);
+  if (data.chunk) answerEl.textContent += data.chunk;  // 逐字追加
+  if (data.done) {
+    evtSource.close();
+    renderSources(data.sources);  // 渲染引用
+  }
+};
+```
+
 ---
 
 ## 8. 评估方案
@@ -527,27 +899,57 @@ python scripts/build_index.py --data-dir ./data/raw
 ```bash
 python app.py
 # FastAPI 运行在 http://localhost:8000
-#   RAG 端点:  POST /query
-#   Agent 端点: POST /agent/chat
+#   RAG 端点:        POST /query
+#   流式端点:        GET  /query/stream
+#   会话端点:        POST /session/reset  GET /session/{id}
+#   Agent 端点:      POST /agent/chat
+#   Agent 流式:      GET  /agent/chat/stream
+#   Agent UI:        GET  /agent
 ```
 
 ### API 调用
 
 ```bash
-# RAG 查询（一问一答）
+# 普通查询（一问一答）
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
-  -d '{"query": "PocketFlow 的 Node  lifecycle 是什么？", "top_k": 5}'
+  -d '{"query": "PocketFlow 的 Node lifecycle 是什么？"}'
 
 # 响应
 {
-  "answer": "PocketFlow 的 Node 生命周期包括三个阶段：... [1][2]",
+  "query_id": "a1b2c3d4e5f6",
+  "answer": "PocketFlow 的 Node 生命周期包括三个阶段：prep、exec、post... [1][2]",
   "sources": [
-    {"chunk_id": "doc1_chunk3", "text": "...", "score": 0.94},
-    {"chunk_id": "doc1_chunk5", "text": "...", "score": 0.87}
+    {"chunk_id": "doc1_chunk3", "text": "...", "score": 0.94, "ref": 1},
+    {"chunk_id": "doc1_chunk5", "text": "...", "score": 0.87, "ref": 2}
   ],
-  "trace_id": "langfuse-trace-xxx"
+  "latency_ms": 3421.5
 }
+
+# 多轮对话（传入 session_id）
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "什么是 RRF？", "session_id": "my-session"}'
+
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "它的 k 值默认是多少？", "session_id": "my-session"}'
+# LLM 会从历史中知道"它"指的是 RRF
+
+# 流式查询（SSE，逐 token 输出）
+curl -N http://localhost:8000/query/stream?query=什么是RRF\&session_id=my-session
+# 输出（每行实时到达）：
+#   data: {"chunk":"RRF"}
+#   data: {"chunk":"（Reciprocal"}
+#   data: {"chunk":" Rank"}
+#   ...
+#   data: {"done":true,"answer":"完整文本...","sources":[...]}
+
+# 查看会话历史
+curl http://localhost:8000/session/my-session
+
+# 清除会话
+curl -X POST "http://localhost:8000/session/reset?session_id=my-session"
 ```
 
 ### Agent API
@@ -558,19 +960,27 @@ curl -X POST http://localhost:8000/agent/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "What is the half-life of actinium?"}'
 
-# 响应示例
-# {
-#   "session_id": "abc123",
-#   "answer": "Actinium-227 has a half-life of 21.772 years...",
-#   "tool_calls": [{"tool": "search_knowledge_base", "success": true}],
-#   "iterations": 2,
-#   "latency_ms": 4324.3
-# }
+# Agent 流式对话（SSE，实时推送思考过程）
+curl -N "http://localhost:8000/agent/chat/stream?message=search%20web%20for%20latest%20AI%20news&session_id=my-agent"
+# 输出:
+#   data: {"step":"planning","iteration":1}
+#   data: {"step":"tool_call","tool":"search_web","params":{...}}
+#   data: {"step":"tool_done","tool":"search_web","success":true}
+#   data: {"chunk":"Here"}
+#   data: {"chunk":" are"}
+#   ...
+#   data: {"done":true,"answer":"...","iterations":2}
+
+# 天气查询
+curl -N "http://localhost:8000/agent/chat/stream?message=what's%20the%20weather%20in%20Tokyo&session_id=w1"
 
 # 多步推理
 curl -X POST http://localhost:8000/agent/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "查一下 actinium 半衰期，然后算出对应多少天"}'
+
+# Web UI（可视化思考过程）
+# 浏览器访问 http://localhost:8000/agent
 
 # 查看会话记忆
 curl http://localhost:8000/agent/memory/abc123

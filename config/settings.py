@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     rrf_k: int = Field(default=60, alias="RRF_K")
     vector_top_k: int = Field(default=20, alias="VECTOR_TOP_K")
     bm25_top_k: int = Field(default=20, alias="BM25_TOP_K")
-    rerank_top_k: int = Field(default=5, alias="RERANK_TOP_K")
+    rerank_top_k: int = Field(default=10, alias="RERANK_TOP_K")
 
     # ================================================================
     # Token 预算

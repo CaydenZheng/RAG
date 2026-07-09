@@ -10,7 +10,7 @@ import math
 import yaml
 from typing import List, Dict, Tuple
 
-from pocketflow import Node
+from pocketflow import Node, AsyncNode
 from loguru import logger
 import chromadb
 
@@ -24,16 +24,16 @@ from src.utils.bm25_store import bm25_store
 # P2-4: QueryRewriterNode
 # ================================================================
 
-class QueryRewriterNode(Node):
+class QueryRewriterNode(AsyncNode):
     """
     用 LLM 改写查询为多个检索友好变体。
     始终保留原始 query，避免改写负向效果。
     """
 
-    def prep(self, shared: dict) -> str:
+    async def prep_async(self, shared: dict) -> str:
         return shared.get("query", "")
 
-    def exec(self, query: str) -> List[str]:
+    async def exec_async(self, query: str) -> List[str]:
         if not query.strip():
             return [query]
 
@@ -44,7 +44,7 @@ class QueryRewriterNode(Node):
                 "query_rewrite", query=query
             )
 
-            resp = llm_client.chat(messages, temperature=0.2)
+            resp = await llm_client.chat_async(messages, temperature=0.2)
 
             # 解析 YAML — 兼容两种格式
             if "```yaml" in resp:
@@ -72,7 +72,7 @@ class QueryRewriterNode(Node):
         logger.info("  → {} query variants", len(rewritten))
         return rewritten
 
-    def post(self, shared: dict, prep_res, exec_res: List[str]) -> str:
+    async def post_async(self, shared: dict, prep_res, exec_res: List[str]) -> str:
         shared["queries"] = exec_res
         return "default"
 

@@ -377,6 +377,157 @@ def _create_calculator_tool() -> ToolDef:
     )
 
 
+def _create_weather_tool() -> ToolDef:
+    """
+    天气查询工具 — 调 wttr.in 免费 API，无需注册。
+
+    安全等级 WHITELIST：纯外部 HTTP GET，无副作用。
+    """
+
+    def execute(params: dict) -> ToolResult:
+        try:
+            import urllib.request
+            import urllib.error
+
+            city = params["city"]
+            url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
+
+            req = urllib.request.Request(url, headers={"User-Agent": "RAGFlow-Agent/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                import json as _json
+                data = _json.loads(resp.read().decode())
+
+            current = data.get("current_condition", [{}])[0]
+            result = {
+                "city": city,
+                "temperature_c": current.get("temp_C"),
+                "humidity": current.get("humidity"),
+                "weather_desc": current.get("weatherDesc", [{}])[0].get("value"),
+                "wind_speed_kmh": current.get("windspeedKmph"),
+                "feels_like_c": current.get("FeelsLikeC"),
+            }
+            return ToolResult(success=True, data=result)
+
+        except urllib.error.HTTPError as e:
+            return ToolResult(success=False, error=f"Weather API HTTP {e.code}")
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+    return ToolDef(
+        name="get_weather",
+        description="查询指定城市的实时天气（温度、湿度、风速、天气描述）。参数 city 为英文城市名，如 'Beijing'、'Tokyo'、'London'。",
+        params=[
+            ToolParam("city", "str", "城市名（英文），例如 Beijing, Tokyo, London"),
+        ],
+        safety_level=SafetyLevel.WHITELIST,
+        execute_fn=execute,
+        category="external",
+    )
+
+
+def _create_web_search_tool() -> ToolDef:
+    """
+    网页搜索工具 — 优先用 duckduckgo_search 包，fallback 用 HTML 抓取。
+
+    安全等级 GRAYLIST：外部搜索需审计留痕。
+    """
+
+    def execute(params: dict) -> ToolResult:
+        query = params["query"]
+        max_results = params.get("max_results", 3)
+
+        # 尝试 duckduckgo_search（v3.x，5 秒超时防卡死）
+        try:
+            from duckduckgo_search import DDGS
+            import concurrent.futures
+
+            def _ddg_search():
+                results = []
+                ddgs = DDGS()
+                for r in ddgs.text(query):
+                    results.append({
+                        "title": r.get("title", ""),
+                        "snippet": r.get("body", "")[:300],
+                        "url": r.get("href", ""),
+                    })
+                    if len(results) >= max_results:
+                        break
+                return results
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_ddg_search)
+                results = future.result(timeout=5)
+
+            if results:
+                return ToolResult(success=True, data={"query": query, "results": results})
+        except ImportError:
+            logger.debug("duckduckgo_search not installed, using fallback")
+        except Exception as e:
+            logger.debug("duckduckgo_search failed: {}, trying fallback", e)
+
+        # Fallback: DDG Lite HTML
+        try:
+            import urllib.request
+            import urllib.parse
+            import re
+
+            url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}"
+            req = urllib.request.Request(url, headers={"User-Agent": "RAGFlow-Agent/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode()
+
+            results = []
+            # 匹配每个结果块：一个带 nofollow 链接的 <tr> + 紧随的 <tr>
+            block_pattern = (
+                r'<tr[^>]*>\s*<td[^>]*>.*?'
+                r'<a[^>]*rel="nofollow"[^>]*href="([^"]*)"[^>]*>([^<]+)</a>'
+                r'.*?</td>\s*</tr>\s*'
+                r'<tr[^>]*>\s*<td[^>]*>(.*?)</td>\s*</tr>'
+            )
+            for m in re.finditer(block_pattern, html, re.DOTALL | re.IGNORECASE):
+                if len(results) >= max_results:
+                    break
+                raw_href, title, raw_snippet = m.group(1), m.group(2), m.group(3)
+                # 提取真实 URL
+                real_url = raw_href
+                uddg = re.search(r'uddg=([^&]+)', raw_href)
+                if uddg:
+                    real_url = urllib.parse.unquote(uddg.group(1))
+                # 清理 snippet
+                snippet = re.sub(r'<[^>]+>', '', raw_snippet)
+                snippet = re.sub(r'&nbsp;', ' ', snippet)
+                snippet = re.sub(r'&amp;', '&', snippet)
+                snippet = re.sub(r'&lt;', '<', snippet)
+                snippet = re.sub(r'&gt;', '>', snippet)
+                snippet = re.sub(r'&quot;', '"', snippet)
+                snippet = re.sub(r'\s+', ' ', snippet).strip()
+                snippet = re.sub(r'^Zero-click info:\s*', '', snippet)
+                results.append({
+                    "title": title.strip(),
+                    "snippet": snippet[:300],
+                    "url": real_url,
+                })
+
+            if results:
+                return ToolResult(success=True, data={"query": query, "results": results})
+            return ToolResult(success=False, error="No results found")
+
+        except Exception as e:
+            return ToolResult(success=False, error=f"Web search failed: {e}")
+
+    return ToolDef(
+        name="search_web",
+        description="搜索互联网获取最新信息。当知识库中没有相关信息时使用。返回标题、摘要和链接。",
+        params=[
+            ToolParam("query", "str", "搜索关键词"),
+            ToolParam("max_results", "int", "最多返回结果数", required=False, default=3),
+        ],
+        safety_level=SafetyLevel.GRAYLIST,
+        execute_fn=execute,
+        category="external",
+    )
+
+
 # ================================================================
 # 默认注册中心
 # ================================================================
@@ -388,6 +539,8 @@ def create_default_registry() -> ToolRegistry:
     # 注册内置工具
     registry.register(_create_search_kb_tool())
     registry.register(_create_calculator_tool())
+    registry.register(_create_weather_tool())
+    registry.register(_create_web_search_tool())
 
     return registry
 
