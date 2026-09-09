@@ -1,6 +1,7 @@
 """Verify the external seams and temporary stores used by future regressions."""
 
 import asyncio
+import os
 import socket
 from pathlib import Path
 from typing import Any
@@ -101,3 +102,27 @@ def test_query_rewriter_uses_scripted_llm(fake_llm: Any) -> None:
     assert shared["queries"] == ["How long is the trial?", "trial duration"]
     assert len(fake_llm.calls) == 1
     assert "How long is the trial?" in fake_llm.calls[0]["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize("lowercase", [False, True])
+def test_host_configuration_cannot_override_defaults(
+    monkeypatch: pytest.MonkeyPatch, lowercase: bool
+) -> None:
+    from offline_environment import clear_host_environment
+
+    from config.settings import Settings
+
+    # Exercise the real settings schema so new fields cannot silently escape isolation.
+    for name, field in Settings.model_fields.items():
+        for env_name in {name, field.alias or name}:
+            monkeypatch.setenv(
+                env_name.lower() if lowercase else env_name.upper(), "invalid-host-value"
+            )
+    monkeypatch.setenv("OFFLINE_TEST_SYSTEM_SENTINEL", "preserved")
+    clear_host_environment(monkeypatch)
+
+    defaults = Settings(_env_file=None, OPENAI_API_KEY="offline-test-key")
+    for name, field in Settings.model_fields.items():
+        if not field.is_required():
+            assert getattr(defaults, name) == field.default, name
+    assert os.environ["OFFLINE_TEST_SYSTEM_SENTINEL"] == "preserved"

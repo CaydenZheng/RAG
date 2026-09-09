@@ -1006,7 +1006,7 @@ curl -X POST "http://localhost:8000/agent/reset?session_id=abc123"
 uv run --locked --no-env-file python -B -m pytest -q
 ```
 
-默认收集 RRF、Agent 单元测试和 `tests/offline/`。不需要 `.env`、API Key、模型权重或现有索引；测试使用临时工作目录、假配置和独立 SQLite 存储，阻止 DNS／socket 连接和真实模型加载。首次安装依赖仍需包源或预备好的离线包缓存。
+默认收集 RRF、Agent 单元测试和 `tests/offline/`。不需要 `.env`、API Key、模型权重或现有索引；测试清理继承的应用配置环境变量（保留系统变量），使用临时工作目录、假配置和独立 SQLite 存储，阻止 DNS／socket 连接和真实模型加载。首次安装依赖仍需包源或预备好的离线包缓存。
 
 uv 默认使用项目内的 `.venv`。如需复用已激活的共享环境，在 PowerShell 中设置：
 

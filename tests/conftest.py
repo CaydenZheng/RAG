@@ -1,6 +1,5 @@
 """Offline pytest fixtures; real-model checks remain standalone scripts."""
 
-import os
 import shutil
 import socket
 from collections.abc import Iterator
@@ -9,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from offline_environment import clear_host_environment
 
 
 @pytest.fixture(autouse=True)
@@ -51,11 +51,7 @@ def isolated_runtime(
     """Import settings only after moving away from the real .env and data."""
     project = Path(__file__).resolve().parents[1]
     monkeypatch.chdir(tmp_path)
-    for name in list(os.environ):
-        if "PROXY" in name.upper() or name.startswith(
-            ("OPENAI_", "LLM_", "LANGFUSE_", "OLLAMA_", "HF_")
-        ):
-            monkeypatch.delenv(name)
+    clear_host_environment(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "offline-test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/v1")
     monkeypatch.setenv("HF_HOME", str(tmp_path / "huggingface"))
