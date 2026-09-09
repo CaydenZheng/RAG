@@ -12,10 +12,16 @@ HISTORY.json  — 短期历史（按 session 存储），达到阈值时 LLM 自
 
 import json
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field
+
 from loguru import logger
+
+from src.security.session_ids import (
+    client_scope_from_scoped_session,
+    validate_storage_session_id,
+)
 
 # ================================================================
 # 数据模型
@@ -53,10 +59,11 @@ class MemoryManager:
 
     目录结构：
       memory/
-      ├── long_term.md          # 长期记忆（手写/LLM 维护）
-      └── sessions/
-          └── {session_id}/
-              └── history.json  # 会话对话历史
+      ├── long_term.md                 # 旧版单用户长期记忆
+      ├── clients/{client_scope}/
+      │   └── long_term.md             # HTTP 客户端长期记忆
+      └── sessions/{scoped_session_id}/
+          └── history.json             # 会话对话历史
     """
 
     def __init__(self, memory_dir: str = "memory", config: MemoryConfig = None):
@@ -70,26 +77,43 @@ class MemoryManager:
         # 长期记忆文件路径
         self._long_term_path = self.memory_dir / "long_term.md"
 
-        # 初始化长期记忆文件
-        if not self._long_term_path.exists():
-            self._long_term_path.write_text(
-                "# Long-term Memory\n\n"
-                "<!-- This file stores persistent user preferences and important facts -->\n"
-                "<!-- It is injected into the system prompt of every conversation -->\n\n",
-                encoding="utf-8"
-            )
+        self._initialize_long_term_file(self._long_term_path)
 
     # ================================================================
     # 长期记忆
     # ================================================================
 
+    @staticmethod
+    def _initialize_long_term_file(path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text(
+                "# Long-term Memory\n\n"
+                "<!-- This file stores persistent user preferences and important facts -->\n"
+                "<!-- It is injected into the system prompt of every conversation -->\n\n",
+                encoding="utf-8",
+            )
+
+    @staticmethod
+    def _read_long_term(path: Path) -> str:
+        content = path.read_text(encoding="utf-8")
+        lines = [line for line in content.split("\n") if not line.strip().startswith("<!--")]
+        return "\n".join(lines).strip()
+
     @property
     def long_term_memory(self) -> str:
-        """读取长期记忆内容（注入 system prompt 用）"""
-        content = self._long_term_path.read_text(encoding="utf-8")
-        # 去除注释行
-        lines = [l for l in content.split("\n") if not l.strip().startswith("<!--")]
-        return "\n".join(lines).strip()
+        """读取旧版单用户长期记忆。"""
+        return self._read_long_term(self._long_term_path)
+
+    def long_term_memory_for_session(self, session_id: str) -> str:
+        """读取与客户端身份绑定的长期记忆。"""
+        session_id = validate_storage_session_id(session_id)
+        client_scope = client_scope_from_scoped_session(session_id)
+        if client_scope is None:
+            return self.long_term_memory
+        path = self.memory_dir / "clients" / client_scope / "long_term.md"
+        self._initialize_long_term_file(path)
+        return self._read_long_term(path)
 
     def update_long_term(self, content: str):
         """覆写长期记忆"""
@@ -106,13 +130,15 @@ class MemoryManager:
     # 会话历史
     # ================================================================
 
-    def _session_dir(self, session_id: str) -> Path:
-        d = self.memory_dir / "sessions" / session_id
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+    def _session_dir(self, session_id: str, *, create: bool = False) -> Path:
+        session_id = validate_storage_session_id(session_id)
+        directory = self.memory_dir / "sessions" / session_id
+        if create:
+            directory.mkdir(parents=True, exist_ok=True)
+        return directory
 
-    def _history_path(self, session_id: str) -> Path:
-        return self._session_dir(session_id) / "history.json"
+    def _history_path(self, session_id: str, *, create_parent: bool = False) -> Path:
+        return self._session_dir(session_id, create=create_parent) / "history.json"
 
     def load_history(self, session_id: str) -> List[MemoryTurn]:
         """加载会话历史"""
@@ -128,7 +154,7 @@ class MemoryManager:
 
     def save_history(self, session_id: str, turns: List[MemoryTurn]):
         """保存会话历史"""
-        path = self._history_path(session_id)
+        path = self._history_path(session_id, create_parent=True)
         data = [{"role": t.role, "content": t.content,
                  "timestamp": t.timestamp, "token_count": t.token_count,
                  "metadata": t.metadata} for t in turns]
@@ -176,7 +202,7 @@ class MemoryManager:
 
         # System prompt：基础 prompt + 长期记忆
         full_system = system_prompt
-        long_mem = self.long_term_memory
+        long_mem = self.long_term_memory_for_session(session_id)
         if long_mem and "<!--" not in long_mem[:50]:  # 有实际内容
             full_system += f"\n\n## User Profile (Long-term Memory)\n{long_mem}"
 
