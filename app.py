@@ -744,12 +744,9 @@ async def upload(file: UploadFile = File(...)):
     """上传文档，触发增量索引重建"""
     import asyncio as _asyncio
 
-    raw_dir = settings.raw_dir
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    file_path = raw_dir / file.filename
+    from src.infra.uploads import save_upload
 
-    content = await file.read()
-    file_path.write_bytes(content)
+    file_path = await save_upload(file, settings.raw_dir, settings.max_upload_bytes)
     logger.info("File saved: {}", file_path)
 
     # 离线索引是 CPU 密集型（embedding），放入线程池避免阻塞事件循环
