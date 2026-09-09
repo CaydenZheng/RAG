@@ -6,13 +6,12 @@ PocketFlow 顶层编排：离线索引 Flow + 在线检索 Flow（异步）。
 流式: 同在线但 Generator 替换为流式 SSE 输出（在 app.py 中手动处理）
 """
 
-from pocketflow import Flow, AsyncFlow
+from pocketflow import AsyncFlow, Flow
 
-from src.core.ingestion import DocLoaderNode, DocDeduplicatorNode, ChunkerNode
-from src.core.indexing import EmbedderNode, IndexBuilderNode
-from src.core.retrieval import QueryRewriterNode, HybridRetrieverNode, RerankerNode
 from src.core.generation import ContextBuilderNode, GeneratorNode
-
+from src.core.indexing import EmbedderNode, IndexBuilderNode
+from src.core.ingestion import ChunkerNode, DocDeduplicatorNode, DocLoaderNode
+from src.core.retrieval import HybridRetrieverNode, QueryRewriterNode, RerankerNode
 
 # ================================================================
 # 离线索引 Flow

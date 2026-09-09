@@ -333,15 +333,28 @@ ragrag/
 │   │   ├── memory.py             #   两层记忆 + 三级压缩
 │   │   └── tools.py              #   工具注册 + 三级安全审批 + 去重
 │   │
+│   ├── api/                      # HTTP 数据模型与启动任务
+│   │   ├── schemas.py            #   请求/响应模型
+│   │   └── startup.py            #   模型与 BM25 预热
+│   │
+│   ├── orchestration/            # PocketFlow 顶层编排
+│   │   ├── rag.py                #   Offline / Online / Retrieval Flow
+│   │   └── agent.py              #   Agent 与会话重置 Flow
+│   │
+│   ├── web/                      # 浏览器页面资源
+│   │   ├── pages.py              #   与工作目录无关的页面加载
+│   │   └── pages/
+│   │       ├── search.html
+│   │       └── agent.html
+│   │
 │   └── utils/                    # 工具函数
 │       ├── __init__.py
 │       ├── rrf.py                #   RRF 融合纯函数（可单测）
 │       ├── token_counter.py      #   tiktoken 精确计数
 │       └── bm25_store.py         #   BM25 索引封装（读写同步、冷启动降级）
 │
-├── flow.py                       # PocketFlow 顶层编排（Offline / Online / Eval）
-├── flow_agent.py                 # Agent Flow 编排
-├── app.py                        # FastAPI 入口（含 Agent 端点）
+
+├── app.py                        # 精简 FastAPI 入口与路由装配
 │
 ├── scripts/
 │   ├── build_index.py            # 离线索引构建脚本

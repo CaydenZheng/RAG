@@ -322,7 +322,7 @@ Agent 自主完成：检索 Wikipedia → 提取半衰期 21.772 → 调用计�
 | **新建** | `src/agent/memory.py` | 310 | 两层记忆 + 三级压缩 |
 | **新建** | `src/agent/tools.py` | 500+ | 工具注册 + 三级审批 + 去重 + 4 个内置工具 |
 | **新建** | `src/agent/harness.py` | 550+ | Agent 核心循环（同步 + 异步流式双模式） |
-| **新建** | `flow_agent.py` | 110 | Agent 的 PocketFlow 编排 |
+| **新建** | `src/orchestration/agent.py` | 110 | Agent 的 PocketFlow 编排 |
 | **新建** | `tests/test_agent.py` | 500 | Benchmark + 单元测试 |
 | **修改** | `config/settings.py` | +5 字段 | Agent 配置项 |
 | **修改** | `app.py` | +300 行 | Agent 流式 SSE 端点 + Agent Web UI + RAG 停止按钮 |

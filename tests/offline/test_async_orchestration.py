@@ -43,8 +43,8 @@ def test_query_endpoint_awaits_flow_failure(
 def test_agent_knowledge_tool_awaits_online_flow(
     monkeypatch: pytest.MonkeyPatch, isolated_runtime: Path
 ) -> None:
-    import flow
     from src.agent.tools import ToolRegistry, _create_search_kb_tool
+    from src.orchestration import rag
 
     calls: list[dict] = []
 
@@ -57,7 +57,7 @@ def test_agent_knowledge_tool_awaits_online_flow(
                 sources=[{"id": 1}, {"id": 2}],
             )
 
-    monkeypatch.setattr(flow, "get_online_flow", SuccessfulFlow)
+    monkeypatch.setattr(rag, "get_online_flow", SuccessfulFlow)
 
     registry = ToolRegistry(dedup_window=0)
     registry.register(_create_search_kb_tool())
@@ -77,14 +77,14 @@ def test_agent_knowledge_tool_awaits_online_flow(
 def test_agent_knowledge_tool_preserves_flow_failure(
     monkeypatch: pytest.MonkeyPatch, isolated_runtime: Path
 ) -> None:
-    import flow
     from src.agent.tools import ToolRegistry, _create_search_kb_tool
+    from src.orchestration import rag
 
     class FailingFlow:
         async def run_async(self, shared: dict) -> None:
             raise RuntimeError("knowledge retrieval failed")
 
-    monkeypatch.setattr(flow, "get_online_flow", FailingFlow)
+    monkeypatch.setattr(rag, "get_online_flow", FailingFlow)
 
     registry = ToolRegistry(dedup_window=0)
     registry.register(_create_search_kb_tool())
