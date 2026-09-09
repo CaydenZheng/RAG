@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from config.settings import settings
@@ -42,7 +43,12 @@ from src.orchestration.rag import (
     get_online_flow,
     get_retrieval_flow,
 )
-from src.web.pages import AGENT_PAGE_HTML, SEARCH_PAGE_HTML
+from src.web.pages import (
+    AGENT_PAGE_HTML,
+    PAGE_SECURITY_HEADERS,
+    SEARCH_PAGE_HTML,
+    STATIC_DIR,
+)
 
 app = FastAPI(
     title="RAGFlow",
@@ -51,6 +57,7 @@ app = FastAPI(
 )
 
 
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.router.add_event_handler("startup", warm_up_runtime)
 
 
@@ -60,12 +67,12 @@ app.router.add_event_handler("startup", warm_up_runtime)
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return SEARCH_PAGE_HTML
+    return HTMLResponse(SEARCH_PAGE_HTML, headers=PAGE_SECURITY_HEADERS)
 
 
 @app.get("/agent", response_class=HTMLResponse)
 def agent_page():
-    return AGENT_PAGE_HTML
+    return HTMLResponse(AGENT_PAGE_HTML, headers=PAGE_SECURITY_HEADERS)
 
 
 # ================================================================

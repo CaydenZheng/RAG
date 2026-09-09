@@ -1,8 +1,26 @@
-"""Load the browser pages relative to this module."""
+"""Load browser resources relative to this module."""
 
 from pathlib import Path
 
-_PAGES_DIR = Path(__file__).with_name("pages")
+_WEB_DIR = Path(__file__).parent
+_PAGES_DIR = _WEB_DIR / "pages"
+STATIC_DIR = _WEB_DIR / "static"
+
+PAGE_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'none'; "
+        "frame-ancestors 'none'; "
+        "form-action 'self'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
 
 
 def _load_page(filename: str) -> str:
