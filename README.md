@@ -605,14 +605,17 @@ Agent Planner 的 Prompt 遵循 **JSON-first** 原则：
 CREATE TABLE sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,     -- 会话标识
-    role TEXT NOT NULL,           -- "user" | "assistant"
-    content TEXT NOT NULL,        -- 消息内容
+    role TEXT NOT NULL,           -- user / assistant / tool / summary
+    content TEXT NOT NULL,        -- 原始消息内容
     timestamp REAL NOT NULL,
-    metadata TEXT DEFAULT '{}'
+    metadata TEXT NOT NULL DEFAULT '{}',
+    token_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_session_id ON sessions(session_id);
-CREATE INDEX idx_session_time ON sessions(session_id, timestamp);
+CREATE INDEX idx_session_order ON sessions(session_id, id);
 ```
+
+RAG 与 Agent 共用这个会话存储。每次完整交互作为一组消息在单个事务中追加，失败时整组回滚；同一会话的并发写入按自增 `id` 稳定排序。Agent 保存原始用户消息、工具观察的 `tool` 角色和最终回答，旧版 `history.json` 会在首次读取时迁移并保留为 `.migrated` 备份。
 
 #### 对话历史注入
 
@@ -639,7 +642,7 @@ CREATE INDEX idx_session_time ON sessions(session_id, timestamp);
 
 服务器通过 `ragflow_client` HttpOnly Cookie 签发 128 位随机客户端身份，Cookie 使用 `SameSite=Strict`，在 HTTPS 下同时使用 `Secure`，页面脚本不能读取。公开 `session_id` 只允许 1–64 个 ASCII 字母、数字、下划线或连字符；空值仅在一问一答查询或由服务器自动生成 Agent 会话时允许。
 
-进入存储与 Agent 编排前，服务器按 RAG／Agent 命名空间、客户端身份和公开 ID 生成内部作用域键。响应只返回公开 ID。读取或删除只能命中当前 Cookie 身份下的数据，其他客户端请求同名会话得到 404；会话详情响应使用 `Cache-Control: no-store`。Agent 文件存储在边界再次校验内部键，拒绝路径分隔符、点路径、Unicode 和超长值。
+进入存储与 Agent 编排前，服务器按 RAG／Agent 命名空间、客户端身份和公开 ID 生成内部作用域键。响应只返回公开 ID。读取或删除只能命中当前 Cookie 身份下的数据，其他客户端请求同名会话得到 404；会话详情响应使用 `Cache-Control: no-store`。统一会话存储在边界再次校验内部键，拒绝路径分隔符、点路径、Unicode 和超长值。
 
 当前身份是匿名浏览器凭据，不提供账户登录或跨设备同步。API 客户端必须保存响应 Cookie；清除 Cookie 后无法访问此前身份下的会话。升级前未绑定身份的旧会话不会被自动认领，HTTP 会话也不会自动继承旧版全局长期记忆，避免第一个访问者取得旧数据。
 

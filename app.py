@@ -254,8 +254,7 @@ async def query_stream(
 
         # 保存会话
         if session.storage_id:
-            session_store.add_turn(session.storage_id, "user", query)
-            session_store.add_turn(session.storage_id, "assistant", answer)
+            session_store.append_exchange(session.storage_id, query, answer)
 
         # 发送结束信号（含 sources）
         yield f"data: {json.dumps({'done': True, 'answer': answer, 'sources': sources, 'session_id': session.public_id}, ensure_ascii=False)}\n\n"
@@ -285,13 +284,12 @@ def session_reset(request: Request, session_id: str):
     from src.infra.session_store import session_store
 
     session = scope_request_session(request, session_id, "rag")
-    if session_store.history_count(session.storage_id) == 0:
+    if not session_store.clear(session.storage_id):
         raise HTTPException(
             status_code=404,
             detail="Session not found",
             headers={"Cache-Control": "no-store"},
         )
-    session_store.clear(session.storage_id)
     return {"status": "ok", "session_id": session.public_id}
 
 
@@ -408,18 +406,16 @@ async def agent_chat_stream(
 @app.post("/agent/reset")
 def agent_reset(request: Request, session_id: str):
     """重置当前客户端的 Agent 会话。"""
-    from src.agent.memory import memory_manager
-
     session = scope_request_session(request, session_id, "agent")
-    if not memory_manager.load_history(session.storage_id):
+    flow = get_agent_reset_flow()
+    shared = {"session_id": session.storage_id}
+    flow.run(shared)
+    if not shared.get("session_found", False):
         raise HTTPException(
             status_code=404,
             detail="Session not found",
             headers={"Cache-Control": "no-store"},
         )
-    flow = get_agent_reset_flow()
-    shared = {"session_id": session.storage_id}
-    flow.run(shared)
     return {"status": "ok", "message": shared.get("answer", "Session reset.")}
 
 

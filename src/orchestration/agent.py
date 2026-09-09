@@ -61,12 +61,17 @@ class AgentResetNode(Node):
 
     def exec(self, session_id: str) -> dict:
         from src.agent.harness import agent_harness
-        agent_harness.reset_session(session_id)
-        return {"status": "ok", "message": f"Session {session_id} reset."}
+        existed = agent_harness.reset_session(session_id)
+        return {
+            "status": "ok",
+            "message": f"Session {session_id} reset.",
+            "session_found": existed,
+        }
 
     def post(self, shared: dict, prep_res, exec_res: dict) -> str:
         shared["answer"] = "会话已重置。"
         shared["tool_calls"] = []
+        shared["session_found"] = exec_res["session_found"]
         return "default"
 
 
