@@ -40,7 +40,7 @@ def test_query_endpoint_awaits_flow_failure(
     assert response.json()["detail"] == "query orchestration failed"
 
 
-def test_agent_knowledge_tool_awaits_online_flow(
+def test_agent_knowledge_tool_awaits_retrieval_flow(
     monkeypatch: pytest.MonkeyPatch, isolated_runtime: Path
 ) -> None:
     from src.agent.tools import ToolRegistry, _create_search_kb_tool
@@ -57,7 +57,7 @@ def test_agent_knowledge_tool_awaits_online_flow(
                 sources=[{"id": 1}, {"id": 2}],
             )
 
-    monkeypatch.setattr(rag, "get_online_flow", SuccessfulFlow)
+    monkeypatch.setattr(rag, "get_retrieval_flow", SuccessfulFlow)
 
     registry = ToolRegistry(dedup_window=0)
     registry.register(_create_search_kb_tool())
@@ -74,6 +74,40 @@ def test_agent_knowledge_tool_awaits_online_flow(
     assert calls == [{"query": "probe"}]
 
 
+def test_streaming_agent_knowledge_tool_awaits_retrieval_flow(
+    monkeypatch: pytest.MonkeyPatch, isolated_runtime: Path
+) -> None:
+    from src.agent.harness import AgentHarness
+    from src.orchestration import rag
+
+    calls: list[dict] = []
+
+    class SuccessfulFlow:
+        async def run_async(self, shared: dict) -> None:
+            calls.append(shared.copy())
+            shared.update(
+                context="retrieval context",
+                sources=[{"id": 1}, {"id": 2}],
+            )
+
+    monkeypatch.setattr(rag, "get_retrieval_flow", SuccessfulFlow)
+
+    harness = object.__new__(AgentHarness)
+    result = asyncio.run(
+        harness._search_kb_async(
+            {"query": "probe", "top_k": 1}, "session"
+        )
+    )
+
+    assert result.success
+    assert result.data == {
+        "answer": "",
+        "context": "retrieval context",
+        "sources": [{"id": 1}],
+    }
+    assert calls == [{"query": "probe"}]
+
+
 def test_agent_knowledge_tool_preserves_flow_failure(
     monkeypatch: pytest.MonkeyPatch, isolated_runtime: Path
 ) -> None:
@@ -84,7 +118,7 @@ def test_agent_knowledge_tool_preserves_flow_failure(
         async def run_async(self, shared: dict) -> None:
             raise RuntimeError("knowledge retrieval failed")
 
-    monkeypatch.setattr(rag, "get_online_flow", FailingFlow)
+    monkeypatch.setattr(rag, "get_retrieval_flow", FailingFlow)
 
     registry = ToolRegistry(dedup_window=0)
     registry.register(_create_search_kb_tool())
