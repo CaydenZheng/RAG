@@ -346,6 +346,7 @@ ragrag/
 ├── scripts/
 │   ├── build_index.py            # 离线索引构建脚本
 │   ├── run_eval.py               # 离线评估（消融实验 + RAGAS + 检索指标）
+│   ├── demo_eval_metrics.py      # 人工样例指标演示，Ragas 显式启用
 │   ├── download_wiki.py          # Wikipedia 文章下载
 │   └── generate_testset.py       # LLM 自动生成测试集
 │
@@ -354,10 +355,8 @@ ragrag/
 │   ├── test_ragas.py             # RAGAS 导入检查
 │   ├── test_rrf.py               # RRF 融合公式单元测试
 │   ├── test_agent.py             # Agent Benchmark + 单元测试
-│   └── offline/                  # 默认离线基础
+│   └── offline/                  # 默认离线基础、Trace 与入口回归
 │
-├── test.py                       # 端到端指标验证脚本
-├── test2.py                      # tracer 模块验证脚本
 ```
 
 ---
@@ -1030,6 +1029,10 @@ uv run --no-sync --no-env-file python -B -m pytest -q
 ### 运行评估
 
 ```bash
+# 人工样例指标演示（不代表真实检索对照结果）
+uv run --locked --group eval python scripts/demo_eval_metrics.py
+# 需要真实 LLM 评判时，显式添加 --with-ragas
+
 # RAG 消融实验
 uv run --locked --group eval python scripts/run_eval.py --testset ./data/testset/ground_truth.json --ablation
 
