@@ -40,7 +40,7 @@ jobs:
       - name: Install runtime and development dependencies
         run: uv sync --locked --no-default-groups --group dev
       - name: Check baseline code
-        run: uv run --no-sync --offline --no-env-file ruff check src/infra/uploads.py tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline scripts/demo_eval_metrics.py
+        run: uv run --no-sync --offline --no-env-file ruff check src/agent/tools.py src/infra/uploads.py tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline scripts/demo_eval_metrics.py scripts/run_eval.py
       - name: Run offline tests
         run: uv run --no-sync --offline --no-env-file python -B -m pytest -q --junitxml="${{ runner.temp }}/offline-results.xml"
       - name: Upload test report
