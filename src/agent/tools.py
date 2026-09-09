@@ -11,15 +11,16 @@
   calculator            — 安全数学表达式求值（受限 eval + 白名单）
 """
 
+import asyncio
 import hashlib
 import json
 import math
 import time
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
-from loguru import logger
+from typing import Any, Callable, Dict, List, Optional
 
+from loguru import logger
 
 # ================================================================
 # 数据模型
@@ -293,7 +294,7 @@ def _create_search_kb_tool() -> ToolDef:
 
             import time as _time
             t0 = _time.time()
-            flow.run(shared)
+            asyncio.run(flow.run_async(shared))
             latency = (_time.time() - t0) * 1000
 
             answer = shared.get("answer", "")
@@ -386,8 +387,8 @@ def _create_weather_tool() -> ToolDef:
 
     def execute(params: dict) -> ToolResult:
         try:
-            import urllib.request
             import urllib.error
+            import urllib.request
 
             city = params["city"]
             url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
@@ -438,8 +439,9 @@ def _create_web_search_tool() -> ToolDef:
 
         # 尝试 duckduckgo_search（v3.x，5 秒超时防卡死）
         try:
-            from duckduckgo_search import DDGS
             import concurrent.futures
+
+            from duckduckgo_search import DDGS
 
             def _ddg_search():
                 results = []
@@ -467,9 +469,9 @@ def _create_web_search_tool() -> ToolDef:
 
         # Fallback: DDG Lite HTML
         try:
-            import urllib.request
-            import urllib.parse
             import re
+            import urllib.parse
+            import urllib.request
 
             url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}"
             req = urllib.request.Request(url, headers={"User-Agent": "RAGFlow-Agent/1.0"})

@@ -12,21 +12,21 @@ D: 混合检索 + Rerank（最终方案）
     python scripts/run_eval.py --testset data/testset/nq_test.json
 """
 
-import sys
+import asyncio
 import json
-import time
+import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from typing import List
+
 from loguru import logger
-from pocketflow import Flow, Node
 
 from config.settings import settings
-from src.core.retrieval import QueryRewriterNode, HybridRetrieverNode, RerankerNode
+from pocketflow import AsyncFlow, Node
 from src.core.generation import ContextBuilderNode, GeneratorNode
-from src.utils.token_counter import count_tokens
-
+from src.core.retrieval import HybridRetrieverNode, QueryRewriterNode, RerankerNode
 
 # ================================================================
 # LangChain-compatible local embeddings wrapper (for RAGAS)
@@ -100,7 +100,7 @@ def build_ablation_flows():
     builder = ContextBuilderNode()
     generator = GeneratorNode()
     rewriter >> retriever >> reranker >> builder >> generator
-    flows["A. Vector Only"] = (Flow(start=rewriter), "vector_only")
+    flows["A. Vector Only"] = (AsyncFlow(start=rewriter), "vector_only")
 
     # --- Group B: BM25 only ---
     rewriter_b = SkipRewriteNode()
@@ -109,7 +109,7 @@ def build_ablation_flows():
     builder_b = ContextBuilderNode()
     generator_b = GeneratorNode()
     rewriter_b >> retriever_b >> reranker_b >> builder_b >> generator_b
-    flows["B. BM25 Only"] = (Flow(start=rewriter_b), "bm25_only")
+    flows["B. BM25 Only"] = (AsyncFlow(start=rewriter_b), "bm25_only")
 
     # --- Group C: Hybrid (no Rerank) ---
     rewriter_c = QueryRewriterNode()
@@ -118,7 +118,7 @@ def build_ablation_flows():
     builder_c = ContextBuilderNode()
     generator_c = GeneratorNode()
     rewriter_c >> retriever_c >> reranker_c >> builder_c >> generator_c
-    flows["C. Hybrid (RRF)"] = (Flow(start=rewriter_c), "hybrid")
+    flows["C. Hybrid (RRF)"] = (AsyncFlow(start=rewriter_c), "hybrid")
 
     # --- Group D: Full Pipeline ---
     rewriter_d = QueryRewriterNode()
@@ -127,7 +127,7 @@ def build_ablation_flows():
     builder_d = ContextBuilderNode()
     generator_d = GeneratorNode()
     rewriter_d >> retriever_d >> reranker_d >> builder_d >> generator_d
-    flows["D. Hybrid + Rerank"] = (Flow(start=rewriter_d), "hybrid+rerank")
+    flows["D. Hybrid + Rerank"] = (AsyncFlow(start=rewriter_d), "hybrid+rerank")
 
     return flows
 
@@ -140,8 +140,9 @@ def _warmup_bm25():
     """从 ChromaDB 重建 BM25，保证混合检索可区分向量和关键词贡献"""
     try:
         import chromadb
-        from src.utils.bm25_store import bm25_store
+
         from config.settings import settings
+        from src.utils.bm25_store import bm25_store
 
         client = chromadb.PersistentClient(
             path=str(settings.chroma_path.resolve()),
@@ -165,7 +166,7 @@ def _warmup_bm25():
 # 主流程
 # ================================================================
 
-def run_ablation(testset_path: str):
+async def run_ablation(testset_path: str) -> None:
     """运行消融实验"""
     with open(testset_path, "r", encoding="utf-8") as f:
         testset = json.load(f)
@@ -197,12 +198,7 @@ def run_ablation(testset_path: str):
                 "retrieval_mode": mode,
             }
 
-            try:
-                flow.run(shared)
-            except Exception as e:
-                logger.warning("  ⚠️ Failed: {}", e)
-                shared["answer"] = ""
-                shared["retrieved_chunks"] = []
+            await flow.run_async(shared)
 
             qa_results.append({
                 "question": question,
@@ -211,7 +207,7 @@ def run_ablation(testset_path: str):
                 "ground_truth": item["ground_truth"],
             })
 
-            time.sleep(0.3)  # 避免 API 限流
+            await asyncio.sleep(0.3)  # 避免 API 限流
 
         all_results[group_name] = qa_results
 
@@ -367,14 +363,14 @@ def compute_retrieval_metrics(all_results: dict) -> dict:
 
 def _evaluate_group(name: str, qa_results: list, evaluator_llm, local_embeddings) -> dict:
     """对单个消融组做 RAGAS 评估（供 ThreadPoolExecutor 并行调用）。"""
+    from datasets import Dataset
     from ragas import evaluate
     from ragas.metrics import (
-        Faithfulness,
         AnswerRelevancy,
         ContextPrecision,
         ContextRecall,
+        Faithfulness,
     )
-    from datasets import Dataset
 
     # 过滤掉空答案的样本（RAGAS 要求非空 answer）
     valid = [r for r in qa_results if r["answer"].strip()]
@@ -420,8 +416,9 @@ def run_ragas_eval(all_results: dict) -> dict:
     与串行完全一致。RAGAS 内部也会并行处理各 sample。
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from ragas.llms import llm_factory
+
     from openai import OpenAI
+    from ragas.llms import llm_factory
 
     evaluator_llm = llm_factory(
         settings.llm_model,
@@ -490,4 +487,4 @@ if __name__ == "__main__":
     parser.add_argument("--testset", default="data/testset/ground_truth.json")
     args = parser.parse_args()
 
-    run_ablation(args.testset)
+    asyncio.run(run_ablation(args.testset))
