@@ -57,3 +57,10 @@ testpaths = [
 ]
 pythonpath = ["."]
 addopts = "-ra --strict-config --strict-markers -p no:cacheprovider"
+
+[tool.ruff]
+required-version = "==0.16.6"
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
