@@ -1,30 +1,17 @@
-"""
-端到端指标验证脚本 — 验证 RAGAS（LLM judge）和检索层指标（rule-based）均正常工作。
+"""Synthetic evaluation demonstration; does not run on import.
 
-用 3 条模拟数据模拟 2 个消融组的上下文质量差异：
-  - "Vector Only"     → 检索质量一般（部分题目上下文不匹配）
-  - "Hybrid + Rerank" → 检索质量更好（上下文更精准）
+Usage:
+    uv run --locked --group eval python scripts/demo_eval_metrics.py
+    uv run --locked --group eval python scripts/demo_eval_metrics.py --with-ragas
 
-运行后会输出两组对比，验证：
-  1. retrieval_metrics: Hit Rate@K / MRR 能区分上下文质量
-  2. RAGAS: Context Precision / Faithfulness 能反映生成质量
-
-用法:
-    python test.py
+The optional Ragas step calls a real LLM. Samples are handcrafted, not retrieval results.
 """
 
+import argparse
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
 
-from scripts.run_eval import compute_retrieval_metrics, run_ragas_eval
-from loguru import logger
-
-# ================================================================
-# 构造 3 条有区分度的测试数据
-# ================================================================
-
-all_results = {
+ALL_RESULTS = {
     "Vector Only": [
         {
             "question": "What is gradient descent and why is learning rate important?",
@@ -105,49 +92,44 @@ all_results = {
 }
 
 
-# ================================================================
-# 1. 检索层指标（rule-based，秒出，不调 LLM）
-# ================================================================
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Demonstrate evaluation metrics using synthetic answers and contexts."
+    )
+    parser.add_argument(
+        "--with-ragas",
+        action="store_true",
+        help="Also run Ragas with the configured real LLM (requires API access and models).",
+    )
+    args = parser.parse_args(argv)
 
-print("=" * 60)
-print("RETRIEVAL METRICS (rule-based)")
-print("=" * 60)
-retrieval_metrics = compute_retrieval_metrics(all_results)
-for group_name, metrics in retrieval_metrics.items():
-    print(f"\n{group_name}:")
-    for k, v in metrics.items():
-        print(f"  {k}: {v:.4f}")
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from scripts.run_eval import compute_retrieval_metrics
 
-# 预期: Hybrid+Rerank 组的 Hit Rate 和 MRR 应高于 Vector Only 组
-# 因为 Vector Only 的 context 混入了无关噪音（天气、艾菲尔铁塔、贝多芬等）
-
-
-# ================================================================
-# 2. RAGAS 评估（LLM judge，需调用 DeepSeek API，约 30s）
-# ================================================================
-
-print("\n" + "=" * 60)
-print("RAGAS METRICS (LLM judge)")
-print("=" * 60)
-
-ragas_metrics = run_ragas_eval(all_results)
-for group_name, metrics in ragas_metrics.items():
-    if metrics:
+    print("SYNTHETIC METRICS DEMO — not a real retrieval comparison")
+    print("RETRIEVAL METRICS (rule-based)")
+    for group_name, metrics in compute_retrieval_metrics(ALL_RESULTS).items():
         print(f"\n{group_name}:")
-        for k, v in metrics.items():
-            print(f"  {k}: {v:.4f}")
+        for name, value in metrics.items():
+            print(f"  {name}: {value:.4f}")
 
-# 预期: Hybrid+Rerank 的 Context Precision 和 Answer Relevancy 应更高
+    if args.with_ragas:
+        from scripts.run_eval import run_ragas_eval
+
+        print("\nRAGAS METRICS (real LLM judge)")
+        for group_name, metrics in run_ragas_eval(ALL_RESULTS).items():
+            if metrics:
+                print(f"\n{group_name}:")
+                for name, value in metrics.items():
+                    print(f"  {name}: {value:.4f}")
+    else:
+        print("\nRagas skipped; use --with-ragas to call the configured real LLM.")
+
+    print("\nAnswers and contexts are handcrafted; scores do not prove pipeline quality.")
+    return 0
 
 
-# ================================================================
-# 3. 对比总结
-# ================================================================
-
-print("\n" + "=" * 60)
-print("EXPECTED: Hybrid+Rerank > Vector Only")
-print("  - Hit Rate@5:   more relevant chunks in top positions")
-print("  - MRR:          first relevant chunk ranks higher")
-print("  - Context Precision: LLM judges context as more on-topic")
-print("  - Answer Relevancy:  answers better match the questions")
-print("=" * 60)
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -285,7 +285,8 @@ Raw Docs ──→ DocLoader ──→ DocDeduplicator ──→ Chunker ──�
 ragrag/
 │
 ├── README.md                     # 本文件
-├── requirements.txt              # 依赖清单
+├── pyproject.toml                # 项目、依赖分组和测试配置
+├── uv.lock                       # 可复现依赖锁文件
 ├── .env.example                  # 环境变量模板
 ├── config/
 │   └── settings.py               # pydantic-settings 配置类
@@ -345,6 +346,7 @@ ragrag/
 ├── scripts/
 │   ├── build_index.py            # 离线索引构建脚本
 │   ├── run_eval.py               # 离线评估（消融实验 + RAGAS + 检索指标）
+│   ├── demo_eval_metrics.py      # 人工样例指标演示，Ragas 显式启用
 │   ├── download_wiki.py          # Wikipedia 文章下载
 │   └── generate_testset.py       # LLM 自动生成测试集
 │
@@ -352,10 +354,9 @@ ragrag/
 │   ├── test_smoke.py             # 冒烟验证
 │   ├── test_ragas.py             # RAGAS 导入检查
 │   ├── test_rrf.py               # RRF 融合公式单元测试
-│   └── test_agent.py             # Agent Benchmark + 单元测试
+│   ├── test_agent.py             # Agent Benchmark + 单元测试
+│   └── offline/                  # 默认离线基础、Trace 与入口回归
 │
-├── test.py                       # 端到端指标验证脚本
-├── test2.py                      # tracer 模块验证脚本
 ```
 
 ---
@@ -366,7 +367,7 @@ ragrag/
 
 | 子任务 | 内容 | 依赖 |
 |---|---|---|
-| 1.1 项目骨架 | 目录结构、`requirements.txt`、`.env`、`config/settings.py` | 无 |
+| 1.1 项目骨架 | 目录结构、`pyproject.toml`、`uv.lock`、`.env`、`config/settings.py` | 无 |
 | 1.2 LLM Client | 统一 `chat()` / `embed()` 接口，封装 litellm + retry + timeout | 1.1 |
 | 1.3 Prompt Manager | YAML 加载、版本切换、模板渲染 | 1.1 |
 | 1.4 Token Counter | tiktoken 封装，支持多种模型 | 1.1 |
@@ -780,10 +781,10 @@ evtSource.onmessage = (e) => {
 
 ```bash
 # 构建索引
-python scripts/build_index.py
+uv run --locked python scripts/build_index.py
 
 # 运行消融实验（50 题 × 4 组，包含检索指标 + RAGAS，约 15 分钟）
-python scripts/run_eval.py --testset data/testset/generated_test.json
+uv run --locked --group eval python scripts/run_eval.py --testset data/testset/generated_test.json
 ```
 
 ---
@@ -876,8 +877,8 @@ logger.info("Retrieval completed", extra={
 git clone <repo-url>
 cd ragrag
 
-# 安装依赖
-pip install -r requirements.txt
+# 安装依赖（Python 3.13，预先安装 uv >= 0.12.11）
+uv sync --locked
 
 # 配置环境变量
 cp .env.example .env
@@ -890,14 +891,14 @@ cp /path/to/your/docs/*.pdf ./data/raw/
 ### 构建索引
 
 ```bash
-python scripts/build_index.py --data-dir ./data/raw
+uv run --locked python scripts/build_index.py --data-dir ./data/raw
 # 输出: ✅ Indexed 156 chunks from 12 documents
 ```
 
 ### 启动服务
 
 ```bash
-python app.py
+uv run --locked python app.py
 # FastAPI 运行在 http://localhost:8000
 #   RAG 端点:        POST /query
 #   流式端点:        GET  /query/stream
@@ -989,15 +990,55 @@ curl http://localhost:8000/agent/memory/abc123
 curl -X POST "http://localhost:8000/agent/reset?session_id=abc123"
 ```
 
+### 默认离线测试
+
+项目使用 Python 3.13、uv 0.12.11 或更新版本。`pyproject.toml` 是依赖和 pytest 配置的唯一维护入口，`uv.lock` 固定直接及传递依赖的版本与来源。首次迁移沿用已验证的直接依赖版本；调整依赖时同时更新锁文件并运行相关测试。
+
+| 用途 | 安装命令 |
+|---|---|
+| 本地开发、离线测试（默认包含 dev） | `uv sync --locked` |
+| Ragas／评测（额外包含 eval） | `uv sync --locked --group eval` |
+| 仅运行服务 | `uv sync --locked --no-dev` |
+
+从仓库根目录运行：
+
+```bash
+uv run --locked --no-env-file python -B -m pytest -q
+```
+
+默认收集 RRF、Agent 单元测试和 `tests/offline/`。不需要 `.env`、API Key、模型权重或现有索引；测试清理继承的应用配置环境变量（保留系统变量），使用临时工作目录、假配置和独立 SQLite 存储，阻止 DNS／socket 连接和真实模型加载。首次安装依赖仍需包源或预备好的离线包缓存。
+
+uv 默认使用项目内的 `.venv`。如需复用已激活的共享环境，在 PowerShell 中设置：
+
+```powershell
+$env:UV_PROJECT_ENVIRONMENT = $env:VIRTUAL_ENV
+uv sync --locked --all-groups --inexact --dry-run
+# 核对预演中的版本变化后同步；--inexact 保留其他项目的额外依赖。
+uv sync --locked --all-groups --inexact
+uv run --no-sync --no-env-file python -B -m pytest -q
+```
+
+执行前须确认 `VIRTUAL_ENV` 指向预期环境。共享环境后续执行下列 `uv run` 命令时使用 `--no-sync` 替代 `--locked`，避免自动同步影响其他项目；依赖更新仍须先单独预演和同步。
+
+新增离线测试放入 `tests/offline/`，在测试函数或 fixture 内导入依赖配置／存储的项目模块，避免收集阶段的全局初始化。可复用 `fake_llm`（逐次指定回复并记录请求）、`fixed_embedder`（显式文本向量）、`temporary_cache` 和 `temporary_sessions`；fixture 完成后还原补丁。存储 fixture 应在导入持有存储引用的业务模块之前使用，尚未覆盖所有业务单例的生命周期。
+
+默认测试验证隔离基础和已有局部行为，不代表 RAG／SSE／Agent 全链路、安全缺陷或评测质量均已通过。真实模型检查 `tests/test_smoke.py`、Ragas 导入检查 `tests/test_ragas.py` 和 Agent benchmark 保留为单独脚本，不在默认收集范围；真实检查须单独准备密钥、模型和数据。Ragas 检查使用 `uv run --locked --group eval python tests/test_ragas.py`。
+
+若系统默认 pytest 临时目录出现权限错误，可用 `--basetemp <新建且专用于测试的临时路径>`。pytest 会清理该路径，不能指定仓库、已有数据或共享目录。
+
 ### 运行评估
 
 ```bash
+# 人工样例指标演示（不代表真实检索对照结果）
+uv run --locked --group eval python scripts/demo_eval_metrics.py
+# 需要真实 LLM 评判时，显式添加 --with-ragas
+
 # RAG 消融实验
-python scripts/run_eval.py --testset ./data/testset/ground_truth.json --ablation
+uv run --locked --group eval python scripts/run_eval.py --testset ./data/testset/ground_truth.json --ablation
 
 # Agent Benchmark + 单元测试
-python tests/test_agent.py
-python tests/test_agent.py --unit-only
+uv run --locked python tests/test_agent.py
+uv run --locked python tests/test_agent.py --unit-only
 ```
 
 ---
