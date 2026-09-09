@@ -28,7 +28,7 @@ from src.agent.hooks import (
     HookPipeline,
     create_default_pipeline,
 )
-from src.agent.memory import MemoryManager, memory_manager
+from src.agent.memory import MemoryManager, MemoryTurn, memory_manager
 from src.agent.tools import ToolRegistry, ToolResult, tool_registry
 
 # ================================================================
@@ -128,6 +128,7 @@ class AgentHarness:
         """
         start_time = time.time()
         tool_calls_log = []
+        conversation_turns = [MemoryTurn(role="user", content=user_message)]
 
         try:
             # 1. 会话开始 Hook
@@ -173,8 +174,13 @@ class AgentHarness:
                             "tool": tool_name, "params": tool_params,
                             "blocked": True, "reason": hook_ctx.block_reason,
                         })
-                        self.memory.add_turn(session_id, "user", blocked_msg,
-                                                 metadata={"blocked": True})
+                        conversation_turns.append(
+                            MemoryTurn(
+                                role="tool",
+                                content=blocked_msg,
+                                metadata={"blocked": True},
+                            )
+                        )
                         continue
 
                     # 执行工具
@@ -197,9 +203,16 @@ class AgentHarness:
                         "success": result.success,
                         "latency_ms": round(result.latency_ms, 1),
                     })
-                    self.memory.add_turn(session_id, "user", tool_msg,
-                                         metadata={"tool_name": tool_name,
-                                                   "success": result.success})
+                    conversation_turns.append(
+                        MemoryTurn(
+                            role="tool",
+                            content=tool_msg,
+                            metadata={
+                                "tool_name": tool_name,
+                                "success": result.success,
+                            },
+                        )
+                    )
 
                     # Post-tool Hook
                     self._fire_hook(HookEvent.POST_TOOL_USE, session_id, {
@@ -217,7 +230,9 @@ class AgentHarness:
                     })
 
                     # 保存助手回复到记忆
-                    self.memory.add_turn(session_id, "assistant", final_answer)
+                    conversation_turns.append(
+                        MemoryTurn(role="assistant", content=final_answer)
+                    )
 
                     # Post-generation Hook
                     self._fire_hook(HookEvent.POST_GENERATION, session_id, {
@@ -235,7 +250,11 @@ class AgentHarness:
             # 4. 达最大迭代次数仍未产出答案
             if not final_answer:
                 final_answer = self._force_final_answer(messages)
-                self.memory.add_turn(session_id, "assistant", final_answer)
+                conversation_turns.append(
+                    MemoryTurn(role="assistant", content=final_answer)
+                )
+
+            self.memory.add_turns(session_id, conversation_turns)
 
             # 5. 会话结束 Hook
             total_latency = (time.time() - start_time) * 1000
@@ -263,11 +282,12 @@ class AgentHarness:
                 total_latency_ms=(time.time() - start_time) * 1000,
             )
 
-    def reset_session(self, session_id: str):
+    def reset_session(self, session_id: str) -> bool:
         """重置会话（/new 命令）"""
-        self.memory.clear_session(session_id)
+        existed = self.memory.clear_session(session_id)
         self._fire_hook(HookEvent.SESSION_END, session_id,
                         {"reason": "manual_reset"})
+        return existed
 
     # ================================================================
     # 异步流式入口（SSE）
@@ -290,6 +310,7 @@ class AgentHarness:
 
         start_time = time.time()
         tool_calls_log = []
+        conversation_turns = [MemoryTurn(role="user", content=user_message)]
 
         try:
             # 1. 会话开始
@@ -336,8 +357,13 @@ class AgentHarness:
                         messages.append({"role": "user", "content": blocked_msg})
                         tool_calls_log.append({"tool": tool_name, "params": tool_params,
                                                "blocked": True, "reason": hook_ctx.block_reason})
-                        self.memory.add_turn(session_id, "user", blocked_msg,
-                                             metadata={"blocked": True})
+                        conversation_turns.append(
+                            MemoryTurn(
+                                role="tool",
+                                content=blocked_msg,
+                                metadata={"blocked": True},
+                            )
+                        )
                         continue
 
                     # 执行工具（异步）
@@ -357,9 +383,16 @@ class AgentHarness:
                         "success": result.success,
                         "latency_ms": round(result.latency_ms, 1),
                     })
-                    self.memory.add_turn(session_id, "user", tool_msg,
-                                         metadata={"tool_name": tool_name,
-                                                   "success": result.success})
+                    conversation_turns.append(
+                        MemoryTurn(
+                            role="tool",
+                            content=tool_msg,
+                            metadata={
+                                "tool_name": tool_name,
+                                "success": result.success,
+                            },
+                        )
+                    )
 
                     yield f"data: {json.dumps({'step': 'tool_done', 'tool': tool_name, 'success': result.success}, ensure_ascii=False)}\n\n"
                     await _asyncio.sleep(0)
@@ -375,7 +408,9 @@ class AgentHarness:
                     self._fire_hook(HookEvent.PRE_GENERATION, session_id, {
                         "answer_length": len(final_answer),
                     })
-                    self.memory.add_turn(session_id, "assistant", final_answer)
+                    conversation_turns.append(
+                        MemoryTurn(role="assistant", content=final_answer)
+                    )
                     self._fire_hook(HookEvent.POST_GENERATION, session_id, {
                         "answer": final_answer[:200], "iterations": iteration,
                     })
@@ -388,7 +423,11 @@ class AgentHarness:
             # 4. 兜底：达到最大迭代仍未产出
             if not final_answer:
                 final_answer = await self._force_final_answer_async(messages)
-                self.memory.add_turn(session_id, "assistant", final_answer)
+                conversation_turns.append(
+                    MemoryTurn(role="assistant", content=final_answer)
+                )
+
+            self.memory.add_turns(session_id, conversation_turns)
 
             # 5. 流式输出最终答案（逐词）
             import re

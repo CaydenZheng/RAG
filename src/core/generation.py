@@ -7,15 +7,13 @@ GeneratorNode       → 调用 LLM 生成带引用的答案
 
 from typing import List
 
-from pocketflow import Node, AsyncNode
 from loguru import logger
+from pocketflow import AsyncNode, Node
 
 from config.settings import settings
-from src.llm import llm_client
 from src.infra.prompt_manager import prompt_manager
 from src.infra.session_store import session_store
 from src.utils.token_counter import count_tokens
-
 
 # ================================================================
 # P2-7: ContextBuilderNode
@@ -160,8 +158,7 @@ class GeneratorNode(AsyncNode):
         # 保存本轮对话
         if session_id:
             query = shared.get("query", "")
-            session_store.add_turn(session_id, "user", query)
-            session_store.add_turn(session_id, "assistant", answer)
+            session_store.append_exchange(session_id, query, answer)
             logger.info("💾 Session {} saved: {} turns total", session_id,
                          session_store.history_count(session_id))
 

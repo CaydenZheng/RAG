@@ -2,7 +2,7 @@
 结构化记忆管理。
 
 MEMORY.md     — 长期记忆（用户偏好、重要事实），全量注入 system prompt
-HISTORY.json  — 短期历史（按 session 存储），达到阈值时 LLM 自动压缩归档
+sessions.db   — RAG／Agent 共用的有序短期历史，达到阈值时 LLM 自动压缩归档
 
 压缩策略（三级）：
   1. 工具调用结果截断：超过 500 token 只保留前 200 + 后 200
@@ -12,12 +12,14 @@ HISTORY.json  — 短期历史（按 session 存储），达到阈值时 LLM 自
 
 import json
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from src.infra.session_store import SessionStore, SessionTurn, session_store
 from src.security.session_ids import (
     client_scope_from_scoped_session,
     validate_storage_session_id,
@@ -62,13 +64,19 @@ class MemoryManager:
       ├── long_term.md                 # 旧版单用户长期记忆
       ├── clients/{client_scope}/
       │   └── long_term.md             # HTTP 客户端长期记忆
-      └── sessions/{scoped_session_id}/
-          └── history.json             # 会话对话历史
+
+    短期历史保存在共享 SQLite sessions 表中；旧 history.json 仅用于首次迁移。
     """
 
-    def __init__(self, memory_dir: str = "memory", config: MemoryConfig = None):
+    def __init__(
+        self,
+        memory_dir: str = "memory",
+        config: MemoryConfig = None,
+        store: SessionStore | None = None,
+    ):
         self.memory_dir = Path(memory_dir)
         self.config = config or MemoryConfig()
+        self._store = store or SessionStore(str(self.memory_dir / "sessions.db"))
 
         # 确保目录存在
         self.memory_dir.mkdir(parents=True, exist_ok=True)
@@ -140,46 +148,116 @@ class MemoryManager:
     def _history_path(self, session_id: str, *, create_parent: bool = False) -> Path:
         return self._session_dir(session_id, create=create_parent) / "history.json"
 
-    def load_history(self, session_id: str) -> List[MemoryTurn]:
-        """加载会话历史"""
+    @staticmethod
+    def _as_memory_turn(turn: SessionTurn) -> MemoryTurn:
+        return MemoryTurn(
+            role=turn.role,
+            content=turn.content,
+            timestamp=turn.timestamp,
+            token_count=turn.token_count,
+            metadata=turn.metadata,
+        )
+
+    @staticmethod
+    def _as_session_turn(turn: MemoryTurn) -> SessionTurn:
+        return SessionTurn(
+            role=turn.role,
+            content=turn.content,
+            timestamp=turn.timestamp,
+            token_count=turn.token_count,
+            metadata=turn.metadata,
+        )
+
+    def _migrate_legacy_history(self, session_id: str) -> List[MemoryTurn]:
         path = self._history_path(session_id)
         if not path.exists():
             return []
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return [MemoryTurn(**t) for t in data]
-        except Exception as e:
-            logger.warning("Failed to load history for {}: {}", session_id, e)
+            legacy_turns = [
+                MemoryTurn(**item)
+                for item in json.loads(path.read_text(encoding="utf-8"))
+            ]
+        except Exception as exc:
+            logger.warning("Failed to load history for {}: {}", session_id, exc)
             return []
 
-    def save_history(self, session_id: str, turns: List[MemoryTurn]):
-        """保存会话历史"""
-        path = self._history_path(session_id, create_parent=True)
-        data = [{"role": t.role, "content": t.content,
-                 "timestamp": t.timestamp, "token_count": t.token_count,
-                 "metadata": t.metadata} for t in turns]
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        def import_if_empty(current: list[SessionTurn]) -> list[SessionTurn]:
+            if current:
+                return current
+            return [self._as_session_turn(turn) for turn in legacy_turns]
 
-    def add_turn(self, session_id: str, role: str, content: str,
-                 token_count: int = 0, metadata: dict = None):
-        """追加一次对话轮次，自动检测是否需要压缩"""
-        turns = self.load_history(session_id)
-        turns.append(MemoryTurn(role=role, content=content,
-                                token_count=token_count,
-                                metadata=metadata or {}))
+        stored = self._store.update_history(session_id, import_if_empty)
+        migrated_path = path.with_suffix(".json.migrated")
+        if migrated_path.exists():
+            path.unlink()
+        else:
+            path.replace(migrated_path)
+        return [self._as_memory_turn(turn) for turn in stored]
 
-        # 检查是否需要压缩
-        if len(turns) >= self.config.compress_trigger_turns:
-            turns = self._compress_history(turns)
+    def load_history(self, session_id: str) -> List[MemoryTurn]:
+        """Load ordered Agent history from the shared conversation store."""
+        session_id = validate_storage_session_id(session_id)
+        turns = self._store.get_turns(session_id)
+        if turns:
+            return [self._as_memory_turn(turn) for turn in turns]
+        return self._migrate_legacy_history(session_id)
 
-        self.save_history(session_id, turns)
+    def save_history(self, session_id: str, turns: List[MemoryTurn]) -> None:
+        """Atomically replace Agent history after compression or migration."""
+        session_id = validate_storage_session_id(session_id)
+        self._store.replace_history(
+            session_id, [self._as_session_turn(turn) for turn in turns]
+        )
 
-    def clear_session(self, session_id: str):
-        """清除会话历史（用户执行 /new 时调用）"""
+    def add_turn(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        token_count: int = 0,
+        metadata: dict | None = None,
+    ) -> None:
+        """Append one message while preserving its original role."""
+        self.add_turns(
+            session_id,
+            [
+                MemoryTurn(
+                    role=role,
+                    content=content,
+                    token_count=token_count,
+                    metadata=metadata or {},
+                )
+            ],
+        )
+
+    def add_turns(
+        self, session_id: str, new_turns: Iterable[MemoryTurn]
+    ) -> None:
+        """Append one complete Agent interaction as an atomic history update."""
+        session_id = validate_storage_session_id(session_id)
+        pending = list(new_turns)
+        if not pending:
+            return
+
+        def append_and_compress(current: list[SessionTurn]) -> list[SessionTurn]:
+            turns = [self._as_memory_turn(turn) for turn in current]
+            turns.extend(pending)
+            if len(turns) >= self.config.compress_trigger_turns:
+                turns = self._compress_history(turns)
+            return [self._as_session_turn(turn) for turn in turns]
+
+        self._store.update_history(session_id, append_and_compress)
+
+    def clear_session(self, session_id: str) -> bool:
+        """Clear shared history atomically and report whether it existed."""
+        session_id = validate_storage_session_id(session_id)
+        existed = self._store.clear(session_id)
         path = self._history_path(session_id)
         if path.exists():
             path.unlink()
+            existed = True
         logger.info("Session cleared: {}", session_id)
+        return existed
 
     # ================================================================
     # 构建 Agent 消息列表
@@ -327,4 +405,4 @@ class MemoryManager:
 # 全局单例
 # ================================================================
 
-memory_manager = MemoryManager()
+memory_manager = MemoryManager(store=session_store)

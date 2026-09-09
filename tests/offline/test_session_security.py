@@ -58,7 +58,9 @@ def session_clients(
 
     class AgentResetFlow:
         def run(self, shared: dict) -> None:
-            agent_memory.clear_session(shared["session_id"])
+            shared["session_found"] = agent_memory.clear_session(
+                shared["session_id"]
+            )
             shared["answer"] = "Session reset."
 
     monkeypatch.setattr(api, "get_online_flow", QueryFlow)
