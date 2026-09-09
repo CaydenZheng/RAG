@@ -320,9 +320,12 @@ def test_memory_compress_trigger():
     mm.clear_session(session_id)
 
     # 添加 6 轮对话，触发压缩
-    for i in range(6):
-        mm.add_turn(session_id, "user", f"Question {i}")
-        mm.add_turn(session_id, "assistant", f"Answer {i}")
+    from unittest.mock import patch
+    with patch.object(mm, "_llm_compress", return_value="Earlier questions and answers.") as compress:
+        for i in range(6):
+            mm.add_turn(session_id, "user", f"Question {i}")
+            mm.add_turn(session_id, "assistant", f"Answer {i}")
+    assert compress.called, "History must reach the compression boundary"
 
     history = mm.load_history(session_id)
     # 压缩后应该是 summary + 最近 N 轮的 4 条
