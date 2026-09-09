@@ -333,9 +333,13 @@ ragrag/
 │   │   ├── memory.py             #   两层记忆 + 三级压缩
 │   │   └── tools.py              #   工具注册 + 三级安全审批 + 去重
 │   │
-│   ├── api/                      # HTTP 数据模型与启动任务
+│   ├── api/                      # HTTP 数据模型、身份与启动任务
+│   │   ├── client_identity.py    #   HttpOnly 客户端身份与会话作用域
 │   │   ├── schemas.py            #   请求/响应模型
 │   │   └── startup.py            #   模型与 BM25 预热
+│   │
+│   ├── security/                 # 跨层安全边界
+│   │   └── session_ids.py        #   公开 ID 校验与内部作用域键
 │   │
 │   ├── orchestration/            # PocketFlow 顶层编排
 │   │   ├── rag.py                #   Offline / Online / Retrieval Flow
@@ -631,11 +635,19 @@ CREATE INDEX idx_session_time ON sessions(session_id, timestamp);
 | `/session/reset` | POST | 清除指定会话的历史 |
 | `/session/{session_id}` | GET | 查看会话历史（调试用） |
 
+#### 身份与会话边界
+
+服务器通过 `ragflow_client` HttpOnly Cookie 签发 128 位随机客户端身份，Cookie 使用 `SameSite=Strict`，在 HTTPS 下同时使用 `Secure`，页面脚本不能读取。公开 `session_id` 只允许 1–64 个 ASCII 字母、数字、下划线或连字符；空值仅在一问一答查询或由服务器自动生成 Agent 会话时允许。
+
+进入存储与 Agent 编排前，服务器按 RAG／Agent 命名空间、客户端身份和公开 ID 生成内部作用域键。响应只返回公开 ID。读取或删除只能命中当前 Cookie 身份下的数据，其他客户端请求同名会话得到 404；会话详情响应使用 `Cache-Control: no-store`。Agent 文件存储在边界再次校验内部键，拒绝路径分隔符、点路径、Unicode 和超长值。
+
+当前身份是匿名浏览器凭据，不提供账户登录或跨设备同步。API 客户端必须保存响应 Cookie；清除 Cookie 后无法访问此前身份下的会话。升级前未绑定身份的旧会话不会被自动认领，HTTP 会话也不会自动继承旧版全局长期记忆，避免第一个访问者取得旧数据。
+
 #### 前端集成
 
-- 页面首次加载时自动通过 `localStorage` 生成/恢复 `session_id`
-- "新会话"按钮清除 localStorage 并生成新 ID
-- 所有 `/query` 请求自动携带 `session_id`，用户无感知
+- 页面首次加载时通过 `localStorage` 生成或恢复公开 `session_id`，客户端身份由服务器 Cookie 管理
+- “新会话”按钮更新公开 ID
+- 所有 `/query` 请求自动携带公开 ID，浏览器自动携带 HttpOnly 身份 Cookie
 
 ### 7.10 异步编排
 

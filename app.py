@@ -23,12 +23,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from config.settings import settings
+from src.api.client_identity import ClientIdentityMiddleware, scope_request_session
 from src.api.schemas import (
     AgentChatRequest,
     AgentChatResponse,
@@ -57,6 +58,7 @@ app = FastAPI(
 )
 
 
+app.add_middleware(ClientIdentityMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.router.add_event_handler("startup", warm_up_runtime)
 
@@ -85,8 +87,11 @@ def health():
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query(req: QueryRequest):
+async def query(req: QueryRequest, request: Request):
     """检索问答（异步）"""
+    session = scope_request_session(
+        request, req.session_id, "rag", allow_empty=True
+    )
     query_id = uuid.uuid4().hex[:12]
     start = time.time()
 
@@ -95,7 +100,7 @@ async def query(req: QueryRequest):
 
     shared = {
         "query": req.query,
-        "session_id": req.session_id,
+        "session_id": session.storage_id,
         "filter": req.filter,
     }
 
@@ -161,6 +166,7 @@ async def upload(file: UploadFile = File(...)):
 
 @app.get("/query/stream")
 async def query_stream(
+    request: Request,
     query: str,
     session_id: str = "",
     top_k: int = 5,
@@ -181,8 +187,12 @@ async def query_stream(
     from src.infra.prompt_manager import prompt_manager
     from src.infra.session_store import session_store
 
+    session = scope_request_session(
+        request, session_id, "rag", allow_empty=True
+    )
+
     # --- 阶段 1: 检索 ---
-    shared = {"query": query, "session_id": session_id}
+    shared = {"query": query, "session_id": session.storage_id}
     try:
         retrieval_flow = get_retrieval_flow()
         await retrieval_flow.run_async(shared)
@@ -195,8 +205,8 @@ async def query_stream(
 
     # 加载会话历史
     history = []
-    if session_id:
-        history = session_store.get_recent_history(session_id, limit=6)
+    if session.storage_id:
+        history = session_store.get_recent_history(session.storage_id, limit=6)
 
     # --- 阶段 2: 流式生成 ---
     prompt_config = prompt_manager.get_prompt_config("answer_generation")
@@ -243,12 +253,12 @@ async def query_stream(
         answer = "".join(full_answer)
 
         # 保存会话
-        if session_id:
-            session_store.add_turn(session_id, "user", query)
-            session_store.add_turn(session_id, "assistant", answer)
+        if session.storage_id:
+            session_store.add_turn(session.storage_id, "user", query)
+            session_store.add_turn(session.storage_id, "assistant", answer)
 
         # 发送结束信号（含 sources）
-        yield f"data: {json.dumps({'done': True, 'answer': answer, 'sources': sources, 'session_id': session_id}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'done': True, 'answer': answer, 'sources': sources, 'session_id': session.public_id}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -270,20 +280,37 @@ async def query_stream(
 # ================================================================
 
 @app.post("/session/reset")
-def session_reset(session_id: str):
-    """重置 RAG 会话（清除对话历史）"""
+def session_reset(request: Request, session_id: str):
+    """重置当前客户端的 RAG 会话。"""
     from src.infra.session_store import session_store
-    session_store.clear(session_id)
-    return {"status": "ok", "session_id": session_id}
+
+    session = scope_request_session(request, session_id, "rag")
+    if session_store.history_count(session.storage_id) == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    session_store.clear(session.storage_id)
+    return {"status": "ok", "session_id": session.public_id}
 
 
 @app.get("/session/{session_id}")
-def session_detail(session_id: str):
-    """查看 RAG 会话历史（调试用）"""
+def session_detail(request: Request, response: Response, session_id: str):
+    """查看当前客户端的 RAG 会话历史。"""
     from src.infra.session_store import session_store
-    history = session_store.get_history(session_id, limit=50)
+
+    session = scope_request_session(request, session_id, "rag")
+    history = session_store.get_history(session.storage_id, limit=50)
+    response.headers["Cache-Control"] = "no-store"
+    if not history:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found",
+            headers={"Cache-Control": "no-store"},
+        )
     return {
-        "session_id": session_id,
+        "session_id": session.public_id,
         "total_turns": len(history),
         "history": history,
     }
@@ -294,10 +321,11 @@ def session_detail(session_id: str):
 # ================================================================
 
 @app.post("/agent/chat", response_model=AgentChatResponse)
-async def agent_chat(req: AgentChatRequest):
+async def agent_chat(req: AgentChatRequest, request: Request):
     """Agent 对话端点 — Plan-Execute-Observe 循环（异步版）"""
-    import uuid
-    session_id = req.session_id or uuid.uuid4().hex[:12]
+    session = scope_request_session(
+        request, req.session_id or uuid.uuid4().hex, "agent"
+    )
     start = time.time()
 
     # 使用 asyncio.to_thread 避免同步 flow 阻塞事件循环
@@ -306,7 +334,7 @@ async def agent_chat(req: AgentChatRequest):
 
     def _run_sync():
         flow = get_agent_flow()
-        shared = {"session_id": session_id, "user_message": req.message}
+        shared = {"session_id": session.storage_id, "user_message": req.message}
         try:
             flow.run(shared)
         except Exception as e:
@@ -318,7 +346,7 @@ async def agent_chat(req: AgentChatRequest):
     latency = (time.time() - start) * 1000
 
     return AgentChatResponse(
-        session_id=session_id,
+        session_id=session.public_id,
         answer=shared.get("answer", ""),
         tool_calls=shared.get("tool_calls", []),
         iterations=shared.get("iterations", 0),
@@ -329,6 +357,7 @@ async def agent_chat(req: AgentChatRequest):
 
 @app.get("/agent/chat/stream")
 async def agent_chat_stream(
+    request: Request,
     message: str,
     session_id: str = "",
 ):
@@ -345,9 +374,9 @@ async def agent_chat_stream(
       data: {"done": true, ...}
     """
     import asyncio as _asyncio
-    import uuid
-
-    session_id = session_id or uuid.uuid4().hex[:12]
+    session = scope_request_session(
+        request, session_id or uuid.uuid4().hex, "agent"
+    )
 
     from src.agent.harness import agent_harness
 
@@ -355,7 +384,14 @@ async def agent_chat_stream(
         yield "retry: 3000\n\n"
         await _asyncio.sleep(0)
 
-        async for event in agent_harness.run_async_stream(session_id, message):
+        async for event in agent_harness.run_async_stream(
+            session.storage_id, message
+        ):
+            if event.startswith("data: "):
+                payload = json.loads(event.removeprefix("data: "))
+                if payload.get("done"):
+                    payload["session_id"] = session.public_id
+                    event = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
             yield event
 
     return StreamingResponse(
@@ -370,22 +406,40 @@ async def agent_chat_stream(
 
 
 @app.post("/agent/reset")
-def agent_reset(session_id: str):
-    """重置 Agent 会话 — /new 命令"""
+def agent_reset(request: Request, session_id: str):
+    """重置当前客户端的 Agent 会话。"""
+    from src.agent.memory import memory_manager
+
+    session = scope_request_session(request, session_id, "agent")
+    if not memory_manager.load_history(session.storage_id):
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found",
+            headers={"Cache-Control": "no-store"},
+        )
     flow = get_agent_reset_flow()
-    shared = {"session_id": session_id}
+    shared = {"session_id": session.storage_id}
     flow.run(shared)
     return {"status": "ok", "message": shared.get("answer", "Session reset.")}
 
 
 @app.get("/agent/memory/{session_id}")
-def agent_memory(session_id: str):
-    """查看 Agent 会话记忆（调试用）"""
+def agent_memory(request: Request, response: Response, session_id: str):
+    """查看当前客户端的 Agent 会话记忆。"""
     from src.agent.memory import memory_manager
-    history = memory_manager.load_history(session_id)
-    long_term = memory_manager.long_term_memory
+
+    session = scope_request_session(request, session_id, "agent")
+    history = memory_manager.load_history(session.storage_id)
+    response.headers["Cache-Control"] = "no-store"
+    if not history:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    long_term = memory_manager.long_term_memory_for_session(session.storage_id)
     return {
-        "session_id": session_id,
+        "session_id": session.public_id,
         "long_term_memory": long_term[:500],
         "history_turns": len(history),
         "history": [{"role": t.role, "content": t.content[:200]} for t in history[-10:]],

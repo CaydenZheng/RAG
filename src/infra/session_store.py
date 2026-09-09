@@ -17,10 +17,12 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Dict, List
+
 from loguru import logger
 
 from config.settings import settings
+from src.security.session_ids import validate_storage_session_id
 
 
 class SessionStore:
@@ -67,6 +69,7 @@ class SessionStore:
     def add_turn(self, session_id: str, role: str, content: str,
                  metadata: dict = None):
         """追加一轮对话"""
+        session_id = validate_storage_session_id(session_id)
         with self._lock:
             with sqlite3.connect(self._db_path) as conn:
                 conn.execute(
@@ -88,6 +91,7 @@ class SessionStore:
         Returns:
             [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}, ...]
         """
+        session_id = validate_storage_session_id(session_id)
         with self._lock:
             with sqlite3.connect(self._db_path) as conn:
                 rows = conn.execute(
@@ -103,6 +107,7 @@ class SessionStore:
 
         用于追加到 LLM 上下文，确保不超过 token 预算。
         """
+        session_id = validate_storage_session_id(session_id)
         with self._lock:
             with sqlite3.connect(self._db_path) as conn:
                 rows = conn.execute(
@@ -116,6 +121,7 @@ class SessionStore:
 
     def history_count(self, session_id: str) -> int:
         """返回会话轮次总数"""
+        session_id = validate_storage_session_id(session_id)
         with self._lock:
             with sqlite3.connect(self._db_path) as conn:
                 row = conn.execute(
@@ -126,6 +132,7 @@ class SessionStore:
 
     def clear(self, session_id: str):
         """清除指定会话的全部历史"""
+        session_id = validate_storage_session_id(session_id)
         with self._lock:
             with sqlite3.connect(self._db_path) as conn:
                 conn.execute(
