@@ -1,0 +1,53 @@
+name: Offline checks
+
+on:
+  pull_request:
+  push:
+    branches: [master, ci/offline-checks]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    name: Offline / ${{ matrix.os }} / Python 3.13
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    env:
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.11"
+          python-version: "3.13"
+          enable-cache: false
+      - name: Check lock file
+        run: uv lock --check
+      - name: Install runtime and development dependencies
+        run: uv sync --locked --no-default-groups --group dev
+      - name: Check baseline code
+        run: uv run --no-sync --offline --no-env-file ruff check tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline scripts/demo_eval_metrics.py
+      - name: Run offline tests
+        run: uv run --no-sync --offline --no-env-file python -B -m pytest -q --junitxml="${{ runner.temp }}/offline-results.xml"
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-results-${{ matrix.os }}
+          path: ${{ runner.temp }}/offline-results.xml
+          if-no-files-found: ignore
+          retention-days: 7

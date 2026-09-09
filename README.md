@@ -1026,6 +1026,25 @@ uv run --no-sync --no-env-file python -B -m pytest -q
 
 若系统默认 pytest 临时目录出现权限错误，可用 `--basetemp <新建且专用于测试的临时路径>`。pytest 会清理该路径，不能指定仓库、已有数据或共享目录。
 
+### 自动检查（CI）
+
+[Offline checks](.github/workflows/offline-checks.yml) 在 PR 创建／更新／重新打开，以及推送到 `master` 或 `ci/offline-checks` 时运行；工作流进入默认分支后也可从 Actions 手动触发。Ubuntu 24.04 与 Windows 2022 分别使用 Python 3.13、uv 0.12.11，校验锁文件、安装 runtime + dev 依赖、运行 Ruff 和默认离线测试。安装依赖需要联网，测试不需要仓库密钥、模型权重或真实数据。
+
+Ruff 的版本、目标 Python 与规则统一维护在 `pyproject.toml`；本阶段的静态检查范围是离线测试基础、`tests/offline/` 和指标演示入口。完整类型检查、安全扫描及其余业务代码的规范收敛仍待后续完善。
+
+依赖已安装时，可在仓库根目录执行同样的检查：
+
+```powershell
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
+uv lock --check --offline
+uv run --no-sync --offline --no-env-file ruff check tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline scripts/demo_eval_metrics.py
+uv run --no-sync --offline --no-env-file python -B -m pytest -q
+```
+
+共享环境先按上节设置 `UV_PROJECT_ENVIRONMENT`。`PYTEST_DISABLE_PLUGIN_AUTOLOAD` 只影响当前终端中后续启动的 pytest；启用额外插件的其他测试需另开终端或还原该变量。
+
+每个系统的测试结果以 JUnit XML 上传为 `offline-results-<系统>`，保留 7 天，可在 Actions 对应运行的 Artifacts 下载。安装或检查提前失败时可能尚无测试报告，应查看失败步骤日志；某一系统失败不会取消另一系统。当前锁文件在 Linux 包含较大的 CUDA 依赖，首次运行需观察安装耗时和磁盘占用。是否通过以对应提交的 Actions 结果为准，本地验证不能代替 Linux 或云端运行结果。
+
 ### 运行评估
 
 ```bash
