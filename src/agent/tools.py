@@ -288,7 +288,7 @@ def _create_search_kb_tool() -> ToolDef:
 
         try:
             # 复用现有 Online Flow
-            from flow import get_online_flow
+            from src.orchestration.rag import get_online_flow
             flow = get_online_flow()
             shared = {"query": query}
 

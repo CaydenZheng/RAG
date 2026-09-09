@@ -14,19 +14,22 @@ Agent 核心循环。
   - 集成 ToolRegistry（三级审批 + 参数校验 + 去重）
 """
 
-import json
 import asyncio
+import json
 import time
-import uuid
-from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
 from dataclasses import dataclass, field
+from typing import Any, AsyncGenerator, Dict, List
+
 from loguru import logger
 
-from src.agent.hooks import HookPipeline, HookContext, HookEvent, create_default_pipeline
-from src.agent.memory import MemoryManager, MemoryConfig, memory_manager
-from src.agent.tools import ToolRegistry, ToolResult, SafetyLevel, tool_registry
-
+from src.agent.hooks import (
+    HookContext,
+    HookEvent,
+    HookPipeline,
+    create_default_pipeline,
+)
+from src.agent.memory import MemoryManager, memory_manager
+from src.agent.tools import ToolRegistry, ToolResult, tool_registry
 
 # ================================================================
 # 数据模型
@@ -422,8 +425,7 @@ class AgentHarness:
 
     async def _search_kb_async(self, params: dict, session_id: str):
         """异步知识库检索 — 重用 async RAG flow。"""
-        from flow import get_online_flow
-        from src.agent.tools import ToolResult
+        from src.orchestration.rag import get_online_flow
 
         query = params["query"]
         top_k = params.get("top_k", 5)
@@ -502,8 +504,8 @@ class AgentHarness:
 
     def _plan(self, messages: List[dict]) -> dict:
         """同步版规划（兼容旧代码）。"""
-        from src.llm import llm_client
         from config.settings import settings as _s
+        from src.llm import llm_client
 
         model = self.config.planner_model or _s.llm_model
         raw = llm_client.chat(
@@ -515,8 +517,8 @@ class AgentHarness:
 
     async def _plan_async(self, messages: List[dict]) -> dict:
         """异步版规划（流式 Agent 用）。"""
-        from src.llm import llm_client
         from config.settings import settings as _s
+        from src.llm import llm_client
 
         model = self.config.planner_model or _s.llm_model
         raw = await llm_client.chat_async(

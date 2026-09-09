@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAGFlow</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
+  .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+  .header { text-align: center; margin-bottom: 32px; }
+  .header h1 { font-size: 28px; font-weight: 700; color: #1a1a2e; }
+  .header p { color: #888; margin-top: 4px; font-size: 14px; }
+  .search-box { display: flex; gap: 10px; margin-bottom: 24px; }
+  .search-box input { flex: 1; padding: 14px 18px; border: 2px solid #e0e0e0; border-radius: 12px; font-size: 15px; outline: none; transition: border .2s; }
+  .search-box input:focus { border-color: #4f46e5; }
+  .search-box button { padding: 14px 28px; background: #4f46e5; color: #fff; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; transition: background .2s; }
+  .search-box button:hover { background: #4338ca; }
+  .search-box button:disabled { background: #a5b4fc; cursor: not-allowed; }
+  .search-box button.stop { background: #dc2626; display: none; }
+  .search-box button.stop:hover { background: #b91c1c; }
+  .search-box button.stop.active { display: inline-block; }
+  .loading { text-align: center; color: #888; display: none; margin-bottom: 20px; }
+  .loading.active { display: block; }
+  .result { display: none; }
+  .result.active { display: block; }
+  .answer-card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .answer-card h2 { font-size: 16px; color: #4f46e5; margin-bottom: 12px; }
+  .answer-text { line-height: 1.75; font-size: 15px; white-space: pre-wrap; word-break: break-word; }
+  .answer-text.streaming::after { content: '|'; color: #4f46e5; animation: blink 1s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .sources-title { font-size: 16px; font-weight: 600; color: #1a1a2e; margin-bottom: 12px; }
+  .source-card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06); border-left: 3px solid #4f46e5; }
+  .source-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px; }
+  .source-ref { font-weight: 700; color: #4f46e5; }
+  .source-file { color: #888; }
+  .source-score { background: #eef2ff; color: #4f46e5; padding: 2px 10px; border-radius: 20px; font-weight: 600; font-size: 12px; }
+  .source-text { font-size: 13px; color: #555; line-height: 1.6; }
+  .latency { text-align: center; color: #aaa; font-size: 12px; margin-top: 16px; }
+  .error { background: #fef2f2; color: #dc2626; padding: 16px; border-radius: 10px; display: none; }
+  .error.active { display: block; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>&#128269; RAGFlow</h1>
+    <p>基于 PocketFlow 的高级 RAG 系统 &middot; 混合检索 + Rerank &middot; <a href="#" onclick="newSession()" style="color:#4f46e5">🔄 新会话</a> &middot; <a href="/agent" style="color:#4f46e5">🤖 Agent 模式</a></p>
+  </div>
+
+  <div class="search-box">
+    <input id="queryInput" type="text" placeholder="输入问题，例如：What is the half-life of actinium?" autofocus
+           onkeydown="if(event.key==='Enter')search()">
+    <button id="searchBtn" onclick="search()">搜索</button>
+    <button id="stopBtn" class="stop" onclick="stopSearch()">⏹ 停止</button>
+  </div>
+
+  <div id="loading" class="loading">&#9203; 检索中，请稍候...</div>
+  <div id="error" class="error"></div>
+
+  <div id="result" class="result">
+    <div class="answer-card">
+      <h2>&#128172; 答案</h2>
+      <div id="answer" class="answer-text"></div>
+    </div>
+
+    <div class="sources-title">&#128214; 引用来源（共 <span id="sourceCount">0</span> 条）</div>
+    <div id="sources"></div>
+
+    <div class="latency">&#9201; 耗时 <span id="latency">0</span> ms</div>
+  </div>
+</div>
+
+<script>
+// 会话管理
+const SESSION_KEY = 'ragflow_session_id';
+let sessionId = localStorage.getItem(SESSION_KEY);
+if (!sessionId) {
+  sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 14);
+  localStorage.setItem(SESSION_KEY, sessionId);
+}
+
+let currentEventSource = null;
+
+function stopSearch() {
+  if (currentEventSource) {
+    currentEventSource.close();
+    currentEventSource = null;
+  }
+  document.getElementById('searchBtn').disabled = false;
+  document.getElementById('searchBtn').style.display = '';
+  document.getElementById('stopBtn').classList.remove('active');
+  document.getElementById('loading').classList.remove('active');
+  var ael = document.getElementById('answer');
+  ael.classList.remove('streaming');
+  if (!ael.textContent) {
+    ael.textContent = '⏹ 已终止';
+  }
+  document.getElementById('latency').textContent = '—';
+}
+
+function search() {
+  const q = document.getElementById('queryInput').value.trim();
+  if (!q) return;
+
+  // 终止上一个请求
+  stopSearch();
+
+  const btn = document.getElementById('searchBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const loading = document.getElementById('loading');
+  const result = document.getElementById('result');
+  const error = document.getElementById('error');
+  const answerEl = document.getElementById('answer');
+
+  btn.style.display = 'none';
+  stopBtn.classList.add('active');
+  loading.classList.add('active');
+  error.classList.remove('active');
+  answerEl.textContent = '';
+  answerEl.classList.add('streaming');
+  document.getElementById('sources').innerHTML = '';
+  document.getElementById('sourceCount').textContent = '0';
+  // 关键：让结果容器立刻可见，这样 rAF 逐词更新才能被用户感知
+  result.classList.add('active');
+
+  const url = '/query/stream?query=' + encodeURIComponent(q) +
+              '&session_id=' + encodeURIComponent(sessionId);
+  const evtSource = new EventSource(url);
+  currentEventSource = evtSource;
+
+  // ====== rAF 队列渲染器 ======
+  const TYPING_INTERVAL = 35;  // ms 间隔，控制打字速度（越小越快）
+  const chunkQueue = [];
+  let fullAnswer = '';
+  let animating = false;
+  let finished = false;
+  let lastRenderTime = 0;
+  let firstRender = true;
+  const startTime = Date.now();
+
+  function renderFrame(timestamp) {
+    // 队列清空 → 停止循环；若流已结束则收尾
+    if (chunkQueue.length === 0) {
+      animating = false;
+      if (finished) finishRendering();
+      return;
+    }
+
+    // 时间闸门：距上次渲染不足 TYPING_INTERVAL 则跳过本帧
+    if (firstRender || timestamp - lastRenderTime >= TYPING_INTERVAL) {
+      fullAnswer += chunkQueue.shift();
+      answerEl.textContent = fullAnswer;
+      lastRenderTime = timestamp;
+      firstRender = false;
+    }
+
+    requestAnimationFrame(renderFrame);
+  }
+
+  function finishRendering() {
+    answerEl.classList.remove('streaming');
+    evtSource.close();
+    currentEventSource = null;
+    btn.style.display = '';
+    stopBtn.classList.remove('active');
+    loading.classList.remove('active');
+    result.classList.add('active');
+    document.getElementById('latency').textContent = (Date.now() - startTime);
+  }
+
+  // ====== SSE 事件处理 ======
+  evtSource.onmessage = function(e) {
+    const data = JSON.parse(e.data);
+
+    if (data.error) {
+      loading.classList.remove('active');
+      answerEl.classList.remove('streaming');
+      error.textContent = '\u26a0\ufe0f ' + data.error;
+      error.classList.add('active');
+      btn.style.display = '';
+      stopBtn.classList.remove('active');
+      currentEventSource = null;
+      evtSource.close();
+      return;
+    }
+
+    if (data.chunk && data.chunk.length > 0) {
+      // 首个 chunk 到达 → 流式已启动，隐藏 loading 让用户注意力回到结果区
+      if (!animating) {
+        loading.classList.remove('active');
+      }
+      // 保留空格分片（给词间留空），只过滤零长度空串
+      chunkQueue.push(data.chunk);
+      if (!animating) {
+        animating = true;
+        requestAnimationFrame(renderFrame);
+      }
+    }
+
+    if (data.done) {
+      finished = true;
+      document.getElementById('sourceCount').textContent = data.sources.length;
+      document.getElementById('sources').innerHTML = data.sources.map(s => `
+        <div class="source-card">
+          <div class="source-meta">
+            <span class="source-ref">[${s.ref}]</span>
+            <span class="source-file">${s.source || 'unknown'}</span>
+            <span class="source-score">${s.score.toFixed(4)}</span>
+          </div>
+          <div class="source-text">${s.text.slice(0, 300)}${s.text.length > 300 ? '...' : ''}</div>
+        </div>
+      `).join('');
+      if (!animating) finishRendering();
+    }
+  };
+
+  evtSource.onerror = function() {
+    // 正常结束：finished 已为 true，finishRendering() 已/将负责收尾 → 什么都不做
+    if (finished) return;
+    // 异常中断：loading 还在、没有收到任何答案 → 显示错误
+    evtSource.close();
+    currentEventSource = null;
+    loading.classList.remove('active');
+    answerEl.classList.remove('streaming');
+    btn.style.display = '';
+    stopBtn.classList.remove('active');
+    error.textContent = '\u26a0\ufe0f 连接中断或查询失败，请稍后重试';
+    error.classList.add('active');
+  };
+}
+
+function newSession() {
+  if (confirm('开始新会话？当前对话历史将被清除。')) {
+    sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 14);
+    localStorage.setItem(SESSION_KEY, sessionId);
+    document.getElementById('result').classList.remove('active');
+    document.getElementById('queryInput').value = '';
+    document.getElementById('queryInput').focus();
+  }
+}
+</script>
+</body>
+</html>

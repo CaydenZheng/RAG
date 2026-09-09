@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAGFlow Agent</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
+  .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+  .header { text-align: center; margin-bottom: 24px; }
+  .header h1 { font-size: 28px; font-weight: 700; color: #1a1a2e; }
+  .header p { color: #888; margin-top: 4px; font-size: 14px; }
+  .header a { color: #4f46e5; text-decoration: none; }
+  .input-box { display: flex; gap: 10px; margin-bottom: 20px; }
+  .input-box input { flex: 1; padding: 14px 18px; border: 2px solid #e0e0e0; border-radius: 12px; font-size: 15px; outline: none; transition: border .2s; }
+  .input-box input:focus { border-color: #4f46e5; }
+  .input-box button { padding: 14px 24px; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; transition: background .2s; }
+  #sendBtn { background: #4f46e5; color: #fff; }
+  #sendBtn:hover { background: #4338ca; }
+  #stopBtn { background: #dc2626; color: #fff; display: none; }
+  #stopBtn:hover { background: #b91c1c; }
+  #stopBtn.active { display: inline-block; }
+  .chat-area { margin-bottom: 16px; }
+  .thinking { margin-bottom: 16px; }
+  .step { background: #fff; border-radius: 10px; padding: 14px 18px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.06); font-size: 14px; display: flex; align-items: flex-start; gap: 10px; }
+  .step-icon { font-size: 18px; flex-shrink: 0; }
+  .step-content { flex: 1; line-height: 1.6; }
+  .step-meta { color: #888; font-size: 12px; margin-top: 4px; }
+  .step-detail { background: #f8f9fa; border-radius: 8px; padding: 10px 14px; margin-top: 6px; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow-y: auto; cursor: pointer; color: #555; }
+  .step-detail.collapsed { max-height: 0; padding: 0; overflow: hidden; }
+  .answer-card { background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,.08); border-left: 3px solid #4f46e5; }
+  .answer-card h2 { font-size: 16px; color: #4f46e5; margin-bottom: 12px; }
+  .answer-text { line-height: 1.75; font-size: 15px; white-space: pre-wrap; word-break: break-word; min-height: 24px; }
+  .answer-text.streaming::after { content: '|'; color: #4f46e5; animation: blink 1s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .answer-text.placeholder { color: #bbb; font-style: italic; }
+  .loading { text-align: center; color: #888; display: none; margin: 12px 0; }
+  .loading.active { display: block; }
+  .latency { text-align: center; color: #aaa; font-size: 12px; margin-top: 12px; }
+  .error { background: #fef2f2; color: #dc2626; padding: 16px; border-radius: 10px; display: none; margin-bottom: 12px; }
+  .error.active { display: block; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🤖 RAGFlow Agent</h1>
+    <p>Plan → Execute → Observe 循环 &middot; <a href="#" onclick="newSession()">🔄 新会话</a> &middot; <a href="/">🔍 RAG 搜索</a></p>
+  </div>
+
+  <div class="input-box">
+    <input id="msgInput" type="text" placeholder="输入消息，例如：search knowledge base for gradient descent" autofocus
+           onkeydown="if(event.key==='Enter')send()">
+    <button id="sendBtn" onclick="send()">发送</button>
+    <button id="stopBtn" onclick="stopAgent()">⏹ 停止</button>
+  </div>
+
+  <div id="loading" class="loading">🤔 Agent 思考中...</div>
+  <div id="error" class="error"></div>
+
+  <div class="chat-area">
+    <div id="thinking"></div>
+    <div id="answerCard" class="answer-card" style="display:none">
+      <h2>💬 最终答案</h2>
+      <div id="answer" class="answer-text"></div>
+    </div>
+  </div>
+
+  <div class="latency">⏱ 耗时 <span id="latency">—</span> &middot; 迭代 <span id="iterCount">—</span> 轮</div>
+</div>
+
+<script>
+// 会话管理
+const SESSION_KEY = 'ragflow_agent_session';
+let sessionId = localStorage.getItem(SESSION_KEY);
+if (!sessionId) {
+  sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 14);
+  localStorage.setItem(SESSION_KEY, sessionId);
+}
+
+let currentEventSource = null;
+
+function stopAgent() {
+  if (currentEventSource) {
+    currentEventSource.close();
+    currentEventSource = null;
+  }
+  document.getElementById('sendBtn').style.display = '';
+  document.getElementById('stopBtn').classList.remove('active');
+  document.getElementById('loading').classList.remove('active');
+  var ael = document.getElementById('answer');
+  ael.classList.remove('streaming');
+  if (!ael.textContent) {
+    ael.textContent = '⏹ 已终止';
+    document.getElementById('answerCard').style.display = 'block';
+  }
+}
+
+function send() {
+  var msg = document.getElementById('msgInput').value.trim();
+  if (!msg) return;
+
+  stopAgent();
+
+  var sendBtn = document.getElementById('sendBtn');
+  var stopBtn = document.getElementById('stopBtn');
+  var loading = document.getElementById('loading');
+  var error = document.getElementById('error');
+  var thinking = document.getElementById('thinking');
+  var answerEl = document.getElementById('answer');
+  var answerCard = document.getElementById('answerCard');
+
+  sendBtn.style.display = 'none';
+  stopBtn.classList.add('active');
+  loading.classList.add('active');
+  error.classList.remove('active');
+  error.textContent = '';
+  thinking.innerHTML = '';
+  answerEl.textContent = '';
+  answerEl.classList.add('streaming');
+  answerEl.classList.remove('placeholder');
+  answerCard.style.display = 'none';
+  document.getElementById('latency').textContent = '—';
+  document.getElementById('iterCount').textContent = '—';
+
+  var url = '/agent/chat/stream?message=' + encodeURIComponent(msg) +
+            '&session_id=' + encodeURIComponent(sessionId);
+  var evtSource = new EventSource(url);
+  currentEventSource = evtSource;
+
+  // ====== rAF 渲染器 ======
+  var TYPING_INTERVAL = 35;
+  var chunkQueue = [];
+  var fullAnswer = '';
+  var animating = false;
+  var finished = false;
+  var lastRenderTime = 0;
+  var firstRender = true;
+  var startTime = Date.now();
+  var iterCount = 0;
+
+  function renderFrame(timestamp) {
+    if (chunkQueue.length === 0) {
+      animating = false;
+      if (finished) finishRendering();
+      return;
+    }
+    if (firstRender || timestamp - lastRenderTime >= TYPING_INTERVAL) {
+      fullAnswer += chunkQueue.shift();
+      answerEl.textContent = fullAnswer;
+      lastRenderTime = timestamp;
+      firstRender = false;
+    }
+    requestAnimationFrame(renderFrame);
+  }
+
+  function linkify(text) {
+    // 将纯文本 URL 转为可点击链接（排除空白和 HTML 敏感字符）
+    return text.replace(/(https?:\/\/[^\s<>"']+)/g,
+      '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  }
+
+  function finishRendering() {
+    answerEl.classList.remove('streaming');
+    // 打字结束，将纯文本 URL 转为可点击的 <a> 链接
+    answerEl.innerHTML = linkify(fullAnswer);
+    evtSource.close();
+    currentEventSource = null;
+    sendBtn.style.display = '';
+    stopBtn.classList.remove('active');
+    loading.classList.remove('active');
+    answerCard.style.display = 'block';
+    document.getElementById('latency').textContent = (Date.now() - startTime) + ' ms';
+    document.getElementById('iterCount').textContent = iterCount;
+  }
+
+  // ====== SSE 事件处理 ======
+  evtSource.onmessage = function(e) {
+    var data = JSON.parse(e.data);
+
+    if (data.error) {
+      loading.classList.remove('active');
+      answerEl.classList.remove('streaming');
+      error.textContent = '⚠️ ' + data.error;
+      error.classList.add('active');
+      sendBtn.style.display = '';
+      stopBtn.classList.remove('active');
+      currentEventSource = null;
+      evtSource.close();
+      return;
+    }
+
+    // 思考步骤
+    if (data.step === 'planning') {
+      loading.classList.remove('active');
+      iterCount = data.iteration;
+      var div = document.createElement('div');
+      div.className = 'step';
+      div.innerHTML = '<span class="step-icon">🤔</span><div class="step-content">第 ' + data.iteration + ' 轮规划中…</div>';
+      thinking.appendChild(div);
+      thinking.scrollTop = thinking.scrollHeight;
+      return;
+    }
+
+    if (data.step === 'tool_call') {
+      var paramsStr = JSON.stringify(data.params, null, 2);
+      var div = document.createElement('div');
+      div.className = 'step';
+      div.innerHTML = '<span class="step-icon">🔧</span><div class="step-content">调用工具: <b>' + escHtml(data.tool) + '</b>' +
+        '<div class="step-detail collapsed" onclick="this.classList.toggle(\'collapsed\')">' + escHtml(paramsStr) + '</div></div>';
+      thinking.appendChild(div);
+      thinking.scrollTop = thinking.scrollHeight;
+      return;
+    }
+
+    if (data.step === 'tool_done') {
+      var icon = data.success ? '✅' : '❌';
+      var div = document.createElement('div');
+      div.className = 'step';
+      div.innerHTML = '<span class="step-icon">' + icon + '</span><div class="step-content">工具 <b>' + escHtml(data.tool) + '</b> ' + (data.success ? '完成' : '失败') + '</div>';
+      thinking.appendChild(div);
+      thinking.scrollTop = thinking.scrollHeight;
+      return;
+    }
+
+    // 答案逐词
+    if (data.chunk && data.chunk.length > 0) {
+      if (!animating) {
+        answerCard.style.display = 'block';
+        loading.classList.remove('active');
+      }
+      chunkQueue.push(data.chunk);
+      if (!animating) {
+        animating = true;
+        requestAnimationFrame(renderFrame);
+      }
+      return;
+    }
+
+    // 完成
+    if (data.done) {
+      finished = true;
+      if (data.iterations) iterCount = data.iterations;
+      if (!animating) finishRendering();
+      return;
+    }
+  };
+
+  evtSource.onerror = function() {
+    if (finished) return;
+    evtSource.close();
+    currentEventSource = null;
+    loading.classList.remove('active');
+    answerEl.classList.remove('streaming');
+    sendBtn.style.display = '';
+    stopBtn.classList.remove('active');
+    error.textContent = '⚠️ 连接中断或 Agent 处理失败，请稍后重试';
+    error.classList.add('active');
+  };
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function newSession() {
+  if (confirm('开始新会话？当前对话历史将被清除。')) {
+    sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 14);
+    localStorage.setItem(SESSION_KEY, sessionId);
+    document.getElementById('thinking').innerHTML = '';
+    document.getElementById('answer').textContent = '';
+    document.getElementById('answerCard').style.display = 'none';
+    document.getElementById('msgInput').value = '';
+    document.getElementById('msgInput').focus();
+    document.getElementById('latency').textContent = '—';
+    document.getElementById('iterCount').textContent = '—';
+  }
+}
+</script>
+</body>
+</html>
