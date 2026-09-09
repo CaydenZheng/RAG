@@ -343,9 +343,16 @@ ragrag/
 │   │
 │   ├── web/                      # 浏览器页面资源
 │   │   ├── pages.py              #   与工作目录无关的页面加载
-│   │   └── pages/
-│   │       ├── search.html
-│   │       └── agent.html
+│   │   ├── pages/
+│   │   │   ├── search.html
+│   │   │   └── agent.html
+│   │   └── static/               #   页面公共样式与安全 DOM 渲染脚本
+│   │       ├── common.css
+│   │       ├── search.css
+│   │       ├── agent.css
+│   │       ├── rendering.js
+│   │       ├── search.js
+│   │       └── agent.js
 │   │
 │   └── utils/                    # 工具函数
 │       ├── __init__.py
@@ -878,6 +885,12 @@ logger.info("Retrieval completed", extra={
     "latency_ms": 320
 })
 ```
+
+### 9.5 页面输出安全
+
+搜索页和 Agent 页只通过 `textContent`、文本节点及受控 DOM 元素展示文档、来源、模型回答、工具名和工具参数，不把外部内容拼接为 HTML。回答中的链接只识别 `http://` 与 `https://`，新窗口链接使用 `noopener noreferrer`。
+
+页面样式和脚本位于 `src/web/static/`，不使用内联脚本、事件处理器或内联样式。HTML 响应通过 Content Security Policy 仅允许同源脚本和样式，并禁用 object、base 和 frame；同时发送 `Referrer-Policy: no-referrer` 与 `X-Content-Type-Options: nosniff`。
 
 ---
 
