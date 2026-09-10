@@ -297,7 +297,7 @@ class SessionStore:
                 "DELETE FROM sessions WHERE session_id = ?", (session_id,)
             )
         existed = cursor.rowcount > 0
-        logger.info("Session cleared: {}", session_id)
+        logger.info("Session cleared")
         return existed
 
     def list_sessions(self) -> list[str]:

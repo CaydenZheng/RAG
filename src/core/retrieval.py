@@ -17,6 +17,7 @@ from config.settings import settings
 from src.core.index_versions import CandidateBatch
 from src.infra.index_catalog import index_catalog
 from src.infra.prompt_manager import prompt_manager
+from src.infra.tracer import tracer
 from src.llm import llm_client
 from src.utils.bm25_store import bm25_store
 
@@ -41,14 +42,15 @@ class QueryRewriterNode(AsyncNode):
         if not query.strip():
             return [query]
 
-        logger.info("🔄 Rewriting query: {}", query[:80])
+        logger.info("Rewriting query: chars={}", len(query))
 
         try:
             messages = prompt_manager.render_chat_messages(
                 "query_rewrite", query=query
             )
 
-            resp = await llm_client.chat_async(messages, temperature=0.2)
+            with tracer.stage("query_rewrite_llm"):
+                resp = await llm_client.chat_async(messages, temperature=0.2)
 
             # 解析 YAML — 兼容两种格式
             if "```yaml" in resp:
@@ -65,8 +67,10 @@ class QueryRewriterNode(AsyncNode):
             else:
                 rewritten = [query]
 
-        except Exception as e:
-            logger.warning("Query rewrite failed: {}, using original", e)
+        except Exception as exc:
+            logger.warning(
+                "Query rewrite failed: {}; using original", type(exc).__name__
+            )
             rewritten = [query]
 
         # 始终保留原 query 作为兜底
@@ -239,7 +243,9 @@ class HybridRetrieverNode(Node):
                     "metadata": result["metadatas"][0] if result["metadatas"] else {},
                 }
         except Exception as exc:
-            logger.warning("Failed to fetch scoped chunk {}: {}", chunk_id, exc)
+            logger.warning(
+                "Failed to fetch scoped chunk: {}", type(exc).__name__
+            )
         return None
 
     def _get_collection(self, collection_name: str):

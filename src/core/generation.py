@@ -7,6 +7,7 @@ GeneratorNode       → 复用统一消息并约束答案引用
 
 import asyncio
 import re
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import List
@@ -18,6 +19,7 @@ from config.settings import settings
 from src.core.index_versions import LEGACY_INDEX_VERSION
 from src.infra.prompt_manager import prompt_manager
 from src.infra.session_store import session_store
+from src.infra.tracer import tracer
 from src.llm import llm_client
 from src.utils.token_counter import count_tokens
 
@@ -160,13 +162,14 @@ class AnswerService:
         from src.infra.fallback import chat_with_fallback_async
 
         config = self._config()
-        answer = await chat_with_fallback_async(
-            self._messages(answer_input),
-            model=config["model"],
-            temperature=config["temperature"],
-            max_tokens=config["max_tokens"],
-            index_version=answer_input.index_version,
-        )
+        with tracer.stage("answer_generation"):
+            answer = await chat_with_fallback_async(
+                self._messages(answer_input),
+                model=config["model"],
+                temperature=config["temperature"],
+                max_tokens=config["max_tokens"],
+                index_version=answer_input.index_version,
+            )
         return sanitize_answer_citations(
             answer,
             set(answer_input.valid_citation_refs),
@@ -177,17 +180,19 @@ class AnswerService:
         citation_guard = CitationStreamGuard(
             set(answer_input.valid_citation_refs)
         )
-        provider_stream = llm_client.chat_stream_async(
-            self._messages(answer_input),
-            model=config["model"],
-            temperature=config["temperature"],
-            max_tokens=config["max_tokens"],
-        )
+        with tracer.stage("answer_generation"):
+            provider_stream = llm_client.chat_stream_async(
+                self._messages(answer_input),
+                model=config["model"],
+                temperature=config["temperature"],
+                max_tokens=config["max_tokens"],
+            )
         try:
-            async for chunk in provider_stream:
-                safe_chunk = citation_guard.feed(chunk)
-                if safe_chunk:
-                    yield safe_chunk
+            with tracer.stage("answer_generation"):
+                async for chunk in provider_stream:
+                    safe_chunk = citation_guard.feed(chunk)
+                    if safe_chunk:
+                        yield safe_chunk
         except asyncio.CancelledError:
             logger.info("Answer generation cancelled")
             raise
@@ -210,8 +215,7 @@ class AnswerService:
             answer,
         )
         logger.info(
-            "💾 Session {} saved: {} turns total",
-            answer_input.session_id,
+            "Session exchange saved: {} turns total",
             session_store.history_count(answer_input.session_id),
         )
 
@@ -238,6 +242,7 @@ class ContextBuilderNode(Node):
         )
 
     def exec(self, inputs: tuple[list[dict], str]) -> dict:
+        started_at = time.perf_counter()
         chunks, session_id = inputs
         history = self._load_history(session_id)
 
@@ -260,6 +265,14 @@ class ContextBuilderNode(Node):
             evidence_budget,
         )
 
+        tracer.add_span(
+            None,
+            "context_build",
+            (time.perf_counter() - started_at) * 1000,
+            history_tokens=history_tokens,
+            evidence_tokens=evidence_tokens,
+            sources=len(sources),
+        )
         logger.info(
             "Answer input built: {} history + {} evidence tokens / {} available",
             history_tokens,
@@ -288,9 +301,8 @@ class ContextBuilderNode(Node):
         )
         if history:
             logger.info(
-                "📜 Loaded {} history turns for session {}",
+                "Loaded {} history turns",
                 len(history),
-                session_id,
             )
         return history
 
@@ -401,7 +413,7 @@ class GeneratorNode(AsyncNode):
         return AnswerInput.from_shared(shared)
 
     async def exec_async(self, answer_input: AnswerInput) -> str:
-        logger.info("✍️ Generating answer for: {}", answer_input.query[:80])
+        logger.info("Generating answer: query_chars={}", len(answer_input.query))
         return await answer_service.generate(answer_input)
 
     async def post_async(

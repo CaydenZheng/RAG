@@ -1,6 +1,7 @@
 """Unified retrieval interface for HTTP, Agent, and evaluation callers."""
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
@@ -17,6 +18,7 @@ from src.core.retrieval import (
     QueryRewriterNode,
     RerankerNode,
 )
+from src.infra.tracer import tracer
 
 RetrievalMode = Literal[
     "vector_only",
@@ -128,25 +130,66 @@ class KnowledgeSystem:
         mode = validate_retrieval_mode(mode)
         metadata_filter = validate_metadata_filter(metadata_filter)
 
-        if mode in ("hybrid", "hybrid+rerank"):
-            variants = await self._rewriter.rewrite(query)
-        else:
-            variants = [query]
-
-        candidate_result = await asyncio.to_thread(
-            self._retriever.search,
-            variants,
-            metadata_filter,
-            mode,
-            top_k,
+        rewrite_started = time.perf_counter()
+        try:
+            if mode in ("hybrid", "hybrid+rerank"):
+                variants = await self._rewriter.rewrite(query)
+            else:
+                variants = [query]
+        except Exception:
+            tracer.add_span(
+                None,
+                "query_rewrite",
+                (time.perf_counter() - rewrite_started) * 1000,
+                status="error",
+                error_code="query_rewrite_failed",
+            )
+            raise
+        tracer.add_span(
+            None,
+            "query_rewrite",
+            (time.perf_counter() - rewrite_started) * 1000,
+            variants=len(variants),
+            skipped=mode not in ("hybrid", "hybrid+rerank"),
         )
+
+        retrieval_started = time.perf_counter()
+        try:
+            candidate_result = await asyncio.to_thread(
+                self._retriever.search,
+                variants,
+                metadata_filter,
+                mode,
+                top_k,
+            )
+        except Exception:
+            tracer.add_span(
+                None,
+                "candidate_retrieval",
+                (time.perf_counter() - retrieval_started) * 1000,
+                status="error",
+                error_code="retrieval_failed",
+                retrieval_mode=mode,
+            )
+            raise
         if isinstance(candidate_result, CandidateBatch):
             candidates = list(candidate_result)
             index_version = candidate_result.index_version
         else:
             candidates = candidate_result
             index_version = LEGACY_INDEX_VERSION
+        tracer.add_span(
+            None,
+            "candidate_retrieval",
+            (time.perf_counter() - retrieval_started) * 1000,
+            candidates=len(candidates),
+            retrieval_mode=mode,
+        )
+        tracer.set_index_version(index_version)
         warnings: list[str] = []
+        rerank_started = time.perf_counter()
+        rerank_status = "ok"
+        rerank_error = ""
         if mode == "hybrid+rerank" and candidates:
             try:
                 chunks = await asyncio.wait_for(
@@ -164,13 +207,28 @@ class KnowledgeSystem:
                     settings.rerank_timeout_seconds,
                 )
                 warnings.append("rerank_timeout")
+                rerank_status = "degraded"
+                rerank_error = "rerank_timeout"
                 chunks = self._rank_without_reranker(candidates, top_k)
-            except Exception:
-                logger.exception("Rerank failed; using fusion order")
+            except Exception as exc:
+                logger.warning(
+                    "Rerank failed: {}; using fusion order", type(exc).__name__
+                )
                 warnings.append("rerank_unavailable")
+                rerank_status = "degraded"
+                rerank_error = "rerank_unavailable"
                 chunks = self._rank_without_reranker(candidates, top_k)
         else:
             chunks = self._rank_without_reranker(candidates, top_k)
+        tracer.add_span(
+            None,
+            "rerank",
+            (time.perf_counter() - rerank_started) * 1000,
+            status=rerank_status,
+            error_code=rerank_error,
+            kept=len(chunks),
+            skipped=mode != "hybrid+rerank" or not candidates,
+        )
 
         return RetrievalResult(
             query=query,

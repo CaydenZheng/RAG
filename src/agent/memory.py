@@ -178,7 +178,7 @@ class MemoryManager:
                 for item in json.loads(path.read_text(encoding="utf-8"))
             ]
         except Exception as exc:
-            logger.warning("Failed to load history for {}: {}", session_id, exc)
+            logger.warning("Failed to load history: {}", type(exc).__name__)
             return []
 
         def import_if_empty(current: list[SessionTurn]) -> list[SessionTurn]:
@@ -256,7 +256,7 @@ class MemoryManager:
         if path.exists():
             path.unlink()
             existed = True
-        logger.info("Session cleared: {}", session_id)
+        logger.info("Agent session cleared")
         return existed
 
     # ================================================================
@@ -397,7 +397,7 @@ class MemoryManager:
             return summary
 
         except Exception as e:
-            logger.error("LLM compression error: {}", e)
+            logger.error("LLM compression error: {}", type(e).__name__)
             return None
 
 

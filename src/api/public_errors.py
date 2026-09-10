@@ -6,6 +6,7 @@ PUBLIC_ERRORS = {
     "query_failed": "查询处理失败，请稍后重试",
     "retrieval_failed": "检索服务暂时不可用，请稍后重试",
     "answer_generation_failed": "回答生成失败，请稍后重试",
+    "internal_server_error": "服务内部错误，请稍后重试",
 }
 
 

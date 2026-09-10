@@ -14,12 +14,14 @@ Hook 事件拦截管线。
 import json
 import re
 import time
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-from dataclasses import dataclass, field
+
 from loguru import logger
 
+from src.infra.tracer import safe_attributes, tracer
 
 # ================================================================
 # 事件定义
@@ -121,9 +123,11 @@ class HookPipeline:
                     logger.info("Hook blocked: event={} reason={} handler_priority={}",
                                 ctx.event.value, ctx.block_reason, priority)
                     break  # 一旦被阻断，不再执行后续 handler
-            except Exception as e:
-                logger.error("Hook handler error: event={} priority={} error={}",
-                             ctx.event.value, priority, e)
+            except Exception as exc:
+                logger.error(
+                    "Hook handler error: event={} priority={} type={}",
+                    ctx.event.value, priority, type(exc).__name__,
+                )
         return ctx
 
 
@@ -137,11 +141,13 @@ def create_logging_hook(log_dir: str = "logs") -> HookHandler:
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def logging_hook(ctx: HookContext) -> HookContext:
+        trace = tracer.current or {}
         record = {
             "event": ctx.event.value,
-            "session_id": ctx.session_id,
+            "request_id": trace.get("request_id", "unavailable"),
+            "trace_id": trace.get("trace_id", "unavailable"),
             "timestamp": ctx.timestamp,
-            "data": {k: str(v)[:200] for k, v in ctx.data.items()},  # 截断长数据
+            "data": safe_attributes(ctx.data),
         }
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -183,12 +189,15 @@ def create_audit_hook(audit_dir: str = "logs") -> HookHandler:
     audit_path.parent.mkdir(parents=True, exist_ok=True)
 
     def audit_hook(ctx: HookContext) -> HookContext:
+        trace = tracer.current or {}
+        tool_params = ctx.data.get("tool_params", {})
         record = {
             "event": ctx.event.value,
-            "session_id": ctx.session_id,
+            "request_id": trace.get("request_id", "unavailable"),
+            "trace_id": trace.get("trace_id", "unavailable"),
             "timestamp": ctx.timestamp,
             "tool_name": ctx.data.get("tool_name", "unknown"),
-            "tool_params": str(ctx.data.get("tool_params", {}))[:500],
+            "parameter_names": sorted(tool_params) if isinstance(tool_params, dict) else [],
             "safety_level": ctx.data.get("safety_level", "unknown"),
         }
         with open(audit_path, "a", encoding="utf-8") as f:

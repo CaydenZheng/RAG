@@ -10,6 +10,7 @@ from starlette.requests import Request
 
 from src.api.public_errors import public_error
 from src.core.generation import AnswerInput, AnswerService
+from src.infra.tracer import tracer
 
 
 def encode_sse_event(event: dict) -> str:
@@ -59,6 +60,7 @@ async def iter_answer_sse(
         try:
             async for chunk in answer_stream:
                 if await request.is_disconnected():
+                    tracer.record_outcome("cancelled", "client_disconnected")
                     logger.info(
                         "RAG stream {} disconnected; cancelling generation",
                         query_id,
@@ -78,6 +80,7 @@ async def iter_answer_sse(
             await answer_stream.aclose()
 
         if await request.is_disconnected():
+            tracer.record_outcome("cancelled", "client_disconnected")
             logger.info(
                 "RAG stream {} disconnected before completion",
                 query_id,
@@ -89,8 +92,9 @@ async def iter_answer_sse(
     except asyncio.CancelledError:
         logger.info("RAG stream {} cancelled by server", query_id)
         raise
-    except Exception:
-        logger.exception("RAG stream {} failed", query_id)
+    except Exception as exc:
+        tracer.record_error("answer_generation_failed")
+        logger.error("RAG stream {} failed: {}", query_id, type(exc).__name__)
         yield encode_sse_event(
             answer_event(
                 "error",

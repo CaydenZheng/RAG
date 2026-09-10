@@ -14,6 +14,8 @@
         print(chunk, end="")
 """
 
+import asyncio
+import time
 from typing import AsyncGenerator, List, Optional
 
 from loguru import logger
@@ -21,6 +23,7 @@ from openai import AsyncOpenAI, OpenAI, Timeout
 from sentence_transformers import SentenceTransformer
 
 from config.settings import settings
+from src.infra.tracer import tracer
 
 
 class LLMClient:
@@ -70,6 +73,37 @@ class LLMClient:
             "prompt_version": settings.prompt_version,
         }
 
+    @staticmethod
+    def _record_chat_span(
+        started_at: float,
+        model: str,
+        *,
+        cache_hit: bool,
+        response_chars: int = 0,
+        usage=None,
+        status: str = "ok",
+        error_code: str = "",
+    ) -> None:
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+        completion_tokens = (
+            getattr(usage, "completion_tokens", 0) if usage else 0
+        )
+        total_tokens = getattr(usage, "total_tokens", 0) if usage else 0
+        tracer.add_span(
+            None,
+            tracer.current_stage,
+            (time.perf_counter() - started_at) * 1000,
+            status=status,
+            error_code=error_code,
+            model=model,
+            cache_hit=cache_hit,
+            response_chars=response_chars,
+            prompt_tokens=prompt_tokens or 0,
+            completion_tokens=completion_tokens or 0,
+            total_tokens=total_tokens or 0,
+            usage_reported=usage is not None,
+        )
+
     # ================================================================
     # Chat (Sync) — 保留兼容旧代码
     # ================================================================
@@ -85,6 +119,7 @@ class LLMClient:
     ) -> str:
         """同步调用 LLM 生成回复。"""
         model = model or self._chat_model
+        started_at = time.perf_counter()
         cache_dimensions = (
             self._cache_dimensions(max_tokens, index_version)
             if not skip_cache
@@ -98,6 +133,9 @@ class LLMClient:
                 model, messages, temperature, **cache_dimensions
             )
             if cached is not None:
+                self._record_chat_span(
+                    started_at, model, cache_hit=True, response_chars=len(cached)
+                )
                 return cached
 
         kwargs = dict(
@@ -109,8 +147,19 @@ class LLMClient:
             kwargs["max_tokens"] = max_tokens
 
         logger.debug("LLM chat → model={} messages={}", kwargs["model"], len(messages))
-        resp = self._chat_client.chat.completions.create(**kwargs)
+        try:
+            resp = self._chat_client.chat.completions.create(**kwargs)
+        except Exception:
+            self._record_chat_span(
+                started_at, model, cache_hit=False, status="error",
+                error_code="llm_call_failed",
+            )
+            raise
         content = resp.choices[0].message.content or ""
+        self._record_chat_span(
+            started_at, model, cache_hit=False, response_chars=len(content),
+            usage=resp.usage,
+        )
         logger.debug("LLM chat ← {} chars, {} tokens",
                      len(content), resp.usage.total_tokens if resp.usage else "?")
 
@@ -142,6 +191,7 @@ class LLMClient:
     ) -> str:
         """异步调用 LLM 生成回复（非流式）。"""
         model = model or self._chat_model
+        started_at = time.perf_counter()
         cache_dimensions = (
             self._cache_dimensions(max_tokens, index_version)
             if not skip_cache
@@ -155,6 +205,9 @@ class LLMClient:
                 model, messages, temperature, **cache_dimensions
             )
             if cached is not None:
+                self._record_chat_span(
+                    started_at, model, cache_hit=True, response_chars=len(cached)
+                )
                 return cached
 
         kwargs = dict(
@@ -166,8 +219,19 @@ class LLMClient:
             kwargs["max_tokens"] = max_tokens
 
         logger.debug("LLM chat_async → model={} messages={}", kwargs["model"], len(messages))
-        resp = await self._async_chat_client.chat.completions.create(**kwargs)
+        try:
+            resp = await self._async_chat_client.chat.completions.create(**kwargs)
+        except Exception:
+            self._record_chat_span(
+                started_at, model, cache_hit=False, status="error",
+                error_code="llm_call_failed",
+            )
+            raise
         content = resp.choices[0].message.content or ""
+        self._record_chat_span(
+            started_at, model, cache_hit=False, response_chars=len(content),
+            usage=resp.usage,
+        )
         logger.debug("LLM chat_async ← {} chars, {} tokens",
                      len(content), resp.usage.total_tokens if resp.usage else "?")
 
@@ -206,30 +270,57 @@ class LLMClient:
         import re
 
         model = model or self._chat_model
+        started_at = time.perf_counter()
 
         kwargs = dict(
             model=model,
             messages=messages,
             temperature=temperature,
             stream=True,
+            stream_options={"include_usage": True},
             # 告知 API 最大生成 token 数，防止无限生成
             max_tokens=max_tokens,
         )
 
         logger.debug("LLM chat_stream_async → model={} messages={} max_tokens={}",
                      model, len(messages), max_tokens)
-        stream = await self._async_chat_client.chat.completions.create(**kwargs)
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if delta is None or not delta.content:
-                continue
-            # 拆成逐词/逐空白：保留所有空白字符，让前端逐词渲染
-            words = re.split(r'(\s+)', delta.content)
-            for w in words:
-                if w:
-                    yield w
+        response_chars = 0
+        usage = None
+        try:
+            stream = await self._async_chat_client.chat.completions.create(**kwargs)
+            async for chunk in stream:
+                if getattr(chunk, "usage", None) is not None:
+                    usage = chunk.usage
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta is None or not delta.content:
+                    continue
+                response_chars += len(delta.content)
+                # 拆成逐词/逐空白：保留所有空白字符，让前端逐词渲染
+                words = re.split(r'(\s+)', delta.content)
+                for word in words:
+                    if word:
+                        yield word
+        except (asyncio.CancelledError, GeneratorExit):
+            self._record_chat_span(
+                started_at, model, cache_hit=False,
+                response_chars=response_chars, usage=usage, status="cancelled",
+                error_code="llm_stream_cancelled",
+            )
+            raise
+        except Exception:
+            self._record_chat_span(
+                started_at, model, cache_hit=False,
+                response_chars=response_chars, usage=usage, status="error",
+                error_code="llm_stream_failed",
+            )
+            raise
+        else:
+            self._record_chat_span(
+                started_at, model, cache_hit=False,
+                response_chars=response_chars, usage=usage,
+            )
 
     # ================================================================
     # Embedding

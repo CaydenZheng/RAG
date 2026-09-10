@@ -833,10 +833,12 @@ uv run --locked --group eval python scripts/run_eval.py --testset data/testset/g
 
 ### 9.1 全链路 Trace（本地 JSON Lines）
 
-`src/infra/tracer.py` 实现轻量级 JSON Lines trace，不依赖外部服务：
-- 每次查询写入 `logs/traces.jsonl` 一条 record
-- 记录：query_id、总耗时、各节点指标（variants/candidates/kept/answer_chars）
-- 异常时同样写入（含 error 字段），支持故障回溯
+`src/api/observability.py` 为 RAG 与 Agent 请求建立统一 Trace，`src/infra/tracer.py` 将完成记录追加到 `logs/traces.jsonl`：
+
+- 普通响应和 SSE 都返回 `X-Request-ID`、`X-Trace-ID`，可直接关联一次完整请求。
+- Span 覆盖查询改写、候选检索、Rerank、上下文构建、模型生成、Agent 运行和工具调用，记录真实耗时与稳定错误码。
+- 模型 Span 记录模型名、精确缓存命中，以及 Provider 返回的 prompt/completion/total Token；流式 Provider 未返回 usage 时明确标记 `usage_reported=false`。
+- Trace 顶层记录索引版本。日志不保存查询、回答、会话身份、凭据、工具参数值或完整工具输出；Agent 事件与审计日志复用同一脱敏规则。
 
 ### 9.2 配置管理
 
@@ -909,17 +911,7 @@ user_template: |
 
 ### 9.4 日志
 
-使用 `loguru`，结构化日志输出：
-```python
-logger.info("Retrieval completed", extra={
-    "query_id": "abc123",
-    "vector_hits": 20,
-    "bm25_hits": 20,
-    "fused_hits": 20,
-    "rerank_hits": 5,
-    "latency_ms": 320
-})
-```
+运行日志只输出请求 ID、Trace ID、阶段状态、数量和耗时等诊断元数据。对外错误使用稳定错误码；底层异常只记录异常类型，不写异常消息，避免 Provider 返回体、本地路径或凭据进入日志。
 
 ### 9.5 页面输出安全
 

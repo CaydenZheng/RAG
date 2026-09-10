@@ -26,6 +26,7 @@ from src.core.agent_runtime import (
     AgentResponse,
     ToolCall,
 )
+from src.infra.tracer import tracer
 
 
 @dataclass(frozen=True)
@@ -248,9 +249,9 @@ class AgentHarness:
                 )
                 if self.config.verbose:
                     logger.info(
-                        "[Agent iter={}] plan: {}",
+                        "Agent plan: iteration={} action={}",
                         iteration,
-                        json.dumps(plan, ensure_ascii=False)[:200],
+                        plan.get("action", "invalid"),
                     )
 
                 action = plan.get("action")
@@ -310,6 +311,17 @@ class AgentHarness:
                         )
 
                     calls.append(completed)
+                    if isinstance(result.data, dict) and result.data.get("index_version"):
+                        tracer.set_index_version(str(result.data["index_version"]))
+                    tracer.add_span(
+                        None,
+                        "tool_call",
+                        result.latency_ms,
+                        status="ok" if result.success else "error",
+                        error_code=result.error_code,
+                        tool_name=tool_name,
+                        call_id=proposed.call_id,
+                    )
                     result_content = (
                         self._format_tool_result(tool_name, result)
                         if result.success
@@ -397,6 +409,13 @@ class AgentHarness:
                     )
 
             latency = (time.monotonic() - started) * 1000
+            tracer.add_span(
+                None,
+                "agent_runtime",
+                latency,
+                iterations=iterations,
+                tool_calls=len(calls),
+            )
             self._fire_hook(
                 HookEvent.SESSION_END,
                 session_id,
@@ -417,6 +436,7 @@ class AgentHarness:
                 ),
             )
         except TimeoutError:
+            tracer.record_error("agent_timeout")
             self._fire_hook(
                 HookEvent.ON_ERROR,
                 session_id,
@@ -428,6 +448,7 @@ class AgentHarness:
                 message="Agent request timed out.",
             )
         except _AgentLimitError as exc:
+            tracer.record_error(exc.code)
             self._fire_hook(
                 HookEvent.ON_ERROR,
                 session_id,
@@ -439,9 +460,11 @@ class AgentHarness:
                 message=exc.public_message,
             )
         except asyncio.CancelledError:
+            tracer.record_outcome("cancelled", "agent_cancelled")
             raise
-        except Exception:
-            logger.exception("Agent execution failed")
+        except Exception as exc:
+            tracer.record_error("agent_failed")
+            logger.error("Agent execution failed: {}", type(exc).__name__)
             self._fire_hook(
                 HookEvent.ON_ERROR,
                 session_id,
@@ -531,12 +554,13 @@ class AgentHarness:
         from config.settings import settings
         from src.llm import llm_client
 
-        raw = await llm_client.chat_async(
-            messages,
-            model=self.config.planner_model or settings.llm_model,
-            temperature=self.config.planner_temperature,
-            max_tokens=max_tokens or self.config.planner_max_tokens,
-        )
+        with tracer.stage("agent_planning"):
+            raw = await llm_client.chat_async(
+                messages,
+                model=self.config.planner_model or settings.llm_model,
+                temperature=self.config.planner_temperature,
+                max_tokens=max_tokens or self.config.planner_max_tokens,
+            )
         return self._parse_plan_json(raw)
 
     @staticmethod
@@ -578,11 +602,12 @@ class AgentHarness:
             ),
         }
         try:
-            return await llm_client.chat_async(
-                [*messages, prompt],
-                temperature=0.3,
-                max_tokens=max_tokens,
-            )
+            with tracer.stage("agent_final_generation"):
+                return await llm_client.chat_async(
+                    [*messages, prompt],
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                )
         except Exception:
             return "I was unable to complete the task within the allowed steps."
 
