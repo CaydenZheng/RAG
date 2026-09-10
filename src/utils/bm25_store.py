@@ -15,6 +15,8 @@ import jieba
 from loguru import logger
 from rank_bm25 import BM25Okapi
 
+from src.core.index_versions import LEGACY_INDEX_VERSION
+
 
 class BM25Store:
     """BM25 索引管理器"""
@@ -24,21 +26,55 @@ class BM25Store:
         self._chunk_ids: List[str] = []       # 与 corpus 一一对应
         self._corpus: List[List[str]] = []    # 分词后的文档
         self._ready = False                    # 索引是否可用
+        self._version_id = LEGACY_INDEX_VERSION
         self._lock = threading.Lock()
 
     # ----------------------------------------------------------------
     # 构建/重建
     # ----------------------------------------------------------------
 
-    def build(self, texts: List[str], chunk_ids: List[str]):
-        """全量构建 BM25 索引（离线索引用）"""
+    def build(
+        self,
+        texts: List[str],
+        chunk_ids: List[str],
+        *,
+        version_id: str = LEGACY_INDEX_VERSION,
+    ):
+        """Build one complete BM25 snapshot and assign its index version."""
         corpus = [self._tokenize(t) for t in texts]
         with self._lock:
             self._bm25 = BM25Okapi(corpus)
             self._corpus = corpus
             self._chunk_ids = list(chunk_ids)
+            self._version_id = version_id
             self._ready = True
         logger.info("BM25 built: {} docs ready", len(corpus))
+
+    def activate(self, candidate: "BM25Store") -> None:
+        """Atomically replace the active runtime snapshot."""
+        if candidate is self:
+            return
+        with candidate._lock:
+            state = (
+                candidate._bm25,
+                list(candidate._chunk_ids),
+                [list(tokens) for tokens in candidate._corpus],
+                candidate._ready,
+                candidate._version_id,
+            )
+        with self._lock:
+            (
+                self._bm25,
+                self._chunk_ids,
+                self._corpus,
+                self._ready,
+                self._version_id,
+            ) = state
+
+    @property
+    def version_id(self) -> str:
+        with self._lock:
+            return self._version_id
 
     def rebuild_async(self, texts: List[str], chunk_ids: List[str]):
         """异步重建（冷启动用），不阻塞服务启动"""
@@ -94,6 +130,7 @@ class BM25Store:
         top_k: int = 20,
         *,
         allowed_chunk_ids: Collection[str] | None = None,
+        version_id: str | None = None,
     ) -> List[Tuple[str, float]]:
         """
         检索并返回 [(chunk_id, score), ...]，按分数降序。
@@ -101,6 +138,8 @@ class BM25Store:
         若索引未就绪，返回空列表（调用方自动降级为纯向量检索）。
         """
         with self._lock:
+            if version_id is not None and version_id != self._version_id:
+                return []
             if not self.is_ready:
                 return []
             if allowed_chunk_ids is not None and not allowed_chunk_ids:

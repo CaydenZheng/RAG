@@ -70,6 +70,7 @@ class KnowledgeRetrievalNode(AsyncNode):
         shared["candidates"] = exec_res.candidates
         shared["retrieved_chunks"] = exec_res.chunks
         shared["warnings"] = list(exec_res.warnings)
+        shared["index_version"] = exec_res.index_version
         return "default"
 
 

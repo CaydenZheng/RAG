@@ -6,6 +6,7 @@ import chromadb
 from loguru import logger
 
 from config.settings import settings
+from src.infra.index_catalog import index_catalog
 
 
 def warm_up_runtime() -> None:
@@ -44,7 +45,8 @@ def warm_up_runtime() -> None:
                 path=persist_dir,
                 settings=chromadb.config.Settings(anonymized_telemetry=False),
             )
-            collection = client.get_collection("rag_collection")
+            active_index = index_catalog.capture()
+            collection = client.get_collection(active_index.collection_name)
             if collection.count() == 0:
                 logger.info("ChromaDB is empty, skipping BM25 rebuild")
                 return
@@ -55,8 +57,16 @@ def warm_up_runtime() -> None:
             chunk_ids = all_data["ids"] or []
 
             logger.info("⏳ Rebuilding BM25 from {} ChromaDB chunks...", len(texts))
-            bm25_store.build(texts, chunk_ids)
-            logger.info("✅ BM25 ready: {} docs", len(texts))
+            bm25_store.build(
+                texts,
+                chunk_ids,
+                version_id=active_index.version_id,
+            )
+            logger.info(
+                "✅ BM25 ready: {} docs, version={}",
+                len(texts),
+                active_index.version_id,
+            )
         except Exception as e:
             logger.warning("BM25 rebuild failed (will use vector-only): {}", e)
 

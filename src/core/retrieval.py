@@ -14,6 +14,8 @@ from loguru import logger
 from pocketflow import AsyncNode, Node
 
 from config.settings import settings
+from src.core.index_versions import CandidateBatch
+from src.infra.index_catalog import index_catalog
 from src.infra.prompt_manager import prompt_manager
 from src.llm import llm_client
 from src.utils.bm25_store import bm25_store
@@ -97,7 +99,7 @@ class HybridRetrieverNode(Node):
         mode = shared.get("retrieval_mode", "hybrid")
         return queries, metadata_filter, mode
 
-    def exec(self, inputs: tuple) -> List[dict]:
+    def exec(self, inputs: tuple) -> CandidateBatch:
         return self.search(*inputs)
 
     def search(
@@ -106,14 +108,19 @@ class HybridRetrieverNode(Node):
         metadata_filter: dict | None,
         mode: str,
         top_k: int | None = None,
-    ) -> List[dict]:
-        """Run Dense and/or BM25 retrieval followed by RRF fusion."""
+    ) -> CandidateBatch:
+        """Run Dense and/or BM25 retrieval against one captured version."""
         result_limit = top_k or settings.rerank_top_k
         vector_limit = max(settings.vector_top_k, result_limit)
         bm25_limit = max(settings.bm25_top_k, result_limit)
         use_vector = mode in ("vector_only", "hybrid", "hybrid+rerank")
         use_bm25 = mode in ("bm25_only", "hybrid", "hybrid+rerank")
-        allowed_chunk_ids = self._resolve_allowed_chunk_ids(metadata_filter)
+        active_index = index_catalog.capture()
+        collection = self._get_collection(active_index.collection_name)
+        allowed_chunk_ids = self._resolve_allowed_chunk_ids(
+            metadata_filter,
+            collection,
+        )
 
         all_vector_hits: Dict[str, Tuple[int, float]] = {}
         all_bm25_hits: Dict[str, Tuple[int, float]] = {}
@@ -125,6 +132,7 @@ class HybridRetrieverNode(Node):
                 vec_results = self._vector_search(
                     query,
                     metadata_filter,
+                    collection,
                     top_k=vector_limit,
                 )
                 for rank, item in enumerate(vec_results):
@@ -149,6 +157,7 @@ class HybridRetrieverNode(Node):
                     query,
                     top_k=bm25_limit,
                     allowed_chunk_ids=allowed_chunk_ids,
+                    version_id=active_index.version_id,
                 )
                 for rank, (cid, score) in enumerate(bm25_results):
                     if (
@@ -160,7 +169,11 @@ class HybridRetrieverNode(Node):
                         all_bm25_hits[cid] = (rank, score)
                     # BM25 不返回原文，从 ChromaDB 按相同 scope 补拉。
                     if cid not in chunk_map:
-                        chunk = self._fetch_chunk_text(cid, metadata_filter)
+                        chunk = self._fetch_chunk_text(
+                            cid,
+                            metadata_filter,
+                            collection,
+                        )
                         if chunk is not None:
                             chunk_map[cid] = chunk
 
@@ -186,16 +199,19 @@ class HybridRetrieverNode(Node):
 
         logger.info("RRF merged: {} → {} candidates (mode={})",
                      len(sorted_chunks), len(results), mode)
-        return results
+        return CandidateBatch(
+            index_version=active_index.version_id,
+            candidates=tuple(results),
+        )
 
     def _resolve_allowed_chunk_ids(
-        self, metadata_filter: dict | None
+        self,
+        metadata_filter: dict | None,
+        collection,
     ) -> set[str] | None:
         """Resolve the Chroma scope once for BM25 and fusion."""
         if not metadata_filter:
             return None
-
-        collection = self._get_collection()
         if collection is None:
             return set()
 
@@ -203,11 +219,13 @@ class HybridRetrieverNode(Node):
         return set(result.get("ids", []))
 
     def _fetch_chunk_text(
-        self, chunk_id: str, metadata_filter: dict | None
+        self,
+        chunk_id: str,
+        metadata_filter: dict | None,
+        collection,
     ) -> dict | None:
-        """从 ChromaDB 按相同 scope 补拉 BM25 原文。"""
+        """从本次请求固定的 Chroma collection 补拉 BM25 原文。"""
         try:
-            collection = self._get_collection()
             if collection is None:
                 return None
             kwargs = {"ids": [chunk_id]}
@@ -224,26 +242,29 @@ class HybridRetrieverNode(Node):
             logger.warning("Failed to fetch scoped chunk {}: {}", chunk_id, exc)
         return None
 
-    def _get_collection(self):
+    def _get_collection(self, collection_name: str):
         client = chromadb.PersistentClient(
             path=str(settings.chroma_path.resolve()),
             settings=chromadb.config.Settings(anonymized_telemetry=False),
         )
         try:
-            return client.get_collection("rag_collection")
+            return client.get_collection(collection_name)
         except Exception:
-            logger.warning("ChromaDB collection not found, run build_index.py first")
+            logger.warning(
+                "ChromaDB collection {} not found, run build_index.py first",
+                collection_name,
+            )
             return None
 
     def _vector_search(
         self,
         query: str,
-        metadata_filter: dict | None = None,
+        metadata_filter: dict | None,
+        collection,
         top_k: int | None = None,
     ) -> List[dict]:
-        """单次向量检索"""
+        """Search the vector collection captured for this request."""
         query_vec = llm_client.embed_single(query)
-        collection = self._get_collection()
         if collection is None:
             return []
 
@@ -268,8 +289,9 @@ class HybridRetrieverNode(Node):
                 })
         return items
 
-    def post(self, shared: dict, prep_res, exec_res: List[dict]) -> str:
-        shared["candidates"] = exec_res
+    def post(self, shared: dict, prep_res, exec_res: CandidateBatch) -> str:
+        shared["candidates"] = list(exec_res)
+        shared["index_version"] = exec_res.index_version
         return "default"
 
 

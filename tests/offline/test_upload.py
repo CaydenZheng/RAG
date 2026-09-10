@@ -35,6 +35,8 @@ def upload_client(
         shared["index_info"] = {
             "chunks_count": 1,
             "fingerprint": "offline-upload",
+            "version_id": "offline-upload",
+            "published": True,
         }
 
     monkeypatch.setattr(api, "get_offline_flow", lambda: SimpleNamespace(run=index))
@@ -69,6 +71,8 @@ def test_valid_upload_is_saved_and_indexed(
         "status": "indexed",
         "chunks": 1,
         "fingerprint": "offline-upload",
+        "version_id": "offline-upload",
+        "published": True,
     }
     assert (isolated_runtime / "data/raw/normal.txt").read_bytes() == (
         b"x" * 20

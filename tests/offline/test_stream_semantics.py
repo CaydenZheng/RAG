@@ -80,6 +80,7 @@ def test_stream_emits_common_envelope_and_complete_response(
     assert completed["done"] is True
     assert completed["answer"] == "answer [1]"
     assert completed["sources"] == [{"ref": 1, "chunk_id": "chunk-1"}]
+    assert completed["index_version"] == "legacy"
     assert completed["session_id"] == ""
     assert completed["latency_ms"] >= 0
 
@@ -184,6 +185,7 @@ def test_disconnect_closes_generation_without_persisting_partial_answer(
                 ),
                 sources=[],
                 warnings=[],
+                index_version="legacy",
                 public_session_id="public-session",
                 query_id="query-id",
                 started_at=time.perf_counter(),

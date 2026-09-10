@@ -4,6 +4,7 @@ import json
 
 from pydantic import BaseModel, Field, field_validator
 
+from src.core.index_versions import LEGACY_INDEX_VERSION
 from src.core.knowledge import (
     DEFAULT_RETRIEVAL_MODE,
     DEFAULT_RETRIEVAL_TOP_K,
@@ -57,6 +58,7 @@ class QueryResponse(BaseModel):
     answer: str
     sources: list[dict]
     warnings: list[str] = Field(default_factory=list)
+    index_version: str = LEGACY_INDEX_VERSION
     latency_ms: float
 
 

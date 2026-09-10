@@ -243,8 +243,8 @@ Query ──→ QueryRewriter ──→ HybridRetriever ──→ Reranker ─�
 ### 离线索引数据流
 
 ```
-Raw Docs ──→ DocLoader ──→ DocDeduplicator ──→ Chunker ──→ Embedder ──→ IndexBuilder
-  (PDF/MD/TXT)  (markitdown)   (hash去重)     (语义分块)  (OpenAI/bge)  (ChromaDB+BM25)
+Raw Docs ──→ DocLoader ──→ DocDeduplicator ──→ Chunker ──→ Embedder ──→ Candidate ──→ Publish
+   (MD/TXT)       (UTF-8)        (hash去重)      (语义分块)   (本地 bge)    (Chroma+BM25)   (active)
 ```
 
 ---
@@ -272,6 +272,7 @@ Raw Docs ──→ DocLoader ──→ DocDeduplicator ──→ Chunker ──�
 
 **核心手写部分**（~15 个 PocketFlow Node + Flow 编排 + 工具封装）：
 - 核心接口：`KnowledgeSystem.retrieve()` 统一查询改写、Dense／BM25、RRF 与 Rerank；PocketFlow 只负责外围编排
+- 接口迁移决策：[ADR 0001：核心接口随真实实现逐步收拢](docs/adr/0001-core-seams.md)
 - 混合检索融合算法（RRF）
 - 容错降级链
 - 缓存失效逻辑
@@ -300,6 +301,7 @@ ragrag/
 ├── data/                         # 测试数据
 │   ├── raw/                      #   原始文档（Wikipedia 文章 ~300 篇）
 │   ├── chroma/                   #   ChromaDB 持久化目录 (gitignore)
+│   ├── index-manifests/          #   版本 manifest 与 active 指针 (gitignore)
 │   └── testset/                  #   自建评估测试集 (QA pairs)
 │       └── generated_test.json   #   LLM 自动生成 50 条 QA
 │
@@ -309,7 +311,8 @@ ragrag/
 │   ├── core/                     # PocketFlow 节点库
 │   │   ├── __init__.py
 │   │   ├── ingestion.py          #   DocLoader, DocDeduplicator, Chunker
-│   │   ├── indexing.py           #   Embedder, IndexBuilder (ChromaDB + BM25)
+│   │   ├── indexing.py           #   Embedder, candidate 构建与安全发布
+│   │   ├── index_versions.py     #   IndexVersion 与来源／构建 manifest
 │   │   ├── retrieval.py          #   QueryRewriter, HybridRetriever, Reranker
 │   │   ├── generation.py         #   ContextBuilder, Generator
 │   │   ├── knowledge.py           #   统一 KnowledgeSystem 检索接口
@@ -325,7 +328,8 @@ ragrag/
 │   │   ├── tracer.py             #   本地 JSON Lines trace 日志
 │   │   ├── prompt_manager.py     #   YAML Prompt 加载与管理
 │   │   ├── session_store.py      #   SQLite 会话存储（多轮对话历史）
-│   │   └── fallback.py           #   降级链（DeepSeek → Ollama → 原文兜底）
+│   │   ├── index_catalog.py      #   版本文件与 active 指针原子切换
+│   │   └── fallback.py           #   生成 Provider 降级与显式失败
 │   │
 │   ├── agent/                    # Agent 模块
 │   │   ├── __init__.py
@@ -490,37 +494,19 @@ RRF score(chunk) = Σ 1 / (k + rank_i)    # i ∈ {vector, bm25}, k 可配置(�
 - 超长 chunk 采用**首尾保留截断**：前 256 token + 后 256 token
 - 保证 chunk 的首尾关键信息不因硬截断丢失
 
-### 7.5 BM25 一致性保证
+### 7.5 索引版本与安全发布
 
-```
-统一写入入口：DocumentStore.add(doc)
-  ├── ChromaDB.add(chunks)
-  └── BM25Index.add(chunks)    ← 同步写入，保证一致
+每次全量构建先生成不可变的 `IndexVersion`。版本 manifest 包含内容 SHA-256、逐来源 checksum、chunk 数量，以及 parser、chunker、chunk size／overlap、embedding 模型和维度。相同内容与构建配置得到相同版本 ID；任一输入变化都会产生新版本。
 
-统一删除入口：DocumentStore.delete(doc_id)
-  ├── ChromaDB.delete(doc_id)
-  └── BM25Index.delete(doc_id) ← 同步删除
-```
+Chroma 使用 `rag_v_<version_id>` 候选 collection，BM25 同时构建同版本候选。只有向量数量、chunk ID 和 manifest 校验完成后，才通过原子替换 `data/index-manifests/active.json` 发布。构建或校验失败会删除候选并继续使用旧 active；旧 collection 不会在发布时删除。
 
-**冷启动流程**：
-```
-1. 服务启动
-2. 同步：加载 ChromaDB（毫秒级）
-3. 异步：后台重建 BM25 索引（数秒到数十秒）
-4. 重建期间 → 关键词检索自动降级为纯向量检索
-5. 重建完成 → 恢复混合检索
-```
+每个检索请求只读取一次 active 指针，并在 Dense、BM25、元数据过滤和原文补拉中复用同一个 collection。BM25 版本不匹配时只降级为该版本的向量检索，避免混合两个索引版本。冷启动按 active 版本重建 BM25，完成前同样使用向量检索。
 
 ### 7.6 缓存失效
 
-```
-缓存 Key = hash(model + messages + params + knowledge_base_fingerprint)
+当前精确缓存以 `IndexVersion.version_id` 作为知识库命名空间；发布新 active 前切换命名空间，因此旧答案不会命中新索引。缓存目前覆盖模型、消息和 temperature，其他生成参数及身份范围将在缓存正确性任务中补齐。
 
-knowledge_base_fingerprint = hash(all_document_ids + doc_versions)
-```
-
-- 任意文档增删 → fingerprint 变化 → 所有旧缓存自动失效
-- 不采用语义缓存（GPTCache）——避免答案过时和上下文不匹配的风险
+不采用语义缓存，避免相似问题错误复用旧答案。
 
 ### 7.7 降级链路
 
@@ -1030,7 +1016,7 @@ curl -X POST "http://localhost:8000/session/reset?session_id=my-session"
 | 413 | 超过单文件大小上限 |
 | 415 | 不支持的扩展名或非 UTF-8 内容 |
 
-应用只读取大小上限外加一个字节，避免将超限内容无界读入内存；multipart 解析发生在接口执行前，部署时仍应配置代理请求体上限。上传接口目前没有身份鉴权；索引重建仍是全量流程，索引失败时已保存文件会保留。这些限制分别由访问控制和索引发布任务处理。
+应用只读取大小上限外加一个字节，避免将超限内容无界读入内存；multipart 解析发生在接口执行前，部署时仍应配置代理请求体上限。上传接口目前没有身份鉴权；索引重建仍是全量流程，索引失败时已保存文件会保留，但旧 active 索引继续提供检索。这些限制分别由访问控制和后续索引任务处理。
 
 ### Agent API
 
