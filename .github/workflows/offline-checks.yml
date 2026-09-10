@@ -2,6 +2,7 @@ name: Offline checks
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [master, ci/offline-checks]
   workflow_dispatch:
