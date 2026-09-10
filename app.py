@@ -46,6 +46,7 @@ from src.api.schemas import (
     parse_metadata_filter_json,
 )
 from src.api.startup import warm_up_runtime
+from src.core.generation import CitationStreamGuard, build_answer_messages
 from src.core.knowledge import (
     DEFAULT_RETRIEVAL_MODE,
     DEFAULT_RETRIEVAL_TOP_K,
@@ -236,33 +237,12 @@ async def query_stream(
 
     context = shared.get("context", "")
     sources = shared.get("sources", [])
-
-    # 加载会话历史
-    history = []
-    if session.storage_id:
-        history = session_store.get_recent_history(session.storage_id, limit=6)
+    history = shared.get("history", [])
+    valid_refs = set(shared.get("valid_citation_refs", set()))
 
     # --- 阶段 2: 流式生成 ---
     prompt_config = prompt_manager.get_prompt_config("answer_generation")
-    messages = prompt_manager.render_chat_messages(
-        "answer_generation", query=query, context=context)
-
-    # 注入会话历史（带 token 预算保护）
-    if history:
-        history_msgs = [{"role": t["role"], "content": t["content"]} for t in history]
-        # 控制历史消息不超过模型上下文窗口的 40%
-        from src.utils.token_counter import count_tokens
-        max_history_tokens = int(settings.max_context_tokens * 0.40)
-        truncated = []
-        token_sum = 0
-        for h in reversed(history_msgs):
-            t = count_tokens(h["content"])
-            if token_sum + t > max_history_tokens:
-                break
-            truncated.insert(0, h)
-            token_sum += t
-        messages[1:1] = truncated
-        logger.debug("Injected {} history turns (~{} tokens)", len(truncated), token_sum)
+    messages = build_answer_messages(query, context, history)
 
     async def event_stream():
         # 立即发送连接建立事件，确保浏览器识别 SSE 已就绪
@@ -270,19 +250,28 @@ async def query_stream(
         await asyncio.sleep(0)  # 强制刷新
 
         full_answer = []
+        citation_guard = CitationStreamGuard(valid_refs)
         try:
             async for chunk in llm_client.chat_stream_async(
                 messages,
                 temperature=prompt_config["temperature"],
                 max_tokens=prompt_config["max_tokens"],
             ):
-                full_answer.append(chunk)
-                yield f"data: {json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
+                safe_chunk = citation_guard.feed(chunk)
+                if not safe_chunk:
+                    continue
+                full_answer.append(safe_chunk)
+                yield f"data: {json.dumps({'chunk': safe_chunk}, ensure_ascii=False)}\n\n"
                 await asyncio.sleep(0)  # 强制事件循环刷新，防止 uvicorn 缓冲
         except Exception as e:
             logger.error("Stream generation failed: {}", e)
             yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
             return
+
+        tail = citation_guard.finish()
+        if tail:
+            full_answer.append(tail)
+            yield f"data: {json.dumps({'chunk': tail}, ensure_ascii=False)}\n\n"
 
         answer = "".join(full_answer)
 
