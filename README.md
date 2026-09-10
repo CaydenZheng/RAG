@@ -524,22 +524,10 @@ knowledge_base_fingerprint = hash(all_document_ids + doc_versions)
 
 ### 7.7 降级链路
 
-```
-LLM 调用降级：
-  OpenAI → Azure OpenAI → 本地 Ollama → 原文兜底
-    ↓         ↓               ↓              ↓
-  重试3次   重试3次         重试3次      返回检索原文片段
-  (tenacity, 指数退避)                  + 提示语
-
-检索降级：
-  混合检索 → 纯向量检索 → 返回错误
-     ↓           ↓            ↓
-  BM25异常    向量异常     全部不可用
-  自动跳过    (罕见)
-
-原文兜底格式：
-  "当前生成服务暂时不可用，以下是检索到的最相关内容供参考：\n\n[1] ...\n[2] ..."
-```
+- 主生成 Provider 只使用 OpenAI SDK 对连接错误、限流和服务端错误的有限重试，次数由 `LLM_MAX_RETRIES` 控制；移除外层 Tenacity，避免嵌套重试放大调用次数。
+- 可选 Ollama 只尝试一次，并在线程中执行，避免同步客户端阻塞事件循环。
+- 所有生成 Provider 都失败时抛出明确的生成不可用错误。普通查询返回安全的 HTTP 503，SSE 返回 `answer_generation_failed` 终止事件，不再把故障提示伪装成正常答案。
+- Rerank 超时或异常时保留已经得到的候选，按 RRF／融合分数返回，并在响应的 `warnings` 中标记 `rerank_timeout` 或 `rerank_unavailable`；其他检索依赖整体失败时返回安全的 HTTP 503。
 
 ### 7.8 Prompt Engineering
 
@@ -785,6 +773,17 @@ evtSource.onmessage = (e) => {
 };
 ```
 
+
+### 7.12 请求可靠性
+
+查询请求由 ASGI 中间件统一施加容量和总时限，覆盖普通响应的完整处理过程以及 SSE 响应结束前的整个流生命周期：
+
+- 同时最多处理 `MAX_CONCURRENT_QUERIES` 个 RAG 查询，超出容量立即返回 HTTP 503 `query_capacity_exceeded`，完成、失败或超时后都会释放名额。
+- 每个请求最多运行 `REQUEST_TIMEOUT_SECONDS` 秒。普通查询超时返回 HTTP 504；SSE 已建立连接后超时会取消上游生成并发送 `request_timeout` 终止事件。
+- 客户端响应只包含稳定错误码和公开提示，不包含 Provider 异常、本地路径或凭据。内部日志仍用同一 `query_id` 定位故障。
+- 同步检索和 Rerank 放在线程执行，使事件循环能执行总时限和其他并发请求；底层模型推理一旦开始无法强制终止，但当前请求会按时降级或返回。
+
+
 ---
 
 ## 8. 评估方案
@@ -860,6 +859,12 @@ OPENAI_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
 LOCAL_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
 RERANK_MODEL=BAAI/bge-reranker-base
+RERANK_TIMEOUT_SECONDS=5
+
+# 请求容量、总时限与 Provider 瞬时故障重试次数
+MAX_CONCURRENT_QUERIES=8
+REQUEST_TIMEOUT_SECONDS=90
+LLM_MAX_RETRIES=1
 
 OLLAMA_BASE_URL=http://localhost:11434        # 可选：本地降级
 

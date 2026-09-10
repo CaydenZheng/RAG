@@ -1,20 +1,38 @@
 """
-降级链 — LLM 调用异常时的逐级回退。
+Generation provider fallback with explicit terminal failure.
 
-链路: 原 Provider → Ollama 本地 → 原文兜底
-检索降级: 混合检索 → 纯向量检索
-
-用法:
-    from src.infra.fallback import chat_with_fallback, chat_with_fallback_async
-    answer = chat_with_fallback(messages)
-    answer = await chat_with_fallback_async(messages)
+Primary provider calls use the OpenAI client's bounded transient retry policy.
+The optional Ollama provider is attempted once. If both fail, callers receive a
+GenerationUnavailableError rather than a normal-looking answer.
 """
 
+import asyncio
 from typing import List, Optional
+
 from loguru import logger
+from openai import OpenAI
 
 from config.settings import settings
+from src.core.errors import GenerationUnavailableError
 from src.llm import llm_client
+
+
+def _chat_with_ollama(
+    messages: List[dict],
+    temperature: float,
+) -> str:
+    client = OpenAI(
+        base_url=settings.ollama_base_url,
+        api_key="ollama",
+        timeout=30,
+        max_retries=0,
+    )
+    response = client.chat.completions.create(
+        model="llama3.2",
+        messages=messages,
+        temperature=temperature,
+    )
+    return response.choices[0].message.content or ""
 
 
 def chat_with_fallback(
@@ -24,12 +42,9 @@ def chat_with_fallback(
     max_tokens: Optional[int] = None,
     skip_cache: bool = False,
 ) -> str:
-    """
-    带降级链的 LLM 调用（同步）。
-
-    链路: DeepSeek → Ollama → 原文兜底
-    """
+    """Call the primary provider, then optional Ollama, or raise."""
     model = model or settings.llm_model
+    last_error: Exception | None = None
 
     try:
         return llm_client.chat(
@@ -39,23 +54,22 @@ def chat_with_fallback(
             max_tokens=max_tokens,
             skip_cache=skip_cache,
         )
-    except Exception as e:
-        logger.warning("Primary LLM failed: {}. Trying fallback...", e)
+    except Exception as exc:
+        last_error = exc
+        logger.warning("Primary LLM failed; trying configured fallback")
 
     if settings.ollama_base_url:
         try:
-            from openai import OpenAI
-            ollama = OpenAI(base_url=settings.ollama_base_url, api_key="ollama", timeout=30)
-            resp = ollama.chat.completions.create(
-                model="llama3.2", messages=messages, temperature=temperature)
-            content = resp.choices[0].message.content or ""
+            answer = _chat_with_ollama(messages, temperature)
             logger.info("Ollama fallback succeeded")
-            return content
-        except Exception as e:
-            logger.warning("Ollama fallback failed: {}", e)
+            return answer
+        except Exception as exc:
+            last_error = exc
+            logger.warning("Ollama fallback failed")
 
-    logger.warning("All LLM providers failed. Returning fallback message.")
-    return "当前生成服务暂时不可用，请稍后重试。"
+    raise GenerationUnavailableError(
+        "all answer-generation providers failed"
+    ) from last_error
 
 
 async def chat_with_fallback_async(
@@ -65,35 +79,38 @@ async def chat_with_fallback_async(
     max_tokens: Optional[int] = None,
     skip_cache: bool = False,
 ) -> str:
-    """
-    带降级链的 LLM 调用（异步）。
-
-    链路: DeepSeek (async) → Ollama (sync fallback) → 原文兜底
-    """
+    """Async primary call with a non-blocking optional Ollama fallback."""
     model = model or settings.llm_model
+    last_error: Exception | None = None
 
     try:
         return await llm_client.chat_async(
-            messages=messages, model=model, temperature=temperature,
-            max_tokens=max_tokens, skip_cache=skip_cache)
-    except Exception as e:
-        logger.warning("Primary async LLM failed: {}. Falling back...", e)
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            skip_cache=skip_cache,
+        )
+    except Exception as exc:
+        last_error = exc
+        logger.warning("Primary async LLM failed; trying configured fallback")
 
-    # Layer 2: Ollama（用同步 client，Ollama 通常本地低延迟）
     if settings.ollama_base_url:
         try:
-            from openai import OpenAI
-            ollama = OpenAI(base_url=settings.ollama_base_url, api_key="ollama", timeout=30)
-            resp = ollama.chat.completions.create(
-                model="llama3.2", messages=messages, temperature=temperature)
-            content = resp.choices[0].message.content or ""
+            answer = await asyncio.to_thread(
+                _chat_with_ollama,
+                messages,
+                temperature,
+            )
             logger.info("Ollama fallback succeeded")
-            return content
-        except Exception as e:
-            logger.warning("Ollama fallback failed: {}", e)
+            return answer
+        except Exception as exc:
+            last_error = exc
+            logger.warning("Ollama fallback failed")
 
-    logger.warning("All LLM providers failed. Returning fallback message.")
-    return "当前生成服务暂时不可用，请稍后重试。"
+    raise GenerationUnavailableError(
+        "all answer-generation providers failed"
+    ) from last_error
 
 
 def retrieval_fallback_message(query: str, sources: list) -> str:

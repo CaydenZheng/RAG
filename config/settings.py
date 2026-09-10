@@ -6,10 +6,11 @@ Pydantic Settings — 读取 .env 的所有配置项，提供类型校验与默�
     print(settings.llm_model)  # deepseek-chat
 """
 
-from pydantic_settings import BaseSettings
-from pydantic import Field
 from pathlib import Path
 from typing import Optional
+
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -39,6 +40,22 @@ class Settings(BaseSettings):
     # ================================================================
     rerank_model: str = Field(
         default="BAAI/bge-reranker-base", alias="RERANK_MODEL"
+    )
+    rerank_timeout_seconds: float = Field(
+        default=5.0, gt=0, alias="RERANK_TIMEOUT_SECONDS"
+    )
+
+    # ================================================================
+    # 请求可靠性
+    # ================================================================
+    max_concurrent_queries: int = Field(
+        default=8, ge=1, alias="MAX_CONCURRENT_QUERIES"
+    )
+    request_timeout_seconds: float = Field(
+        default=90.0, gt=0, alias="REQUEST_TIMEOUT_SECONDS"
+    )
+    llm_max_retries: int = Field(
+        default=1, ge=0, le=3, alias="LLM_MAX_RETRIES"
     )
 
     # ================================================================
