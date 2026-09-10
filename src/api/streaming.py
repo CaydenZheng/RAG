@@ -40,6 +40,7 @@ async def iter_answer_sse(
     answer_input: AnswerInput,
     sources: list[dict],
     warnings: list[str],
+    index_version: str,
     public_session_id: str,
     query_id: str,
     started_at: float,
@@ -109,6 +110,7 @@ async def iter_answer_sse(
             answer=answer,
             sources=sources,
             warnings=warnings,
+            index_version=index_version,
             session_id=public_session_id,
             latency_ms=latency_ms,
         )

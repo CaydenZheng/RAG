@@ -8,6 +8,10 @@ from chromadb.api.types import validate_where
 from loguru import logger
 
 from config.settings import settings
+from src.core.index_versions import (
+    LEGACY_INDEX_VERSION,
+    CandidateBatch,
+)
 from src.core.retrieval import (
     HybridRetrieverNode,
     QueryRewriterNode,
@@ -74,7 +78,7 @@ class CandidateRetriever(Protocol):
         metadata_filter: dict | None,
         mode: RetrievalMode,
         top_k: int,
-    ) -> list[dict]: ...
+    ) -> CandidateBatch | list[dict]: ...
 
 
 class CandidateReranker(Protocol):
@@ -95,6 +99,7 @@ class RetrievalResult:
     candidates: list[dict]
     chunks: list[dict]
     warnings: tuple[str, ...] = ()
+    index_version: str = LEGACY_INDEX_VERSION
 
 
 class KnowledgeSystem:
@@ -128,13 +133,19 @@ class KnowledgeSystem:
         else:
             variants = [query]
 
-        candidates = await asyncio.to_thread(
+        candidate_result = await asyncio.to_thread(
             self._retriever.search,
             variants,
             metadata_filter,
             mode,
             top_k,
         )
+        if isinstance(candidate_result, CandidateBatch):
+            candidates = list(candidate_result)
+            index_version = candidate_result.index_version
+        else:
+            candidates = candidate_result
+            index_version = LEGACY_INDEX_VERSION
         warnings: list[str] = []
         if mode == "hybrid+rerank" and candidates:
             try:
@@ -167,6 +178,7 @@ class KnowledgeSystem:
             candidates=candidates,
             chunks=chunks,
             warnings=tuple(warnings),
+            index_version=index_version,
         )
 
     @staticmethod

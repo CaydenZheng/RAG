@@ -13,6 +13,7 @@ from typing import Any
 LEGACY_INDEX_VERSION = "legacy"
 LEGACY_COLLECTION_NAME = "rag_collection"
 _VERSION_ID_PATTERN = re.compile(r"[0-9a-f]{24}")
+_CHECKSUM_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 def validate_index_version_id(value: str) -> str:
@@ -44,6 +45,12 @@ class SourceVersion:
     source: str
     checksum: str
 
+    def __post_init__(self) -> None:
+        if not self.document_id:
+            raise ValueError("source document ID cannot be empty")
+        if _CHECKSUM_PATTERN.fullmatch(self.checksum) is None:
+            raise ValueError("invalid source checksum")
+
 
 @dataclass(frozen=True)
 class BuildManifest:
@@ -55,6 +62,14 @@ class BuildManifest:
     chunk_overlap: int
     embedding_model: str
     embedding_dimension: int
+
+    def __post_init__(self) -> None:
+        if not self.parser or not self.chunker or not self.embedding_model:
+            raise ValueError("index build manifest names cannot be empty")
+        if self.chunk_size < 1 or not 0 <= self.chunk_overlap < self.chunk_size:
+            raise ValueError("invalid index chunking parameters")
+        if self.embedding_dimension < 1:
+            raise ValueError("invalid embedding dimension")
 
 
 @dataclass(frozen=True)
@@ -68,6 +83,17 @@ class IndexVersion:
     sources: tuple[SourceVersion, ...]
     build: BuildManifest
     created_at: str
+
+    def __post_init__(self) -> None:
+        validate_index_version_id(self.version_id)
+        if _CHECKSUM_PATTERN.fullmatch(self.content_checksum) is None:
+            raise ValueError("invalid index content checksum")
+        if self.collection_name != f"rag_v_{self.version_id}":
+            raise ValueError("index collection does not match its version")
+        if self.chunk_count < 1:
+            raise ValueError("index version must contain at least one chunk")
+        if not self.sources:
+            raise ValueError("index version must contain at least one source")
 
     @classmethod
     def create(
@@ -167,10 +193,7 @@ class IndexVersion:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "IndexVersion":
         version_id = str(data["version_id"])
-        validate_index_version_id(version_id)
         collection_name = str(data["collection_name"])
-        if collection_name != f"rag_v_{version_id}":
-            raise ValueError("index collection does not match its version")
         return cls(
             version_id=version_id,
             content_checksum=str(data["content_checksum"]),

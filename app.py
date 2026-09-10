@@ -158,6 +158,7 @@ async def query(req: QueryRequest, request: Request):
         answer=answer,
         sources=shared.get("sources", []),
         warnings=shared.get("warnings", []),
+        index_version=shared.get("index_version", "legacy"),
         latency_ms=round(latency, 1),
     )
 
@@ -186,6 +187,8 @@ async def upload(file: UploadFile = File(...)):
         "status": "indexed",
         "chunks": info.get("chunks_count", 0),
         "fingerprint": info.get("fingerprint", ""),
+        "version_id": info.get("version_id", info.get("fingerprint", "")),
+        "published": info.get("published", True),
     }
 
 
@@ -257,6 +260,7 @@ async def query_stream(
             answer_input=answer_input,
             sources=sources,
             warnings=warnings,
+            index_version=shared.get("index_version", "legacy"),
             public_session_id=session.public_id,
             query_id=query_id,
             started_at=started_at,

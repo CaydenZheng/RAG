@@ -11,6 +11,7 @@ venv/
 # 本地数据
 data/cache.db
 data/chroma/
+data/index-manifests/
 logs/
 memory/
 

@@ -34,8 +34,10 @@ def main():
     logger.info("Build complete!")
     logger.info("  Documents:  {} (after dedup)", len(shared.get("docs", [])))
     logger.info("  Chunks:     {}", info.get("chunks_count", 0))
-    logger.info("  Fingerprint: {}", info.get("fingerprint", "N/A"))
-    logger.info("  ChromaDB:   {}", info.get("chroma_persist_dir", "N/A"))
+    logger.info("  Version:    {}", info.get("version_id", "N/A"))
+    logger.info("  Checksum:   {}", info.get("content_checksum", "N/A"))
+    logger.info("  Collection: {}", info.get("collection_name", "N/A"))
+    logger.info("  Published:  {}", info.get("published", False))
 
 
 if __name__ == "__main__":
