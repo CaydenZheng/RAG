@@ -5,6 +5,7 @@ ContextBuilderNode  → 在同一预算内选择历史与本次证据
 GeneratorNode       → 复用统一消息并约束答案引用
 """
 
+import re
 from typing import List
 
 from loguru import logger
@@ -15,6 +16,10 @@ from src.infra.prompt_manager import prompt_manager
 from src.infra.session_store import session_store
 from src.utils.token_counter import count_tokens
 
+_CITATION_PATTERN = re.compile(r"\[((?:\d+\s*,\s*)*\d+)\]")
+_PARTIAL_CITATION_PATTERN = re.compile(
+    r"\[(?:\d+\s*(?:,\s*\d*\s*)*)?"
+)
 _POSITION_KEYS = (
     "chunk_index",
     "page",
@@ -22,6 +27,72 @@ _POSITION_KEYS = (
     "start_char",
     "end_char",
 )
+
+
+def sanitize_answer_citations(answer: str, valid_refs: set[int]) -> str:
+    """Remove reference numbers that are absent from this request's evidence."""
+
+    def replace(match: re.Match[str]) -> str:
+        refs = [int(value.strip()) for value in match.group(1).split(",")]
+        kept = list(dict.fromkeys(ref for ref in refs if ref in valid_refs))
+        if not kept:
+            return ""
+        return "[" + ", ".join(str(ref) for ref in kept) + "]"
+
+    return _CITATION_PATTERN.sub(replace, answer)
+
+
+class CitationStreamGuard:
+    """Validate numeric citations even when SSE chunks split a marker."""
+
+    MAX_PENDING_CHARS = 64
+
+    def __init__(self, valid_refs: set[int]) -> None:
+        self._valid_refs = valid_refs
+        self._pending = ""
+
+    def feed(self, chunk: str) -> str:
+        self._pending += chunk
+        output: list[str] = []
+
+        while self._pending:
+            start = self._pending.find("[")
+            if start < 0:
+                output.append(self._pending)
+                self._pending = ""
+                break
+
+            output.append(self._pending[:start])
+            candidate = self._pending[start:]
+            closing = candidate.find("]")
+            if closing >= 0:
+                marker = candidate[: closing + 1]
+                if _CITATION_PATTERN.fullmatch(marker):
+                    output.append(
+                        sanitize_answer_citations(marker, self._valid_refs)
+                    )
+                    self._pending = candidate[closing + 1 :]
+                    continue
+                output.append("[")
+                self._pending = candidate[1:]
+                continue
+
+            if (
+                len(candidate) <= self.MAX_PENDING_CHARS
+                and _PARTIAL_CITATION_PATTERN.fullmatch(candidate)
+            ):
+                self._pending = candidate
+                break
+
+            output.append("[")
+            self._pending = candidate[1:]
+
+        return "".join(output)
+
+    def finish(self) -> str:
+        pending = self._pending
+        self._pending = ""
+        return pending
 
 
 def build_answer_messages(
@@ -91,6 +162,7 @@ class ContextBuilderNode(Node):
             "context": context,
             "sources": sources,
             "history": selected_history,
+            "valid_citation_refs": {source["ref"] for source in sources},
             "context_budget": {
                 "total": total_budget,
                 "available": input_budget,
@@ -223,10 +295,11 @@ class GeneratorNode(AsyncNode):
             shared.get("context", ""),
             shared.get("history", []),
             shared.get("session_id", ""),
+            set(shared.get("valid_citation_refs", set())),
         )
 
     async def exec_async(self, inputs: tuple) -> tuple[str, str]:
-        query, context, history, session_id = inputs
+        query, context, history, session_id, valid_refs = inputs
         logger.info("✍️ Generating answer for: {}", query[:80])
         messages = build_answer_messages(query, context, history)
 
@@ -236,6 +309,7 @@ class GeneratorNode(AsyncNode):
             messages,
             temperature=0.3,
         )
+        answer = sanitize_answer_citations(answer, valid_refs)
         return answer, session_id
 
     async def post_async(self, shared: dict, prep_res, exec_res) -> str:

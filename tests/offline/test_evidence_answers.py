@@ -1,9 +1,13 @@
-"""Regression tests for the shared answer-input token budget."""
+"""Regression tests for answer context budgets and evidence citations."""
 
+import asyncio
+import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture(autouse=True)
@@ -15,6 +19,15 @@ def fixed_tokenizer(monkeypatch: pytest.MonkeyPatch) -> None:
         "get_encoding",
         lambda name: SimpleNamespace(encode=lambda text: list(text)),
     )
+
+
+@pytest.fixture(autouse=True)
+def reset_http_modules() -> None:
+    for name in ("app", "src.infra.tracer"):
+        sys.modules.pop(name, None)
+    yield
+    for name in ("app", "src.infra.tracer"):
+        sys.modules.pop(name, None)
 
 
 def test_context_history_and_evidence_share_one_budget(
@@ -76,6 +89,7 @@ def test_context_history_and_evidence_share_one_budget(
         "turn 5",
         "turn 6",
     ]
+    assert result["valid_citation_refs"] == {1}
     assert result["sources"] == [
         {
             "ref": 1,
@@ -93,3 +107,69 @@ def test_context_history_and_evidence_share_one_budget(
     assert "Version: v3" in result["context"]
     assert "Position: chunk_index=4, page=2" in result["context"]
 
+
+def test_normal_and_streaming_answers_share_messages_and_filter_citations(
+    isolated_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app as api
+    from src.core.generation import GeneratorNode
+    from src.infra import fallback
+
+    history = [
+        {"role": "user", "content": "previous question"},
+        {"role": "assistant", "content": "previous answer"},
+    ]
+    normal_calls: list[list[dict[str, str]]] = []
+    stream_calls: list[list[dict[str, str]]] = []
+
+    async def normal_answer(messages, **kwargs):
+        normal_calls.append(messages)
+        return "normal [1, 99] forged [42]"
+
+    async def stream_answer(messages, **kwargs):
+        stream_calls.append(messages)
+        for chunk in ("stream [", "1, ", "99]", " forged [", "42", "]"):
+            yield chunk
+
+    class RetrievalFlow:
+        async def run_async(self, shared: dict) -> None:
+            shared.update(
+                context="prepared context",
+                history=history,
+                sources=[{"ref": 1, "chunk_id": "chunk-1"}],
+                valid_citation_refs={1},
+            )
+
+    monkeypatch.setattr(fallback, "chat_with_fallback_async", normal_answer)
+    monkeypatch.setattr(api, "get_retrieval_flow", RetrievalFlow)
+    monkeypatch.setattr(api.llm_client, "chat_stream_async", stream_answer)
+
+    normal, _ = asyncio.run(
+        GeneratorNode().exec_async(
+            ("question", "prepared context", history, "", {1})
+        )
+    )
+
+    client = TestClient(api.app)
+    try:
+        response = client.get("/query/stream", params={"query": "question"})
+    finally:
+        client.close()
+
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    streamed_chunks = [
+        event["chunk"] for event in events if "chunk" in event
+    ]
+
+    assert response.status_code == 200
+    assert normal == "normal [1] forged "
+    assert "".join(streamed_chunks) == "stream [1] forged "
+    assert events[-1]["answer"] == "stream [1] forged "
+    assert events[-1]["sources"] == [{"ref": 1, "chunk_id": "chunk-1"}]
+    assert normal_calls == stream_calls
+    assert normal_calls[0][1:3] == history
