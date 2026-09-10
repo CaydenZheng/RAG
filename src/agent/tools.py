@@ -287,9 +287,9 @@ def _create_search_kb_tool() -> ToolDef:
         top_k = params.get("top_k", 5)
 
         try:
-            # 复用现有 Online Flow
-            from src.orchestration.rag import get_online_flow
-            flow = get_online_flow()
+            # 仅执行统一检索与上下文构建，最终回答由 Agent 生成。
+            from src.orchestration.rag import get_retrieval_flow
+            flow = get_retrieval_flow()
             shared = {"query": query}
 
             import time as _time

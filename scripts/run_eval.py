@@ -22,11 +22,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from typing import List
 
 from loguru import logger
-from pocketflow import AsyncFlow, Node
+from pocketflow import AsyncFlow
 
 from config.settings import settings
-from src.core.generation import ContextBuilderNode, GeneratorNode
-from src.core.retrieval import HybridRetrieverNode, QueryRewriterNode, RerankerNode
+from src.orchestration.rag import create_online_flow
 
 # ================================================================
 # LangChain-compatible local embeddings wrapper (for RAGAS)
@@ -58,78 +57,17 @@ class LocalRagasEmbeddings:
 
 
 # ================================================================
-# 轻量直通节点（跳过某些步骤）
+# 统一检索的消融配置
 # ================================================================
 
-class PassThroughReranker(Node):
-    """跳过 Rerank，直接透传 candidates → retrieved_chunks"""
-    def prep(self, shared):
-        return shared.get("candidates", [])
-    def exec(self, items):
-        for i, c in enumerate(items):
-            c["rerank_score"] = c.get("rrf_score", 0)
-        return sorted(items, key=lambda x: x.get("rerank_score", 0), reverse=True)[:settings.rerank_top_k]
-    def post(self, shared, prep_res, exec_res):
-        shared["retrieved_chunks"] = exec_res
-        return "default"
-
-
-class SkipRewriteNode(Node):
-    """跳过查询改写，直接用原 query"""
-    def prep(self, shared):
-        return shared.get("query", "")
-    def exec(self, q):
-        return [q]
-    def post(self, shared, prep_res, exec_res):
-        shared["queries"] = exec_res
-        return "default"
-
-
-# ================================================================
-# 构建各组 Flow
-# ================================================================
-
-def build_ablation_flows():
-    """返回 4 组 Flow 及其名称"""
-    flows = {}
-
-    # --- Group A: Vector only ---
-    rewriter = SkipRewriteNode()
-    retriever = HybridRetrieverNode()
-    reranker = PassThroughReranker()
-    builder = ContextBuilderNode()
-    generator = GeneratorNode()
-    rewriter >> retriever >> reranker >> builder >> generator
-    flows["A. Vector Only"] = (AsyncFlow(start=rewriter), "vector_only")
-
-    # --- Group B: BM25 only ---
-    rewriter_b = SkipRewriteNode()
-    retriever_b = HybridRetrieverNode()
-    reranker_b = PassThroughReranker()
-    builder_b = ContextBuilderNode()
-    generator_b = GeneratorNode()
-    rewriter_b >> retriever_b >> reranker_b >> builder_b >> generator_b
-    flows["B. BM25 Only"] = (AsyncFlow(start=rewriter_b), "bm25_only")
-
-    # --- Group C: Hybrid (no Rerank) ---
-    rewriter_c = QueryRewriterNode()
-    retriever_c = HybridRetrieverNode()
-    reranker_c = PassThroughReranker()
-    builder_c = ContextBuilderNode()
-    generator_c = GeneratorNode()
-    rewriter_c >> retriever_c >> reranker_c >> builder_c >> generator_c
-    flows["C. Hybrid (RRF)"] = (AsyncFlow(start=rewriter_c), "hybrid")
-
-    # --- Group D: Full Pipeline ---
-    rewriter_d = QueryRewriterNode()
-    retriever_d = HybridRetrieverNode()
-    reranker_d = RerankerNode()
-    builder_d = ContextBuilderNode()
-    generator_d = GeneratorNode()
-    rewriter_d >> retriever_d >> reranker_d >> builder_d >> generator_d
-    flows["D. Hybrid + Rerank"] = (AsyncFlow(start=rewriter_d), "hybrid+rerank")
-
-    return flows
+def build_ablation_flows() -> dict[str, tuple[AsyncFlow, str]]:
+    """Build answer flows whose retrieval step delegates to KnowledgeSystem."""
+    return {
+        "A. Vector Only": (create_online_flow(), "vector_only"),
+        "B. BM25 Only": (create_online_flow(), "bm25_only"),
+        "C. Hybrid (RRF)": (create_online_flow(), "hybrid"),
+        "D. Hybrid + Rerank": (create_online_flow(), "hybrid+rerank"),
+    }
 
 
 # ================================================================

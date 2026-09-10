@@ -2,16 +2,20 @@
 PocketFlow 顶层编排：离线索引 Flow + 在线检索 Flow（异步）。
 
 离线: DocLoader → DocDeduplicator → Chunker → Embedder → IndexBuilder
-在线: QueryRewriter → HybridRetriever → Reranker → ContextBuilder → Generator
-流式: 同在线但 Generator 替换为流式 SSE 输出（在 app.py 中手动处理）
+在线: KnowledgeSystem → ContextBuilder → Generator
+流式: KnowledgeSystem → ContextBuilder，SSE 生成由 app.py 处理
 """
 
-from pocketflow import AsyncFlow, Flow
+from pocketflow import AsyncFlow, AsyncNode, Flow
 
 from src.core.generation import ContextBuilderNode, GeneratorNode
 from src.core.indexing import EmbedderNode, IndexBuilderNode
 from src.core.ingestion import ChunkerNode, DocDeduplicatorNode, DocLoaderNode
-from src.core.retrieval import HybridRetrieverNode, QueryRewriterNode, RerankerNode
+from src.core.knowledge import (
+    KnowledgeSystem,
+    RetrievalResult,
+    knowledge_system,
+)
 
 # ================================================================
 # 离线索引 Flow
@@ -30,33 +34,64 @@ def create_offline_flow() -> Flow:
 
 
 # ================================================================
+# KnowledgeSystem PocketFlow adapter
+# ================================================================
+
+class KnowledgeRetrievalNode(AsyncNode):
+    """Adapt the framework-free KnowledgeSystem result to the shared store."""
+
+    def __init__(self, system: KnowledgeSystem | None = None) -> None:
+        super().__init__()
+        self._system = system or knowledge_system
+
+    async def prep_async(self, shared: dict) -> tuple:
+        return (
+            shared.get("query", ""),
+            shared.get("filter"),
+            shared.get("retrieval_mode", "hybrid+rerank"),
+        )
+
+    async def exec_async(self, inputs: tuple) -> RetrievalResult:
+        query, metadata_filter, mode = inputs
+        return await self._system.retrieve(
+            query,
+            metadata_filter=metadata_filter,
+            mode=mode,
+        )
+
+    async def post_async(
+        self, shared: dict, prep_res: tuple, exec_res: RetrievalResult
+    ) -> str:
+        shared["queries"] = exec_res.query_variants
+        shared["candidates"] = exec_res.candidates
+        shared["retrieved_chunks"] = exec_res.chunks
+        return "default"
+
+
+# ================================================================
 # 在线检索 Flow
 # ================================================================
 
 def create_online_flow() -> AsyncFlow:
     """查询改写 → 混合检索 → Rerank → 上下文构建 → 答案生成（异步）"""
-    rewriter = QueryRewriterNode()
-    retriever = HybridRetrieverNode()
-    reranker = RerankerNode()
+    retrieval = KnowledgeRetrievalNode()
     builder = ContextBuilderNode()
     generator = GeneratorNode()
 
-    rewriter >> retriever >> reranker >> builder >> generator
-    return AsyncFlow(start=rewriter)
+    retrieval >> builder >> generator
+    return AsyncFlow(start=retrieval)
 
 
 def create_retrieval_flow() -> AsyncFlow:
     """
     仅检索管线（不含生成），供流式端点使用。
-    QueryRewriter → HybridRetriever → Reranker → ContextBuilder
+    KnowledgeSystem → ContextBuilder
     """
-    rewriter = QueryRewriterNode()
-    retriever = HybridRetrieverNode()
-    reranker = RerankerNode()
+    retrieval = KnowledgeRetrievalNode()
     builder = ContextBuilderNode()
 
-    rewriter >> retriever >> reranker >> builder
-    return AsyncFlow(start=rewriter)
+    retrieval >> builder
+    return AsyncFlow(start=retrieval)
 
 
 # ================================================================

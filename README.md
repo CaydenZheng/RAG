@@ -271,7 +271,7 @@ Raw Docs ──→ DocLoader ──→ DocDeduplicator ──→ Chunker ──�
 | **Prompt 管理** | 自建 YAML + Git 版本控制 | 参考 promptfoo 理念 | 手写 |
 
 **核心手写部分**（~15 个 PocketFlow Node + Flow 编排 + 工具封装）：
-- 节点编排：`ChunkerNode`, `EmbedderNode`, `HybridRetrieverNode`, `RerankerNode`, `QueryRewriterNode`, `ContextBuilderNode`, `GeneratorNode` 等
+- 核心接口：`KnowledgeSystem.retrieve()` 统一查询改写、Dense／BM25、RRF 与 Rerank；PocketFlow 只负责外围编排
 - 混合检索融合算法（RRF）
 - 容错降级链
 - 缓存失效逻辑
@@ -312,6 +312,7 @@ ragrag/
 │   │   ├── indexing.py           #   Embedder, IndexBuilder (ChromaDB + BM25)
 │   │   ├── retrieval.py          #   QueryRewriter, HybridRetriever, Reranker
 │   │   ├── generation.py         #   ContextBuilder, Generator
+│   │   ├── knowledge.py           #   统一 KnowledgeSystem 检索接口
 │   │   └── evaluation.py         #   RagasEvaluator（PocketFlow Node）
 │   │
 │   ├── llm/                      # LLM 调用层
@@ -442,6 +443,8 @@ ragrag/
 ## 7. 核心设计细节
 
 ### 7.1 混合检索与 RRF 融合
+
+普通查询、流式查询、Agent 知识库工具和四组消融评测都通过 `KnowledgeSystem` 执行检索。调用方只选择检索模式并接收统一的查询变体、候选集和最终 chunk，不再自行拼接改写、Dense／BM25、RRF 与 Rerank 节点。Agent 工具只取得检索上下文，最终答案仍由 Agent 生成，避免一次问题重复生成。
 
 ```
 候选集 = VectorRetrieval(query, top_k=20)
@@ -661,11 +664,12 @@ RAG 与 Agent 共用这个会话存储。每次完整交互作为一组消息在
 ```
 节点异步化判断矩阵：
 
-  QueryRewriterNode    → ✅ AsyncNode（LLM 调用，3-5s）
-  HybridRetrieverNode  → ❌ 保持 Node（毫秒级检索）
-  RerankerNode         → ❌ 保持 Node（CPU 推理，同步更简单）
-  ContextBuilderNode   → ❌ 保持 Node（纯内存操作）
-  GeneratorNode        → ✅ AsyncNode（LLM 调用，3-5s）
+  KnowledgeRetrievalNode → ✅ AsyncNode（适配 KnowledgeSystem）
+    ├─ Query rewrite      → 异步 LLM 调用
+    ├─ Dense／BM25／RRF   → 同步检索与融合
+    └─ Rerank             → 同步 CPU 推理
+  ContextBuilderNode      → ❌ 保持 Node（纯内存操作）
+  GeneratorNode           → ✅ AsyncNode（LLM 调用，3-5s）
 ```
 
 #### PocketFlow AsyncFlow 混合编排

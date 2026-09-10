@@ -6,19 +6,17 @@ HybridRetrieverNode → 向量 + BM25 → RRF 融合 → Top-20 候选
 RerankerNode        → bge-reranker 精排 → Top-5
 """
 
-import math
-import yaml
-from typing import List, Dict, Tuple
+from typing import Dict, List, Tuple
 
-from pocketflow import Node, AsyncNode
-from loguru import logger
 import chromadb
+import yaml
+from loguru import logger
+from pocketflow import AsyncNode, Node
 
 from config.settings import settings
-from src.llm import llm_client
 from src.infra.prompt_manager import prompt_manager
+from src.llm import llm_client
 from src.utils.bm25_store import bm25_store
-
 
 # ================================================================
 # P2-4: QueryRewriterNode
@@ -34,6 +32,10 @@ class QueryRewriterNode(AsyncNode):
         return shared.get("query", "")
 
     async def exec_async(self, query: str) -> List[str]:
+        return await self.rewrite(query)
+
+    async def rewrite(self, query: str) -> List[str]:
+        """Return retrieval variants while always retaining the original query."""
         if not query.strip():
             return [query]
 
@@ -96,8 +98,12 @@ class HybridRetrieverNode(Node):
         return queries, metadata_filter, mode
 
     def exec(self, inputs: tuple) -> List[dict]:
-        queries, metadata_filter, mode = inputs
+        return self.search(*inputs)
 
+    def search(
+        self, queries: List[str], metadata_filter: dict | None, mode: str
+    ) -> List[dict]:
+        """Run Dense and/or BM25 retrieval followed by RRF fusion."""
         use_vector = mode in ("vector_only", "hybrid", "hybrid+rerank")
         use_bm25 = mode in ("bm25_only", "hybrid", "hybrid+rerank")
 
@@ -253,8 +259,10 @@ class RerankerNode(Node):
         return query, candidates
 
     def exec(self, inputs: tuple) -> List[dict]:
-        query, candidates = inputs
+        return self.rerank(*inputs)
 
+    def rerank(self, query: str, candidates: List[dict]) -> List[dict]:
+        """Score and return the highest-ranked candidates."""
         if not candidates:
             return []
 

@@ -463,14 +463,14 @@ class AgentHarness:
         )
 
     async def _search_kb_async(self, params: dict, session_id: str):
-        """异步知识库检索 — 重用 async RAG flow。"""
-        from src.orchestration.rag import get_online_flow
+        """异步知识库检索，不重复执行 RAG 答案生成。"""
+        from src.orchestration.rag import get_retrieval_flow
 
         query = params["query"]
         top_k = params.get("top_k", 5)
 
         try:
-            flow = get_online_flow()
+            flow = get_retrieval_flow()
             shared = {"query": query}
             t0 = time.time()
             await flow.run_async(shared)
