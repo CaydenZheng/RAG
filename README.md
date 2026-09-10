@@ -448,6 +448,8 @@ ragrag/
 
 当请求带有 `filter` 时，它同时定义本次检索的数据范围：Dense 查询直接使用相同的 Chroma `where`，BM25 在截取 Top-K 前按 Chroma 解析出的允许 chunk 集合过滤，融合和 BM25 原文补拉也只接受该范围内的 chunk。
 
+公开检索参数在普通 HTTP、流式 HTTP 和 Agent 知识库工具中使用同一契约：`top_k` 默认为 5，范围为 1–20；`retrieval_mode` 支持 `vector_only`、`bm25_only`、`hybrid` 和 `hybrid+rerank`；`filter` 使用 Chroma `where` 语法。流式 GET 端点的 `filter` 需要传 JSON 字符串，非法数量、模式或过滤器返回 422。
+
 ```
 候选集 = VectorRetrieval(query, top_k=20)
        ∪ BM25Retrieval(query, top_k=20)

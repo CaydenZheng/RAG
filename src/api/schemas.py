@@ -1,13 +1,55 @@
 """Request and response models for the HTTP interface."""
 
-from pydantic import BaseModel, Field
+import json
+
+from pydantic import BaseModel, Field, field_validator
+
+from src.core.knowledge import (
+    DEFAULT_RETRIEVAL_MODE,
+    DEFAULT_RETRIEVAL_TOP_K,
+    MAX_RETRIEVAL_TOP_K,
+    RetrievalMode,
+    validate_metadata_filter,
+)
 
 
 class QueryRequest(BaseModel):
     query: str = Field(..., description="用户查询")
-    session_id: str = Field(default="", description="会话 ID，空则不保存历史（一问一答）")
-    top_k: int = Field(default=5, description="最终返回的文档数量")
-    filter: dict | None = Field(default=None, description="元数据过滤条件，如 {'category':'design_pattern'}")
+    session_id: str = Field(
+        default="",
+        description="会话 ID，空则不保存历史（一问一答）",
+    )
+    top_k: int = Field(
+        default=DEFAULT_RETRIEVAL_TOP_K,
+        ge=1,
+        le=MAX_RETRIEVAL_TOP_K,
+        strict=True,
+        description="最终返回的文档数量",
+    )
+    filter: dict | None = Field(
+        default=None,
+        description="Chroma metadata where 条件",
+    )
+    retrieval_mode: RetrievalMode = Field(
+        default=DEFAULT_RETRIEVAL_MODE,
+        description="vector_only、bm25_only、hybrid 或 hybrid+rerank",
+    )
+
+    @field_validator("filter")
+    @classmethod
+    def validate_filter(cls, value: dict | None) -> dict | None:
+        return validate_metadata_filter(value)
+
+
+def parse_metadata_filter_json(value: str | None) -> dict | None:
+    """Parse the GET endpoint's JSON-encoded metadata filter."""
+    if value is None:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError("filter must be valid JSON") from exc
+    return validate_metadata_filter(parsed)
 
 
 class QueryResponse(BaseModel):

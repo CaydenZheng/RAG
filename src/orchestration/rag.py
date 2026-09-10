@@ -12,6 +12,8 @@ from src.core.generation import ContextBuilderNode, GeneratorNode
 from src.core.indexing import EmbedderNode, IndexBuilderNode
 from src.core.ingestion import ChunkerNode, DocDeduplicatorNode, DocLoaderNode
 from src.core.knowledge import (
+    DEFAULT_RETRIEVAL_MODE,
+    DEFAULT_RETRIEVAL_TOP_K,
     KnowledgeSystem,
     RetrievalResult,
     knowledge_system,
@@ -47,14 +49,16 @@ class KnowledgeRetrievalNode(AsyncNode):
     async def prep_async(self, shared: dict) -> tuple:
         return (
             shared.get("query", ""),
+            shared.get("top_k", DEFAULT_RETRIEVAL_TOP_K),
             shared.get("filter"),
-            shared.get("retrieval_mode", "hybrid+rerank"),
+            shared.get("retrieval_mode", DEFAULT_RETRIEVAL_MODE),
         )
 
     async def exec_async(self, inputs: tuple) -> RetrievalResult:
-        query, metadata_filter, mode = inputs
+        query, top_k, metadata_filter, mode = inputs
         return await self._system.retrieve(
             query,
+            top_k=top_k,
             metadata_filter=metadata_filter,
             mode=mode,
         )

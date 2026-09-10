@@ -23,7 +23,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
@@ -35,8 +43,15 @@ from src.api.schemas import (
     AgentChatResponse,
     QueryRequest,
     QueryResponse,
+    parse_metadata_filter_json,
 )
 from src.api.startup import warm_up_runtime
+from src.core.knowledge import (
+    DEFAULT_RETRIEVAL_MODE,
+    DEFAULT_RETRIEVAL_TOP_K,
+    MAX_RETRIEVAL_TOP_K,
+    RetrievalMode,
+)
 from src.llm import llm_client
 from src.orchestration.agent import get_agent_flow, get_agent_reset_flow
 from src.orchestration.rag import (
@@ -101,7 +116,9 @@ async def query(req: QueryRequest, request: Request):
     shared = {
         "query": req.query,
         "session_id": session.storage_id,
+        "top_k": req.top_k,
         "filter": req.filter,
+        "retrieval_mode": req.retrieval_mode,
     }
 
     try:
@@ -169,7 +186,13 @@ async def query_stream(
     request: Request,
     query: str,
     session_id: str = "",
-    top_k: int = 5,
+    top_k: int = Query(
+        default=DEFAULT_RETRIEVAL_TOP_K,
+        ge=1,
+        le=MAX_RETRIEVAL_TOP_K,
+    ),
+    retrieval_mode: RetrievalMode = DEFAULT_RETRIEVAL_MODE,
+    filter_json: str | None = Query(default=None, alias="filter"),
 ):
     """
     流式检索问答（SSE）。
@@ -192,7 +215,18 @@ async def query_stream(
     )
 
     # --- 阶段 1: 检索 ---
-    shared = {"query": query, "session_id": session.storage_id}
+    try:
+        metadata_filter = parse_metadata_filter_json(filter_json)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    shared = {
+        "query": query,
+        "session_id": session.storage_id,
+        "top_k": top_k,
+        "filter": metadata_filter,
+        "retrieval_mode": retrieval_mode,
+    }
     try:
         retrieval_flow = get_retrieval_flow()
         await retrieval_flow.run_async(shared)

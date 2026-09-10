@@ -101,9 +101,16 @@ class HybridRetrieverNode(Node):
         return self.search(*inputs)
 
     def search(
-        self, queries: List[str], metadata_filter: dict | None, mode: str
+        self,
+        queries: List[str],
+        metadata_filter: dict | None,
+        mode: str,
+        top_k: int | None = None,
     ) -> List[dict]:
         """Run Dense and/or BM25 retrieval followed by RRF fusion."""
+        result_limit = top_k or settings.rerank_top_k
+        vector_limit = max(settings.vector_top_k, result_limit)
+        bm25_limit = max(settings.bm25_top_k, result_limit)
         use_vector = mode in ("vector_only", "hybrid", "hybrid+rerank")
         use_bm25 = mode in ("bm25_only", "hybrid", "hybrid+rerank")
         allowed_chunk_ids = self._resolve_allowed_chunk_ids(metadata_filter)
@@ -115,7 +122,11 @@ class HybridRetrieverNode(Node):
         for qi, query in enumerate(queries):
             # --- 向量检索 ---
             if use_vector:
-                vec_results = self._vector_search(query, metadata_filter)
+                vec_results = self._vector_search(
+                    query,
+                    metadata_filter,
+                    top_k=vector_limit,
+                )
                 for rank, item in enumerate(vec_results):
                     cid = item["chunk_id"]
                     if (
@@ -136,7 +147,7 @@ class HybridRetrieverNode(Node):
             if use_bm25:
                 bm25_results = bm25_store.search(
                     query,
-                    top_k=settings.bm25_top_k,
+                    top_k=bm25_limit,
                     allowed_chunk_ids=allowed_chunk_ids,
                 )
                 for rank, (cid, score) in enumerate(bm25_results):
@@ -163,7 +174,7 @@ class HybridRetrieverNode(Node):
         bm25_ranks = {cid: rank for cid, (rank, _) in all_bm25_hits.items()}
 
         sorted_chunks = compute_rrf(vector_ranks, bm25_ranks, k=settings.rrf_k)
-        top_n = sorted_chunks[:settings.vector_top_k]
+        top_n = sorted_chunks[:vector_limit]
 
         results = []
         for cid, rrf_score in top_n:
@@ -224,7 +235,12 @@ class HybridRetrieverNode(Node):
             logger.warning("ChromaDB collection not found, run build_index.py first")
             return None
 
-    def _vector_search(self, query: str, metadata_filter: dict = None) -> List[dict]:
+    def _vector_search(
+        self,
+        query: str,
+        metadata_filter: dict | None = None,
+        top_k: int | None = None,
+    ) -> List[dict]:
         """单次向量检索"""
         query_vec = llm_client.embed_single(query)
         collection = self._get_collection()
@@ -233,7 +249,7 @@ class HybridRetrieverNode(Node):
 
         kwargs = dict(
             query_embeddings=[query_vec],
-            n_results=settings.vector_top_k,
+            n_results=top_k or settings.vector_top_k,
         )
         if metadata_filter:
             kwargs["where"] = metadata_filter
@@ -296,8 +312,13 @@ class RerankerNode(Node):
     def exec(self, inputs: tuple) -> List[dict]:
         return self.rerank(*inputs)
 
-    def rerank(self, query: str, candidates: List[dict]) -> List[dict]:
-        """Score and return the highest-ranked candidates."""
+    def rerank(
+        self,
+        query: str,
+        candidates: List[dict],
+        top_k: int | None = None,
+    ) -> List[dict]:
+        """Score and return the requested number of ranked candidates."""
         if not candidates:
             return []
 
@@ -323,7 +344,7 @@ class RerankerNode(Node):
             c["rerank_score"] = round(float(scores[i]), 4)
 
         ranked = sorted(candidates, key=lambda x: x.get("rerank_score", 0), reverse=True)
-        top = ranked[:settings.rerank_top_k]
+        top = ranked[: top_k or settings.rerank_top_k]
 
         logger.info("Reranked: {} → {} chunks, top score: {:.4f}",
                      len(candidates), len(top),

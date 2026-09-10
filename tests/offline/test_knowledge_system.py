@@ -20,9 +20,15 @@ class _Retriever:
         self.events = events
 
     def search(
-        self, queries: list[str], metadata_filter: dict | None, mode: str
+        self,
+        queries: list[str],
+        metadata_filter: dict | None,
+        mode: str,
+        top_k: int,
     ) -> list[dict]:
-        self.events.append(("search", queries, metadata_filter, mode))
+        self.events.append(
+            ("search", queries, metadata_filter, mode, top_k)
+        )
         return [
             {
                 "chunk_id": "low",
@@ -43,9 +49,19 @@ class _Reranker:
     def __init__(self, events: list) -> None:
         self.events = events
 
-    def rerank(self, query: str, candidates: list[dict]) -> list[dict]:
+    def rerank(
+        self,
+        query: str,
+        candidates: list[dict],
+        top_k: int,
+    ) -> list[dict]:
         self.events.append(
-            ("rerank", query, [candidate["chunk_id"] for candidate in candidates])
+            (
+                "rerank",
+                query,
+                [candidate["chunk_id"] for candidate in candidates],
+                top_k,
+            )
         )
         return [{**candidates[0], "rerank_score": 0.9}]
 
@@ -65,6 +81,7 @@ def test_full_retrieval_pipeline_has_one_ordered_interface(
     result = asyncio.run(
         system.retrieve(
             "question",
+            top_k=1,
             metadata_filter={"category": "public"},
             mode="hybrid+rerank",
         )
@@ -83,8 +100,9 @@ def test_full_retrieval_pipeline_has_one_ordered_interface(
             ["question", "question-variant"],
             {"category": "public"},
             "hybrid+rerank",
+            1,
         ),
-        ("rerank", "question", ["low", "high"]),
+        ("rerank", "question", ["low", "high"], 1),
     ]
 
 
@@ -104,9 +122,9 @@ def test_non_reranked_modes_share_fusion_output(
         reranker=_Reranker(events),
     )
 
-    result = asyncio.run(system.retrieve("question", mode=mode))
+    result = asyncio.run(system.retrieve("question", mode=mode, top_k=1))
 
-    assert [chunk["chunk_id"] for chunk in result.chunks] == ["high", "low"]
+    assert [chunk["chunk_id"] for chunk in result.chunks] == ["high"]
     assert all("rerank_score" in chunk for chunk in result.chunks)
     assert any(event[0] == "rewrite" for event in events) is rewrites
     assert not any(event[0] == "rerank" for event in events)
@@ -140,6 +158,7 @@ def test_pocketflow_adapter_exposes_result_without_rebuilding_pipeline(
 
     shared = {
         "query": "question",
+        "top_k": 2,
         "filter": {"category": "public"},
         "retrieval_mode": "hybrid",
     }
@@ -155,6 +174,7 @@ def test_pocketflow_adapter_exposes_result_without_rebuilding_pipeline(
     assert calls == [
         {
             "query": "question",
+            "top_k": 2,
             "metadata_filter": {"category": "public"},
             "mode": "hybrid",
         }
