@@ -636,6 +636,10 @@ RAG 与 Agent 共用这个会话存储。每次完整交互作为一组消息在
   [user: context + query]            ← 当前问题 + 检索到的文档
 ```
 
+历史与本次检索证据共用同一个输入 token 预算：先扣除 system／输出预留和安全缓冲，再从最近 6 条消息中选择历史，历史最多占总窗口的 40%，剩余空间按相关性装入完整证据片段。普通查询和流式查询使用 ContextBuilderNode 产出的同一组历史、上下文和引用编号，避免两条入口各自截断后得到不同输入。
+
+每条 source 返回 `ref`、`chunk_id`、`document_id`、`source`、`version`、`chunk_index`、`position`、`text` 和 `score`；旧索引未提供的版本字段保持为空。
+
 #### 端点
 
 | 端点 | 方法 | 功能 |
