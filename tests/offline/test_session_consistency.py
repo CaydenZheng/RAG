@@ -137,7 +137,10 @@ def test_agent_preserves_original_user_and_tool_roles(
             {"action": "final_answer", "answer": "final answer"},
         ]
     )
-    monkeypatch.setattr(harness, "_plan", lambda messages: next(plans))
+    async def next_plan(messages, max_tokens=None):
+        return next(plans)
+
+    monkeypatch.setattr(harness, "_plan_async", next_plan)
 
     response = harness.run("agent-session", "original user message")
 
@@ -145,7 +148,9 @@ def test_agent_preserves_original_user_and_tool_roles(
     turns = memory.load_history("agent-session")
     assert [turn.role for turn in turns] == ["user", "tool", "assistant"]
     assert turns[0].content == "original user message"
-    assert turns[1].metadata == {"tool_name": "lookup", "success": True}
+    assert turns[1].metadata["tool_name"] == "lookup"
+    assert turns[1].metadata["success"] is True
+    assert len(turns[1].metadata["call_id"]) == 32
     assert turns[2].content == "final answer"
 
     next_messages = memory.build_messages(
@@ -183,21 +188,23 @@ def test_streaming_agent_saves_one_complete_exchange(
         hooks=HookPipeline(),
     )
 
-    async def final_plan(messages: list[dict[str, str]]) -> dict[str, str]:
+    async def final_plan(
+        messages: list[dict[str, str]], max_tokens=None
+    ) -> dict[str, str]:
         return {"action": "final_answer", "answer": "stream answer"}
 
     monkeypatch.setattr(harness, "_plan_async", final_plan)
 
-    async def consume() -> list[str]:
+    async def consume():
         return [
             event
-            async for event in harness.run_async_stream(
+            async for event in harness.events(
                 "stream-session", "stream user"
             )
         ]
 
     events = asyncio.run(consume())
-    assert any('"done": true' in event for event in events)
+    assert events[-1].to_dict()["done"] is True
     assert [
         (turn.role, turn.content)
         for turn in memory.load_history("stream-session")

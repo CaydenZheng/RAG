@@ -38,6 +38,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from config.settings import settings
+from src.agent.harness import agent_harness
 from src.api.client_identity import ClientIdentityMiddleware, scope_request_session
 from src.api.public_errors import public_error
 from src.api.reliability import RAGRequestReliabilityMiddleware
@@ -51,6 +52,7 @@ from src.api.schemas import (
 )
 from src.api.startup import warm_up_runtime
 from src.api.streaming import iter_answer_sse
+from src.core.agent_runtime import AgentRuntime
 from src.core.generation import AnswerInput, answer_service
 from src.core.index_jobs import (
     IndexCommand,
@@ -65,7 +67,7 @@ from src.core.knowledge import (
 )
 from src.infra.index_jobs import get_index_jobs
 from src.infra.uploads import read_upload, validate_document_filename
-from src.orchestration.agent import get_agent_flow, get_agent_reset_flow
+from src.orchestration.agent import get_agent_reset_flow
 from src.orchestration.rag import (
     get_online_flow,
     get_retrieval_flow,
@@ -76,6 +78,8 @@ from src.web.pages import (
     SEARCH_PAGE_HTML,
     STATIC_DIR,
 )
+
+agent_runtime: AgentRuntime = agent_harness
 
 app = FastAPI(
     title="RAGFlow",
@@ -399,37 +403,14 @@ def session_detail(request: Request, response: Response, session_id: str):
 
 @app.post("/agent/chat", response_model=AgentChatResponse)
 async def agent_chat(req: AgentChatRequest, request: Request):
-    """Agent 对话端点 — Plan-Execute-Observe 循环（异步版）"""
+    """Run the shared asynchronous Agent runtime."""
     session = scope_request_session(
         request, req.session_id or uuid.uuid4().hex, "agent"
     )
-    start = time.time()
-
-    # 使用 asyncio.to_thread 避免同步 flow 阻塞事件循环
-    import asyncio
-
-    def _run_sync():
-        flow = get_agent_flow()
-        shared = {"session_id": session.storage_id, "user_message": req.message}
-        try:
-            flow.run(shared)
-        except Exception as e:
-            shared["agent_error"] = str(e)
-        return shared
-
-    shared = await asyncio.to_thread(_run_sync)
-
-    latency = (time.time() - start) * 1000
-
-    return AgentChatResponse(
-        session_id=session.public_id,
-        answer=shared.get("answer", ""),
-        tool_calls=shared.get("tool_calls", []),
-        iterations=shared.get("iterations", 0),
-        latency_ms=round(latency, 1),
-        error=shared.get("agent_error", ""),
-    )
-
+    result = await agent_runtime.execute(session.storage_id, req.message)
+    payload = result.to_dict()
+    payload["session_id"] = session.public_id
+    return AgentChatResponse(**payload)
 
 @app.get("/agent/chat/stream")
 async def agent_chat_stream(
@@ -449,26 +430,23 @@ async def agent_chat_stream(
       data: {"chunk": "..."}          ← 最终答案逐词输出
       data: {"done": true, ...}
     """
-    import asyncio as _asyncio
     session = scope_request_session(
         request, session_id or uuid.uuid4().hex, "agent"
     )
 
-    from src.agent.harness import agent_harness
-
     async def event_stream():
         yield "retry: 3000\n\n"
-        await _asyncio.sleep(0)
-
-        async for event in agent_harness.run_async_stream(
+        async for event in agent_runtime.events(
             session.storage_id, message
         ):
-            if event.startswith("data: "):
-                payload = json.loads(event.removeprefix("data: "))
-                if payload.get("done"):
-                    payload["session_id"] = session.public_id
-                    event = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-            yield event
+            payload = event.to_dict()
+            if payload.get("done"):
+                payload["session_id"] = session.public_id
+            yield (
+                "data: "
+                + json.dumps(payload, ensure_ascii=False)
+                + "\n\n"
+            )
 
     return StreamingResponse(
         event_stream(),
