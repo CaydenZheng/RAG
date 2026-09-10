@@ -1,77 +1,131 @@
 #!/usr/bin/env python
-"""
-下载 Natural Questions 评测集。
+"""Download Natural Questions records as versioned review candidates."""
 
-来源: Google Natural Questions（真实用户搜索 + Wikipedia 段落答案）
-数量: 50 条（含 long_answer 的问题）
-输出: data/testset/nq_test.json
+from __future__ import annotations
 
-格式:
-[
-  {"question": "...", "ground_truth": "..."},
-  ...
-]
-
-用法:
-    python scripts/download_nq.py
-    python scripts/download_nq.py --num 100
-"""
-
+import argparse
+import hashlib
 import sys
-import json
+from datetime import UTC, datetime
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from typing import Any
 
 from datasets import load_dataset
 from loguru import logger
 
-OUT_FILE = Path("data/testset/nq_test.json")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.evaluation import write_dataset  # noqa: E402
+
+DEFAULT_OUT_FILE = PROJECT_ROOT / "data/testset/nq_candidates.json"
+DATASET_NAME = "google/natural_questions"
+DATASET_SPLIT = "validation"
 
 
-def main(num_questions: int = 50):
-    OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+def _sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
 
-    logger.info("Downloading Natural Questions (validation split, streaming)...")
-    nq = load_dataset("google/natural_questions", split="validation", streaming=True)
 
-    testset = []
-    for item in nq:
-        # 只取有 long_answer 的问题（段落级答案，适合 RAG 评测）
-        long_answer = item["annotations"]["long_answer"]
-        if not long_answer or not long_answer[0]["start_token"]:
+def _long_answer_text(item: dict[str, Any], start: int, end: int) -> str:
+    tokens = item["document"]["tokens"]
+    values = tokens["token"]
+    is_html = tokens.get("is_html", [False] * len(values))
+    return " ".join(
+        token
+        for token, html in zip(values[start:end], is_html[start:end], strict=True)
+        if not html
+    ).strip()
+
+
+def main(
+    num_questions: int = 50,
+    *,
+    output: Path = DEFAULT_OUT_FILE,
+) -> int:
+    logger.info("Downloading {} {} (streaming)...", DATASET_NAME, DATASET_SPLIT)
+    records = load_dataset(DATASET_NAME, split=DATASET_SPLIT, streaming=True)
+    generated_at = datetime.now(UTC).isoformat()
+    candidates: list[dict[str, Any]] = []
+
+    for record_index, item in enumerate(records):
+        long_answers = item["annotations"]["long_answer"]
+        if not long_answers:
+            continue
+        start = long_answers[0]["start_token"]
+        end = long_answers[0]["end_token"]
+        if start < 0 or end <= start:
             continue
 
         question = item["question"]["text"].strip()
-        if not question:
+        short_answers = item["annotations"]["short_answers"]
+        texts = short_answers[0]["text"] if short_answers else []
+        answers = [answer.strip() for answer in texts if answer.strip()]
+        if not question or not answers:
+            # Missing annotations are skipped; a question is never its own answer.
             continue
 
-        # 获取 short_answer（精确答案文本）作为 ground truth
-        short_answers = item["annotations"]["short_answers"]
-        ground_truth = ""
-        if short_answers and short_answers[0]["text"]:
-            ground_truth = short_answers[0]["text"][0]
-        else:
-            # fallback: 用 long_answer 片段
-            ground_truth = question
-
-        testset.append({
-            "question": question,
-            "ground_truth": ground_truth,
-        })
-
-        if len(testset) >= num_questions:
+        evidence = _long_answer_text(item, start, end)
+        if not evidence:
+            continue
+        identity = f"{DATASET_SPLIT}:{record_index}:{question}".encode()
+        source_uri = f"hf://datasets/{DATASET_NAME}/{DATASET_SPLIT}/{record_index}"
+        candidates.append(
+            {
+                "schema_version": 1,
+                "id": f"nq-{_sha256(identity)[:16]}",
+                "question": question,
+                "ground_truth": "; ".join(dict.fromkeys(answers)),
+                "expected_behavior": "answer",
+                "task_types": ["factual"],
+                "split": "development",
+                "source_documents": [
+                    {
+                        "uri": source_uri,
+                        "sha256": _sha256(evidence.encode()),
+                        "association": "dataset_annotation",
+                    }
+                ],
+                "evidence_quotes": [evidence],
+                "provenance": {
+                    "origin": "external_dataset",
+                    "generator": "scripts/download_nq.py",
+                    "model": "not_applicable",
+                    "prompt_version": "not_applicable",
+                    "generated_at": generated_at,
+                    "source_match_method": "dataset_annotation",
+                    "source_dataset": {
+                        "name": DATASET_NAME,
+                        "configuration": "default",
+                        "split": DATASET_SPLIT,
+                        "revision": "unknown",
+                        "record_index": record_index,
+                    },
+                },
+                "review": {
+                    "status": "unverified",
+                    "reviewer": None,
+                    "reviewed_at": None,
+                    "notes": "Imported annotation; project-level human review is still required.",
+                },
+            }
+        )
+        if len(candidates) >= num_questions:
             break
 
-    OUT_FILE.write_text(
-        json.dumps(testset, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    dataset = write_dataset(output, candidates)
+    logger.info(
+        "Saved {} unverified Natural Questions candidates ({}) to {}",
+        len(dataset.records),
+        dataset.version,
+        output,
     )
-    logger.info("✅ Saved {} questions to {}", len(testset), OUT_FILE)
+    return 0
 
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--num", type=int, default=50)
-    args = parser.parse_args()
-    main(args.num)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUT_FILE)
+    arguments = parser.parse_args()
+    raise SystemExit(main(arguments.num, output=arguments.output))

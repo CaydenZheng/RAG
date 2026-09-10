@@ -439,7 +439,7 @@ ragrag/
 
 | 子任务 | 内容 | 依赖 |
 |---|---|---|
-| 5.1 测试集构建 | 自建 50 条 QA pairs（手动标注 golden answers），存入 `data/testset/` | 无 |
+| 5.1 测试集构建 | 版本化开发候选与人工核验 final 集；现有 50 条 AI 数据不视为 golden answers | 无 |
 | 5.2 Ragas 集成 | 接入 ragas 评估，计算 Faithfulness/Context Precision/Recall/Answer Correctness | 3.7 |
 | 5.3 消融实验 | 4 组对照：纯向量 / 纯 BM25 / 混合融合 / 混合+Rerank，输出对比报告 | 5.2 |
 | 5.4 Eval Flow | PocketFlow 编排评估流程，`run_eval.py` 一键执行 | 5.1-5.3 |
@@ -776,7 +776,11 @@ evtSource.onmessage = (e) => {
 
 ## 8. 评估方案
 
-### 8.1 评估指标（双轨制）
+### 8.1 数据可信边界
+
+现有 50 条 Wikipedia QA 是未经充分人工检查的 AI 生成开发候选，来源关系由自动方法回溯。它们不能称为 golden set，也不能用作发布门槛。数据格式、版本、来源和人工审核规则见 [评测数据说明](data/testset/README.md)；final_v1.json 当前为空，只有填写真实审核人和时间的 human_verified 样本才能进入。
+
+### 8.2 评估指标（双轨制）
 
 **检索层**（纯规则计算，秒出，不依赖 LLM）：
 
@@ -794,7 +798,9 @@ evtSource.onmessage = (e) => {
 | Faithfulness | 生成的答案是否完全基于提供的上下文（不编造） |
 | Answer Relevancy | 生成的答案是否与问题相关 |
 
-### 8.2 消融实验结果（50 条 Wikipedia QA）
+### 8.3 历史消融实验结果（50 条未核验 Wikipedia QA）
+
+以下数字仅保留为历史探索记录；在 final 集完成人工核验并重跑前，不作为正式质量结论。
 
 | 实验组 | Context Precision | Context Recall | Faithfulness | Answer Relevancy | MRR |
 |---|---|---|---|---|---|
@@ -808,7 +814,7 @@ evtSource.onmessage = (e) => {
 - Reranker 让相关文档排得更前：Context Precision 从 0.82 提升到 0.86（+4pp）
 - 所有组 Faithfulness > 0.96，引用机制有效抑制幻觉
 
-### 8.3 消融实验（4 组对照）
+### 8.4 消融实验（4 组对照）
 
 | 实验组 | 配置 |
 |---|---|
@@ -817,13 +823,16 @@ evtSource.onmessage = (e) => {
 | C. 混合融合 | 向量 + BM25 → RRF 融合 → 生成 |
 | D. 混合 + Rerank（最终方案） | C + bge-reranker 精排 → 生成 |
 
-### 8.4 运行评估
+### 8.5 运行评估
 
 ```bash
 # 构建索引
 uv run --locked python scripts/build_index.py
 
-# 运行消融实验（50 题 × 4 组，包含检索指标 + RAGAS，约 15 分钟）
+# 校验数据 provenance、版本与开发／最终划分
+uv run --locked python scripts/validate_eval_dataset.py
+
+# 在未核验开发候选上运行探索性消融（50 题 × 4 组，约 15 分钟）
 uv run --locked --group eval python scripts/run_eval.py --testset data/testset/generated_test.json
 ```
 

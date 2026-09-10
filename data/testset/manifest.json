@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "catalog_version": "sha256:881d399eece63ae68617a92b49f78c4cdc7c585c7ed26deb2a2d3677cb28c81b",
+  "description": "Evaluation data catalog. AI-generated samples remain development candidates until a named human reviewer verifies them.",
+  "required_task_types": [
+    "adversarial",
+    "entity",
+    "factual",
+    "multi_hop",
+    "numeric",
+    "temporal",
+    "unanswerable"
+  ],
+  "corpus": {
+    "name": "wikimedia/wikipedia",
+    "configuration": "20231101.en",
+    "split": "train",
+    "revision": "unknown",
+    "local_path": "data/raw/wiki",
+    "document_count": 300,
+    "version": "sha256:ce1d972e244554c2f4ad65ef69adc5480e551eb6d340614fda33af34c40428bb",
+    "collection_method": "first qualifying records from the streaming split",
+    "downloaded_at": "unknown"
+  },
+  "datasets": [
+    {
+      "name": "legacy_ai_candidates",
+      "path": "data/testset/generated_test.json",
+      "split": "development",
+      "review_status": "unverified",
+      "sample_count": 50,
+      "dataset_version": "sha256:3afeebedaa4adf141bab1a9451f565d4dc8fef9bb0dd0788ebd1fc3cb7671924",
+      "sha256": "32ae7d83549fe027eca6533ff428b1c287bb36801b7057b27fcd68314fe538a7"
+    },
+    {
+      "name": "coverage_review_queue_v1",
+      "path": "data/testset/review_queue_v1.json",
+      "split": "development",
+      "review_status": "unverified",
+      "sample_count": 3,
+      "dataset_version": "sha256:5939f246e3f99de25a9cae1998979d639082c91fc69a33c434d55042ad9f3c8b",
+      "sha256": "3b20c0bcf9922712d6d190c0f85f51c211cb8bbc7a16d5ca9ea87addac01fd5a"
+    },
+    {
+      "name": "human_verified_final_v1",
+      "path": "data/testset/final_v1.json",
+      "split": "final",
+      "review_status": "human_verified_only",
+      "sample_count": 0,
+      "dataset_version": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    }
+  ]
+}
