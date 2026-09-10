@@ -302,7 +302,9 @@ def test_rag_stream_returns_public_id_without_leaking_storage_key(
         yield "answer"
 
     monkeypatch.setattr(api, "get_retrieval_flow", RetrievalFlow)
-    monkeypatch.setattr(api.llm_client, "chat_stream_async", stream_answer)
+    from src.core import generation
+
+    monkeypatch.setattr(generation.llm_client, "chat_stream_async", stream_answer)
     response = session_clients.client_a.get(
         "/query/stream",
         params={"query": "probe", "session_id": "public-rag"},

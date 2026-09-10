@@ -738,13 +738,12 @@ GET /query/stream?query=什么是RRF&session_id=abc
   │   → ContextBuilder(sync)                        │
   └─→ shared["context"] + shared["sources"]          │
                                                      │
-  ┌─ 阶段 2: 流式生成（逐 token SSE）─────────────────┐
-  │ async for chunk in llm_client.chat_stream_async():│
-  │   yield f"data: {{\"chunk\": \"Reciprocal\"}}\n\n"│
-  │   yield f"data: {{\"chunk\": \" Rank\"}}\n\n"     │
-  │   ...                                            │
-  │   yield f"data: {{\"done\": true, \"sources\": [...]}}\n\n"│
-  └─ 保存 session ──────────────────────────────────┘
+  ┌─ 阶段 2: 统一回答核心 + SSE 传输 ─────────────────┐
+  │ AnswerService.stream(answer_input)                │
+  │   → 与普通查询共享消息、Prompt 参数和引用约束       │
+  │ iter_answer_sse(...)                              │
+  │   → chunk 事件 → 保存完整回答 → done 事件          │
+  └─ 断连关闭上游生成，失败发送 error 终止事件 ─────────┘
 ```
 
 #### 为什么分两阶段
@@ -755,14 +754,21 @@ GET /query/stream?query=什么是RRF&session_id=abc
 
 #### SSE 响应格式
 
+每个 JSON 数据事件都包含 `event`、`query_id` 和 `done`。成功时只有一个 `done` 终止事件；失败时只有一个 `error` 终止事件。
+
 ```
-data: {"chunk": "RRF"}
-data: {"chunk": "（Reciprocal"}
-data: {"chunk": " Rank"}
-data: {"chunk": " Fusion"}
-...
-data: {"done": true, "answer": "完整答案文本", "sources": [...], "session_id": "abc123"}
+data: {"event": "chunk", "query_id": "a1b2c3", "done": false, "chunk": "RRF"}
+data: {"event": "chunk", "query_id": "a1b2c3", "done": false, "chunk": " 是..."}
+data: {"event": "done", "query_id": "a1b2c3", "done": true, "answer": "完整答案文本", "sources": [...], "session_id": "abc123", "latency_ms": 823.4}
 ```
+
+生成失败返回稳定的公开错误，不暴露 Provider 或本地路径：
+
+```
+data: {"event": "error", "query_id": "a1b2c3", "done": true, "error": {"code": "answer_generation_failed", "message": "回答生成失败，请稍后重试"}}
+```
+
+浏览器关闭连接后，服务器关闭上游异步生成器且不保存部分答案；只有完整生成并确认连接仍有效后才追加本轮会话。
 
 #### 前端消费
 

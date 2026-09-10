@@ -5,7 +5,10 @@ ContextBuilderNode  → 在同一预算内选择历史与本次证据
 GeneratorNode       → 复用统一消息并约束答案引用
 """
 
+import asyncio
 import re
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import List
 
 from loguru import logger
@@ -14,6 +17,7 @@ from pocketflow import AsyncNode, Node
 from config.settings import settings
 from src.infra.prompt_manager import prompt_manager
 from src.infra.session_store import session_store
+from src.llm import llm_client
 from src.utils.token_counter import count_tokens
 
 _CITATION_PATTERN = re.compile(r"\[((?:\d+\s*,\s*)*\d+)\]")
@@ -109,6 +113,106 @@ def build_answer_messages(
     if history:
         messages[1:1] = history
     return messages
+
+
+@dataclass(frozen=True)
+class AnswerInput:
+    """Transport-independent inputs for one answer generation request."""
+
+    query: str
+    context: str
+    history: list[dict[str, str]]
+    session_id: str
+    valid_citation_refs: frozenset[int]
+
+    @classmethod
+    def from_shared(cls, shared: dict) -> "AnswerInput":
+        return cls(
+            query=shared.get("query", ""),
+            context=shared.get("context", ""),
+            history=list(shared.get("history", [])),
+            session_id=shared.get("session_id", ""),
+            valid_citation_refs=frozenset(
+                shared.get("valid_citation_refs", set())
+            ),
+        )
+
+
+class AnswerService:
+    """Run normal or streaming generation with one input and finalization contract."""
+
+    @staticmethod
+    def _messages(answer_input: AnswerInput) -> list[dict[str, str]]:
+        return build_answer_messages(
+            answer_input.query,
+            answer_input.context,
+            answer_input.history,
+        )
+
+    @staticmethod
+    def _config() -> dict:
+        return prompt_manager.get_prompt_config("answer_generation")
+
+    async def generate(self, answer_input: AnswerInput) -> str:
+        from src.infra.fallback import chat_with_fallback_async
+
+        config = self._config()
+        answer = await chat_with_fallback_async(
+            self._messages(answer_input),
+            model=config["model"],
+            temperature=config["temperature"],
+            max_tokens=config["max_tokens"],
+        )
+        return sanitize_answer_citations(
+            answer,
+            set(answer_input.valid_citation_refs),
+        )
+
+    async def stream(self, answer_input: AnswerInput) -> AsyncIterator[str]:
+        config = self._config()
+        citation_guard = CitationStreamGuard(
+            set(answer_input.valid_citation_refs)
+        )
+        provider_stream = llm_client.chat_stream_async(
+            self._messages(answer_input),
+            model=config["model"],
+            temperature=config["temperature"],
+            max_tokens=config["max_tokens"],
+        )
+        try:
+            async for chunk in provider_stream:
+                safe_chunk = citation_guard.feed(chunk)
+                if safe_chunk:
+                    yield safe_chunk
+        except asyncio.CancelledError:
+            logger.info("Answer generation cancelled")
+            raise
+        finally:
+            close = getattr(provider_stream, "aclose", None)
+            if close is not None:
+                await close()
+
+        tail = citation_guard.finish()
+        if tail:
+            yield tail
+
+    @staticmethod
+    def persist(answer_input: AnswerInput, answer: str) -> None:
+        if not answer_input.session_id:
+            return
+        session_store.append_exchange(
+            answer_input.session_id,
+            answer_input.query,
+            answer,
+        )
+        logger.info(
+            "💾 Session {} saved: {} turns total",
+            answer_input.session_id,
+            session_store.history_count(answer_input.session_id),
+        )
+
+
+answer_service = AnswerService()
 
 
 class ContextBuilderNode(Node):
@@ -287,43 +391,22 @@ class ContextBuilderNode(Node):
 
 
 class GeneratorNode(AsyncNode):
-    """Generate and persist an answer using the prepared answer inputs."""
+    """Generate and persist an answer through the shared answer service."""
 
-    async def prep_async(self, shared: dict) -> tuple:
-        return (
-            shared.get("query", ""),
-            shared.get("context", ""),
-            shared.get("history", []),
-            shared.get("session_id", ""),
-            set(shared.get("valid_citation_refs", set())),
-        )
+    async def prep_async(self, shared: dict) -> AnswerInput:
+        return AnswerInput.from_shared(shared)
 
-    async def exec_async(self, inputs: tuple) -> tuple[str, str]:
-        query, context, history, session_id, valid_refs = inputs
-        logger.info("✍️ Generating answer for: {}", query[:80])
-        messages = build_answer_messages(query, context, history)
+    async def exec_async(self, answer_input: AnswerInput) -> str:
+        logger.info("✍️ Generating answer for: {}", answer_input.query[:80])
+        return await answer_service.generate(answer_input)
 
-        from src.infra.fallback import chat_with_fallback_async
-
-        answer = await chat_with_fallback_async(
-            messages,
-            temperature=0.3,
-        )
-        answer = sanitize_answer_citations(answer, valid_refs)
-        return answer, session_id
-
-    async def post_async(self, shared: dict, prep_res, exec_res) -> str:
-        answer, session_id = exec_res
-        shared["answer"] = answer
-
-        if session_id:
-            query = shared.get("query", "")
-            session_store.append_exchange(session_id, query, answer)
-            logger.info(
-                "💾 Session {} saved: {} turns total",
-                session_id,
-                session_store.history_count(session_id),
-            )
-
-        logger.info("✅ Answer generated: {} chars", len(answer))
+    async def post_async(
+        self,
+        shared: dict,
+        prep_res: AnswerInput,
+        exec_res: str,
+    ) -> str:
+        shared["answer"] = exec_res
+        answer_service.persist(prep_res, exec_res)
+        logger.info("✅ Answer generated: {} chars", len(exec_res))
         return "default"

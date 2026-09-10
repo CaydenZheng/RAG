@@ -113,7 +113,8 @@ def test_normal_and_streaming_answers_share_messages_and_filter_citations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app as api
-    from src.core.generation import GeneratorNode
+    from src.core import generation
+    from src.core.generation import AnswerInput, GeneratorNode
     from src.infra import fallback
 
     history = [
@@ -143,11 +144,17 @@ def test_normal_and_streaming_answers_share_messages_and_filter_citations(
 
     monkeypatch.setattr(fallback, "chat_with_fallback_async", normal_answer)
     monkeypatch.setattr(api, "get_retrieval_flow", RetrievalFlow)
-    monkeypatch.setattr(api.llm_client, "chat_stream_async", stream_answer)
+    monkeypatch.setattr(generation.llm_client, "chat_stream_async", stream_answer)
 
-    normal, _ = asyncio.run(
+    normal = asyncio.run(
         GeneratorNode().exec_async(
-            ("question", "prepared context", history, "", {1})
+            AnswerInput(
+                query="question",
+                context="prepared context",
+                history=history,
+                session_id="",
+                valid_citation_refs=frozenset({1}),
+            )
         )
     )
 

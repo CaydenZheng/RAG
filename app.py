@@ -46,14 +46,14 @@ from src.api.schemas import (
     parse_metadata_filter_json,
 )
 from src.api.startup import warm_up_runtime
-from src.core.generation import CitationStreamGuard, build_answer_messages
+from src.api.streaming import iter_answer_sse
+from src.core.generation import AnswerInput, answer_service
 from src.core.knowledge import (
     DEFAULT_RETRIEVAL_MODE,
     DEFAULT_RETRIEVAL_TOP_K,
     MAX_RETRIEVAL_TOP_K,
     RetrievalMode,
 )
-from src.llm import llm_client
 from src.orchestration.agent import get_agent_flow, get_agent_reset_flow
 from src.orchestration.rag import (
     get_offline_flow,
@@ -203,19 +203,16 @@ async def query_stream(
     3. 生成完成后发送 sources 和最终标志
 
     输出格式（SSE）:
-        data: {"chunk": "文本增量"}
-        data: {"done": true, "sources": [...], "session_id": "..."}
+        data: {"event": "chunk", "query_id": "...", "done": false, "chunk": "..."}
+        data: {"event": "done", "query_id": "...", "done": true, ...}
+        data: {"event": "error", "query_id": "...", "done": true, "error": {...}}
     """
-    import asyncio
-
-    from src.infra.prompt_manager import prompt_manager
-    from src.infra.session_store import session_store
-
+    started_at = time.perf_counter()
+    query_id = uuid.uuid4().hex[:12]
     session = scope_request_session(
         request, session_id, "rag", allow_empty=True
     )
 
-    # --- 阶段 1: 检索 ---
     try:
         metadata_filter = parse_metadata_filter_json(filter_json)
     except ValueError as exc:
@@ -231,59 +228,23 @@ async def query_stream(
     try:
         retrieval_flow = get_retrieval_flow()
         await retrieval_flow.run_async(shared)
-    except Exception as e:
-        logger.error("Retrieval failed: {}", e)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("Retrieval failed: {}", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    context = shared.get("context", "")
+    answer_input = AnswerInput.from_shared(shared)
     sources = shared.get("sources", [])
-    history = shared.get("history", [])
-    valid_refs = set(shared.get("valid_citation_refs", set()))
-
-    # --- 阶段 2: 流式生成 ---
-    prompt_config = prompt_manager.get_prompt_config("answer_generation")
-    messages = build_answer_messages(query, context, history)
-
-    async def event_stream():
-        # 立即发送连接建立事件，确保浏览器识别 SSE 已就绪
-        yield "retry: 3000\n\n"
-        await asyncio.sleep(0)  # 强制刷新
-
-        full_answer = []
-        citation_guard = CitationStreamGuard(valid_refs)
-        try:
-            async for chunk in llm_client.chat_stream_async(
-                messages,
-                temperature=prompt_config["temperature"],
-                max_tokens=prompt_config["max_tokens"],
-            ):
-                safe_chunk = citation_guard.feed(chunk)
-                if not safe_chunk:
-                    continue
-                full_answer.append(safe_chunk)
-                yield f"data: {json.dumps({'chunk': safe_chunk}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0)  # 强制事件循环刷新，防止 uvicorn 缓冲
-        except Exception as e:
-            logger.error("Stream generation failed: {}", e)
-            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-            return
-
-        tail = citation_guard.finish()
-        if tail:
-            full_answer.append(tail)
-            yield f"data: {json.dumps({'chunk': tail}, ensure_ascii=False)}\n\n"
-
-        answer = "".join(full_answer)
-
-        # 保存会话
-        if session.storage_id:
-            session_store.append_exchange(session.storage_id, query, answer)
-
-        # 发送结束信号（含 sources）
-        yield f"data: {json.dumps({'done': True, 'answer': answer, 'sources': sources, 'session_id': session.public_id}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
-        event_stream(),
+        iter_answer_sse(
+            request=request,
+            service=answer_service,
+            answer_input=answer_input,
+            sources=sources,
+            public_session_id=session.public_id,
+            query_id=query_id,
+            started_at=started_at,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
