@@ -41,6 +41,7 @@ def chat_with_fallback(
     temperature: float = 0.3,
     max_tokens: Optional[int] = None,
     skip_cache: bool = False,
+    index_version: str | None = None,
 ) -> str:
     """Call the primary provider, then optional Ollama, or raise."""
     model = model or settings.llm_model
@@ -53,6 +54,7 @@ def chat_with_fallback(
             temperature=temperature,
             max_tokens=max_tokens,
             skip_cache=skip_cache,
+            index_version=index_version,
         )
     except Exception as exc:
         last_error = exc
@@ -78,6 +80,7 @@ async def chat_with_fallback_async(
     temperature: float = 0.3,
     max_tokens: Optional[int] = None,
     skip_cache: bool = False,
+    index_version: str | None = None,
 ) -> str:
     """Async primary call with a non-blocking optional Ollama fallback."""
     model = model or settings.llm_model
@@ -90,6 +93,7 @@ async def chat_with_fallback_async(
             temperature=temperature,
             max_tokens=max_tokens,
             skip_cache=skip_cache,
+            index_version=index_version,
         )
     except Exception as exc:
         last_error = exc

@@ -15,6 +15,7 @@ from loguru import logger
 from pocketflow import AsyncNode, Node
 
 from config.settings import settings
+from src.core.index_versions import LEGACY_INDEX_VERSION
 from src.infra.prompt_manager import prompt_manager
 from src.infra.session_store import session_store
 from src.llm import llm_client
@@ -124,6 +125,7 @@ class AnswerInput:
     history: list[dict[str, str]]
     session_id: str
     valid_citation_refs: frozenset[int]
+    index_version: str = LEGACY_INDEX_VERSION
 
     @classmethod
     def from_shared(cls, shared: dict) -> "AnswerInput":
@@ -135,6 +137,7 @@ class AnswerInput:
             valid_citation_refs=frozenset(
                 shared.get("valid_citation_refs", set())
             ),
+            index_version=shared.get("index_version", LEGACY_INDEX_VERSION),
         )
 
 
@@ -162,6 +165,7 @@ class AnswerService:
             model=config["model"],
             temperature=config["temperature"],
             max_tokens=config["max_tokens"],
+            index_version=answer_input.index_version,
         )
         return sanitize_answer_citations(
             answer,

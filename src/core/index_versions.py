@@ -90,10 +90,12 @@ class IndexVersion:
             raise ValueError("invalid index content checksum")
         if self.collection_name != f"rag_v_{self.version_id}":
             raise ValueError("index collection does not match its version")
-        if self.chunk_count < 1:
-            raise ValueError("index version must contain at least one chunk")
-        if not self.sources:
-            raise ValueError("index version must contain at least one source")
+        if self.chunk_count < 0:
+            raise ValueError("index chunk count cannot be negative")
+        if self.chunk_count == 0 and self.sources:
+            raise ValueError("empty index cannot contain sources")
+        if self.chunk_count > 0 and not self.sources:
+            raise ValueError("nonempty index must contain a source")
 
     @classmethod
     def create(
@@ -105,10 +107,9 @@ class IndexVersion:
         chunk_size: int,
         chunk_overlap: int,
         embedding_model: str,
+        embedding_dimension: int | None = None,
     ) -> "IndexVersion":
         records = [dict(chunk) for chunk in chunks]
-        if not records:
-            raise ValueError("cannot create an index version without chunks")
 
         chunk_ids = [str(chunk.get("chunk_id", "")) for chunk in records]
         if any(not chunk_id for chunk_id in chunk_ids):
@@ -120,9 +121,18 @@ class IndexVersion:
             len(chunk.get("embedding") or [])
             for chunk in records
         }
-        if len(dimensions) != 1 or 0 in dimensions:
-            raise ValueError("all indexed embeddings must have one non-zero dimension")
-        embedding_dimension = dimensions.pop()
+        if records:
+            if len(dimensions) != 1 or 0 in dimensions:
+                raise ValueError(
+                    "all indexed embeddings must have one non-zero dimension"
+                )
+            resolved_embedding_dimension = dimensions.pop()
+        else:
+            if embedding_dimension is None or embedding_dimension < 1:
+                raise ValueError(
+                    "empty index requires the embedding dimension"
+                )
+            resolved_embedding_dimension = embedding_dimension
 
         source_records: dict[str, list[dict[str, Any]]] = {}
         canonical_chunks: list[dict[str, Any]] = []
@@ -171,7 +181,7 @@ class IndexVersion:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             embedding_model=embedding_model,
-            embedding_dimension=embedding_dimension,
+            embedding_dimension=resolved_embedding_dimension,
         )
         version_id = _sha256(
             {

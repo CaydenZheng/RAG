@@ -67,6 +67,28 @@ class IndexCatalog:
             )
             return self._cached_active
 
+    def manifest(self, version_id: str) -> IndexVersion:
+        """Load one immutable manifest by its validated version ID."""
+        version_id = validate_index_version_id(version_id)
+        path = self.root.resolve() / "versions" / f"{version_id}.json"
+        try:
+            return IndexVersion.from_dict(
+                json.loads(path.read_text(encoding="utf-8"))
+            )
+        except FileNotFoundError as exc:
+            raise ValueError("index version does not exist") from exc
+
+    def previous(self) -> IndexVersion | None:
+        """Return the version that was active immediately before the current one."""
+        with self._lock:
+            pointer = self.root.resolve() / "active.json"
+            try:
+                data = json.loads(pointer.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return None
+            version_id = data.get("previous_version_id")
+            return self.manifest(str(version_id)) if version_id else None
+
     def publish(self, manifest: IndexVersion) -> ActiveIndex:
         """Persist a complete candidate, then atomically switch the pointer."""
         with self._lock:
@@ -89,10 +111,20 @@ class IndexCatalog:
             else:
                 self._write_json_atomic(manifest_path, manifest.to_dict())
             pointer = root / "active.json"
-            self._write_json_atomic(
-                pointer,
-                {"version_id": manifest.version_id},
-            )
+            current = self.capture()
+            pointer_payload = {"version_id": manifest.version_id}
+            if current.version_id == manifest.version_id:
+                try:
+                    existing = json.loads(pointer.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    existing = {}
+                if existing.get("previous_version_id"):
+                    pointer_payload["previous_version_id"] = existing[
+                        "previous_version_id"
+                    ]
+            elif current.version_id != LEGACY_INDEX_VERSION:
+                pointer_payload["previous_version_id"] = current.version_id
+            self._write_json_atomic(pointer, pointer_payload)
             active = ActiveIndex(
                 manifest.version_id,
                 manifest.collection_name,

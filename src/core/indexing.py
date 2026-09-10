@@ -64,6 +64,55 @@ class IndexBuilderNode(Node):
         with _INDEX_BUILD_LOCK:
             return self._build_and_publish(chunks)
 
+    def rollback(self, version_id: str | None = None) -> dict:
+        """Validate and activate a retained version, defaulting to previous."""
+        with _INDEX_BUILD_LOCK:
+            active_before = self._catalog.capture()
+            target = (
+                self._catalog.manifest(version_id)
+                if version_id
+                else self._catalog.previous()
+            )
+            if target is None:
+                raise IndexBuildError("no previous index version is available")
+            if target.version_id == active_before.version_id:
+                return self._result(target, published=False)
+
+            try:
+                client = self._client_factory()
+                collection = client.get_collection(target.collection_name)
+                stored = collection.get(include=["documents", "metadatas"])
+                ids = list(stored.get("ids") or [])
+                texts = list(stored.get("documents") or [])
+                metadatas = list(stored.get("metadatas") or [])
+                if collection.count() != target.chunk_count:
+                    raise IndexBuildError(
+                        "retained collection count does not match manifest"
+                    )
+                if len(ids) != len(set(ids)) or len(texts) != len(ids):
+                    raise IndexBuildError("retained collection is incomplete")
+                if any(
+                    metadata.get("index_version") != target.version_id
+                    for metadata in metadatas
+                ):
+                    raise IndexBuildError("retained collection version mismatch")
+                candidate_bm25 = BM25Store()
+                candidate_bm25.build(
+                    texts, ids, version_id=target.version_id
+                )
+                self._catalog.publish(target)
+                self._activate_runtime(candidate_bm25, target.version_id)
+            except IndexBuildError:
+                raise
+            except Exception as exc:
+                raise IndexBuildError(
+                    f"index rollback to {target.version_id} failed"
+                ) from exc
+
+            result = self._result(target, published=True)
+            result["rolled_back_from"] = active_before.version_id
+            return result
+
     def _build_and_publish(self, chunks: List[dict]) -> dict:
         """Build both indexes and atomically switch the active version."""
         try:
@@ -74,6 +123,9 @@ class IndexBuilderNode(Node):
                 chunk_size=ChunkerNode.CHUNK_SIZE,
                 chunk_overlap=ChunkerNode.CHUNK_OVERLAP,
                 embedding_model=settings.local_embedding_model,
+                embedding_dimension=(
+                    llm_client.embedding_dim if not chunks else None
+                ),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise IndexBuildError(str(exc)) from exc

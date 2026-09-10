@@ -50,6 +50,26 @@ class LLMClient:
         # --- Embedding 模型 (本地，延迟加载) ---
         self._embedding_model: Optional[SentenceTransformer] = None
 
+    @staticmethod
+    def _cache_dimensions(
+        max_tokens: int | None,
+        index_version: str | None,
+    ) -> dict:
+        from src.infra.index_catalog import index_catalog
+        from src.llm.cache_context import current_cache_identity
+
+        if index_version is None:
+            try:
+                index_version = index_catalog.capture().version_id
+            except Exception:
+                index_version = "unavailable"
+        return {
+            "max_tokens": max_tokens,
+            "identity_scope": current_cache_identity(),
+            "index_version": index_version,
+            "prompt_version": settings.prompt_version,
+        }
+
     # ================================================================
     # Chat (Sync) — 保留兼容旧代码
     # ================================================================
@@ -61,14 +81,22 @@ class LLMClient:
         temperature: float = 0.3,
         max_tokens: Optional[int] = None,
         skip_cache: bool = False,
+        index_version: str | None = None,
     ) -> str:
         """同步调用 LLM 生成回复。"""
         model = model or self._chat_model
+        cache_dimensions = (
+            self._cache_dimensions(max_tokens, index_version)
+            if not skip_cache
+            else {}
+        )
 
         # 检查缓存
         if not skip_cache:
             from src.llm.cache import llm_cache
-            cached = llm_cache.get(model, messages, temperature)
+            cached = llm_cache.get(
+                model, messages, temperature, **cache_dimensions
+            )
             if cached is not None:
                 return cached
 
@@ -89,7 +117,13 @@ class LLMClient:
         # 写入缓存
         if not skip_cache:
             from src.llm.cache import llm_cache
-            llm_cache.set(model, messages, temperature, content)
+            llm_cache.set(
+                model,
+                messages,
+                temperature,
+                content,
+                **cache_dimensions,
+            )
 
         return content
 
@@ -104,14 +138,22 @@ class LLMClient:
         temperature: float = 0.3,
         max_tokens: Optional[int] = None,
         skip_cache: bool = False,
+        index_version: str | None = None,
     ) -> str:
         """异步调用 LLM 生成回复（非流式）。"""
         model = model or self._chat_model
+        cache_dimensions = (
+            self._cache_dimensions(max_tokens, index_version)
+            if not skip_cache
+            else {}
+        )
 
         # 检查缓存（同步读 SQLite，毫秒级）
         if not skip_cache:
             from src.llm.cache import llm_cache
-            cached = llm_cache.get(model, messages, temperature)
+            cached = llm_cache.get(
+                model, messages, temperature, **cache_dimensions
+            )
             if cached is not None:
                 return cached
 
@@ -132,7 +174,13 @@ class LLMClient:
         # 写入缓存
         if not skip_cache:
             from src.llm.cache import llm_cache
-            llm_cache.set(model, messages, temperature, content)
+            llm_cache.set(
+                model,
+                messages,
+                temperature,
+                content,
+                **cache_dimensions,
+            )
 
         return content
 

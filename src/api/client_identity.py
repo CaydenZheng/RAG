@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import HTTPException, Request
 from starlette.datastructures import MutableHeaders
 
+from src.llm.cache_context import scoped_cache_identity
 from src.security.session_ids import (
     SessionNamespace,
     scoped_session_id,
@@ -64,7 +65,8 @@ class ClientIdentityMiddleware:
                 )
             await send(message)
 
-        await self.app(scope, receive, send_with_identity)
+        with scoped_cache_identity(client_id):
+            await self.app(scope, receive, send_with_identity)
 
 
 def _client_cookie_header(client_id: str, *, secure: bool) -> str:

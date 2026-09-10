@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from fastapi import (
     FastAPI,
     File,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -43,6 +44,7 @@ from src.api.reliability import RAGRequestReliabilityMiddleware
 from src.api.schemas import (
     AgentChatRequest,
     AgentChatResponse,
+    IndexJobResponse,
     QueryRequest,
     QueryResponse,
     parse_metadata_filter_json,
@@ -50,15 +52,21 @@ from src.api.schemas import (
 from src.api.startup import warm_up_runtime
 from src.api.streaming import iter_answer_sse
 from src.core.generation import AnswerInput, answer_service
+from src.core.index_jobs import (
+    IndexCommand,
+    IndexJobConflictError,
+    validate_job_id,
+)
 from src.core.knowledge import (
     DEFAULT_RETRIEVAL_MODE,
     DEFAULT_RETRIEVAL_TOP_K,
     MAX_RETRIEVAL_TOP_K,
     RetrievalMode,
 )
+from src.infra.index_jobs import get_index_jobs
+from src.infra.uploads import read_upload, validate_document_filename
 from src.orchestration.agent import get_agent_flow, get_agent_reset_flow
 from src.orchestration.rag import (
-    get_offline_flow,
     get_online_flow,
     get_retrieval_flow,
 )
@@ -163,33 +171,100 @@ async def query(req: QueryRequest, request: Request):
     )
 
 
-@app.post("/upload")
-async def upload(file: UploadFile = File(...)):
-    """上传文档，触发增量索引重建"""
-    import asyncio as _asyncio
+def _submit_index_job(
+    command: IndexCommand,
+    idempotency_key: str | None,
+) -> dict:
+    try:
+        return get_index_jobs().submit(
+            command, idempotency_key=idempotency_key
+        ).to_dict()
+    except IndexJobConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    from src.infra.uploads import save_upload
 
-    file_path = await save_upload(file, settings.raw_dir, settings.max_upload_bytes)
-    logger.info("File saved: {}", file_path)
+@app.post("/upload", response_model=IndexJobResponse, status_code=202)
+async def upload(
+    file: UploadFile = File(...),
+    replace: bool = Query(default=False),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key"
+    ),
+):
+    """Queue an idempotent document create or replacement."""
+    document = await read_upload(file, settings.max_upload_bytes)
+    return _submit_index_job(
+        IndexCommand.upload(
+            document.filename,
+            document.content,
+            replace=replace,
+        ),
+        idempotency_key,
+    )
 
-    # 离线索引是 CPU 密集型（embedding），放入线程池避免阻塞事件循环
-    def _run_indexing():
-        flow = get_offline_flow()
-        shared = {}
-        flow.run(shared)
-        return shared.get("index_info", {})
 
-    loop = _asyncio.get_event_loop()
-    info = await loop.run_in_executor(None, _run_indexing)
+@app.delete(
+    "/documents/{filename}",
+    response_model=IndexJobResponse,
+    status_code=202,
+)
+def delete_document_from_index(
+    filename: str,
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key"
+    ),
+):
+    """Queue an idempotent document deletion and index rebuild."""
+    try:
+        validate_document_filename(filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _submit_index_job(IndexCommand.delete(filename), idempotency_key)
 
-    return {
-        "status": "indexed",
-        "chunks": info.get("chunks_count", 0),
-        "fingerprint": info.get("fingerprint", ""),
-        "version_id": info.get("version_id", info.get("fingerprint", "")),
-        "published": info.get("published", True),
-    }
+
+@app.post(
+    "/index/rebuild",
+    response_model=IndexJobResponse,
+    status_code=202,
+)
+def rebuild_index(
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key"
+    ),
+):
+    """Queue a full rebuild of the current document set."""
+    return _submit_index_job(IndexCommand.rebuild(), idempotency_key)
+
+
+@app.post(
+    "/index/rollback",
+    response_model=IndexJobResponse,
+    status_code=202,
+)
+def rollback_index(
+    version_id: str = "",
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key"
+    ),
+):
+    """Queue activation of a retained version or the previous version."""
+    return _submit_index_job(
+        IndexCommand.rollback(version_id), idempotency_key
+    )
+
+
+@app.get("/index/jobs/{job_id}", response_model=IndexJobResponse)
+def index_job_status(job_id: str):
+    """Return the persistent state of one index job."""
+    try:
+        job = get_index_jobs().status(validate_job_id(job_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Index job not found")
+    return job.to_dict()
 
 
 # ================================================================
@@ -332,7 +407,6 @@ async def agent_chat(req: AgentChatRequest, request: Request):
 
     # 使用 asyncio.to_thread 避免同步 flow 阻塞事件循环
     import asyncio
-    loop = asyncio.get_event_loop()
 
     def _run_sync():
         flow = get_agent_flow()
@@ -343,7 +417,7 @@ async def agent_chat(req: AgentChatRequest, request: Request):
             shared["agent_error"] = str(e)
         return shared
 
-    shared = await loop.run_in_executor(None, _run_sync)
+    shared = await asyncio.to_thread(_run_sync)
 
     latency = (time.time() - start) * 1000
 
