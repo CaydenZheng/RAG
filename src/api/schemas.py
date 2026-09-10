@@ -56,6 +56,7 @@ class QueryResponse(BaseModel):
     query_id: str
     answer: str
     sources: list[dict]
+    warnings: list[str] = Field(default_factory=list)
     latency_ms: float
 
 

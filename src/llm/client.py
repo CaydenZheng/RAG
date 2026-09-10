@@ -14,11 +14,11 @@
         print(chunk, end="")
 """
 
-from openai import OpenAI, AsyncOpenAI, Timeout
-from sentence_transformers import SentenceTransformer
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from typing import AsyncGenerator, List, Optional
+
 from loguru import logger
-from typing import List, Optional, AsyncGenerator
+from openai import AsyncOpenAI, OpenAI, Timeout
+from sentence_transformers import SentenceTransformer
 
 from config.settings import settings
 
@@ -32,6 +32,7 @@ class LLMClient:
             api_key=settings.openai_api_key,
             base_url=settings.openai_base_url,
             timeout=60.0,
+            max_retries=settings.llm_max_retries,
         )
         self._async_chat_client = AsyncOpenAI(
             api_key=settings.openai_api_key,
@@ -42,7 +43,7 @@ class LLMClient:
                 write=60.0,     # 发送请求 60s
                 pool=10.0,      # 连接池等待 10s
             ),
-            max_retries=2,
+            max_retries=settings.llm_max_retries,
         )
         self._chat_model = settings.llm_model
 
@@ -53,11 +54,6 @@ class LLMClient:
     # Chat (Sync) — 保留兼容旧代码
     # ================================================================
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception_type(Exception),
-    )
     def chat(
         self,
         messages: List[dict],

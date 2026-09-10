@@ -8,12 +8,8 @@ from collections.abc import AsyncIterator
 from loguru import logger
 from starlette.requests import Request
 
+from src.api.public_errors import public_error
 from src.core.generation import AnswerInput, AnswerService
-
-_PUBLIC_GENERATION_ERROR = {
-    "code": "answer_generation_failed",
-    "message": "回答生成失败，请稍后重试",
-}
 
 
 def encode_sse_event(event: dict) -> str:
@@ -43,6 +39,7 @@ async def iter_answer_sse(
     service: AnswerService,
     answer_input: AnswerInput,
     sources: list[dict],
+    warnings: list[str],
     public_session_id: str,
     query_id: str,
     started_at: float,
@@ -98,7 +95,7 @@ async def iter_answer_sse(
                 "error",
                 query_id,
                 done=True,
-                error=_PUBLIC_GENERATION_ERROR,
+                error=public_error("answer_generation_failed"),
             )
         )
         return
@@ -111,6 +108,7 @@ async def iter_answer_sse(
             done=True,
             answer=answer,
             sources=sources,
+            warnings=warnings,
             session_id=public_session_id,
             latency_ms=latency_ms,
         )

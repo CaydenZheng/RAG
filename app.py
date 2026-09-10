@@ -38,6 +38,8 @@ from loguru import logger
 
 from config.settings import settings
 from src.api.client_identity import ClientIdentityMiddleware, scope_request_session
+from src.api.public_errors import public_error
+from src.api.reliability import RAGRequestReliabilityMiddleware
 from src.api.schemas import (
     AgentChatRequest,
     AgentChatResponse,
@@ -74,6 +76,7 @@ app = FastAPI(
 )
 
 
+app.add_middleware(RAGRequestReliabilityMiddleware)
 app.add_middleware(ClientIdentityMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.router.add_event_handler("startup", warm_up_runtime)
@@ -108,7 +111,7 @@ async def query(req: QueryRequest, request: Request):
     session = scope_request_session(
         request, req.session_id, "rag", allow_empty=True
     )
-    query_id = uuid.uuid4().hex[:12]
+    query_id = request.state.request_id
     start = time.time()
 
     from src.infra.tracer import tracer
@@ -125,10 +128,17 @@ async def query(req: QueryRequest, request: Request):
     try:
         flow = get_online_flow()
         await flow.run_async(shared)
-    except Exception as e:
-        logger.error("Query failed: {}", e)
-        tracer.finish_trace(trace, answer="", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.exception("Query {} failed", query_id)
+        tracer.finish_trace(
+            trace,
+            answer="",
+            error=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=public_error("query_failed"),
+        ) from exc
 
     latency = (time.time() - start) * 1000
     answer = shared.get("answer", "")
@@ -147,6 +157,7 @@ async def query(req: QueryRequest, request: Request):
         query_id=query_id,
         answer=answer,
         sources=shared.get("sources", []),
+        warnings=shared.get("warnings", []),
         latency_ms=round(latency, 1),
     )
 
@@ -208,7 +219,7 @@ async def query_stream(
         data: {"event": "error", "query_id": "...", "done": true, "error": {...}}
     """
     started_at = time.perf_counter()
-    query_id = uuid.uuid4().hex[:12]
+    query_id = request.state.request_id
     session = scope_request_session(
         request, session_id, "rag", allow_empty=True
     )
@@ -229,11 +240,15 @@ async def query_stream(
         retrieval_flow = get_retrieval_flow()
         await retrieval_flow.run_async(shared)
     except Exception as exc:
-        logger.error("Retrieval failed: {}", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.exception("Retrieval {} failed", query_id)
+        raise HTTPException(
+            status_code=503,
+            detail=public_error("retrieval_failed"),
+        ) from exc
 
     answer_input = AnswerInput.from_shared(shared)
     sources = shared.get("sources", [])
+    warnings = shared.get("warnings", [])
 
     return StreamingResponse(
         iter_answer_sse(
@@ -241,6 +256,7 @@ async def query_stream(
             service=answer_service,
             answer_input=answer_input,
             sources=sources,
+            warnings=warnings,
             public_session_id=session.public_id,
             query_id=query_id,
             started_at=started_at,

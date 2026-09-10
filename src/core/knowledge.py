@@ -1,10 +1,13 @@
 """Unified retrieval interface for HTTP, Agent, and evaluation callers."""
 
+import asyncio
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
 from chromadb.api.types import validate_where
+from loguru import logger
 
+from config.settings import settings
 from src.core.retrieval import (
     HybridRetrieverNode,
     QueryRewriterNode,
@@ -91,6 +94,7 @@ class RetrievalResult:
     query_variants: list[str]
     candidates: list[dict]
     chunks: list[dict]
+    warnings: tuple[str, ...] = ()
 
 
 class KnowledgeSystem:
@@ -124,33 +128,63 @@ class KnowledgeSystem:
         else:
             variants = [query]
 
-        candidates = self._retriever.search(
+        candidates = await asyncio.to_thread(
+            self._retriever.search,
             variants,
             metadata_filter,
             mode,
             top_k,
         )
-        if mode == "hybrid+rerank":
-            chunks = self._reranker.rerank(query, candidates, top_k)
+        warnings: list[str] = []
+        if mode == "hybrid+rerank" and candidates:
+            try:
+                chunks = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._reranker.rerank,
+                        query,
+                        candidates,
+                        top_k,
+                    ),
+                    timeout=settings.rerank_timeout_seconds,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Rerank timed out after {}s; using fusion order",
+                    settings.rerank_timeout_seconds,
+                )
+                warnings.append("rerank_timeout")
+                chunks = self._rank_without_reranker(candidates, top_k)
+            except Exception:
+                logger.exception("Rerank failed; using fusion order")
+                warnings.append("rerank_unavailable")
+                chunks = self._rank_without_reranker(candidates, top_k)
         else:
-            chunks = sorted(
-                (
-                    {
-                        **candidate,
-                        "rerank_score": candidate.get("rrf_score", 0),
-                    }
-                    for candidate in candidates
-                ),
-                key=lambda candidate: candidate["rerank_score"],
-                reverse=True,
-            )[:top_k]
+            chunks = self._rank_without_reranker(candidates, top_k)
 
         return RetrievalResult(
             query=query,
             query_variants=variants,
             candidates=candidates,
             chunks=chunks,
+            warnings=tuple(warnings),
         )
+
+    @staticmethod
+    def _rank_without_reranker(
+        candidates: list[dict],
+        top_k: int,
+    ) -> list[dict]:
+        return sorted(
+            (
+                {
+                    **candidate,
+                    "rerank_score": candidate.get("rrf_score", 0),
+                }
+                for candidate in candidates
+            ),
+            key=lambda candidate: candidate["rerank_score"],
+            reverse=True,
+        )[:top_k]
 
 
 knowledge_system = KnowledgeSystem()

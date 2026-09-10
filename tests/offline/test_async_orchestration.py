@@ -36,8 +36,12 @@ def test_query_endpoint_awaits_flow_failure(
     finally:
         client.close()
 
-    assert response.status_code == 500
-    assert response.json()["detail"] == "query orchestration failed"
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "query_failed",
+        "message": "查询处理失败，请稍后重试",
+    }
+    assert "query orchestration failed" not in response.text
 
 
 def test_agent_knowledge_tool_awaits_retrieval_flow(

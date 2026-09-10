@@ -183,6 +183,7 @@ def test_disconnect_closes_generation_without_persisting_partial_answer(
                     valid_citation_refs=frozenset(),
                 ),
                 sources=[],
+                warnings=[],
                 public_session_id="public-session",
                 query_id="query-id",
                 started_at=time.perf_counter(),
