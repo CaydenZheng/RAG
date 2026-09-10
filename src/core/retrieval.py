@@ -106,6 +106,7 @@ class HybridRetrieverNode(Node):
         """Run Dense and/or BM25 retrieval followed by RRF fusion."""
         use_vector = mode in ("vector_only", "hybrid", "hybrid+rerank")
         use_bm25 = mode in ("bm25_only", "hybrid", "hybrid+rerank")
+        allowed_chunk_ids = self._resolve_allowed_chunk_ids(metadata_filter)
 
         all_vector_hits: Dict[str, Tuple[int, float]] = {}
         all_bm25_hits: Dict[str, Tuple[int, float]] = {}
@@ -117,6 +118,11 @@ class HybridRetrieverNode(Node):
                 vec_results = self._vector_search(query, metadata_filter)
                 for rank, item in enumerate(vec_results):
                     cid = item["chunk_id"]
+                    if (
+                        allowed_chunk_ids is not None
+                        and cid not in allowed_chunk_ids
+                    ):
+                        continue
                     if cid not in all_vector_hits or rank < all_vector_hits[cid][0]:
                         all_vector_hits[cid] = (rank, item["similarity"])
                     if cid not in chunk_map:
@@ -128,13 +134,24 @@ class HybridRetrieverNode(Node):
 
             # --- BM25 检索 ---
             if use_bm25:
-                bm25_results = bm25_store.search(query, top_k=settings.bm25_top_k)
+                bm25_results = bm25_store.search(
+                    query,
+                    top_k=settings.bm25_top_k,
+                    allowed_chunk_ids=allowed_chunk_ids,
+                )
                 for rank, (cid, score) in enumerate(bm25_results):
+                    if (
+                        allowed_chunk_ids is not None
+                        and cid not in allowed_chunk_ids
+                    ):
+                        continue
                     if cid not in all_bm25_hits or rank < all_bm25_hits[cid][0]:
                         all_bm25_hits[cid] = (rank, score)
-                    # BM25 不返回原文，从未知 chunk 需从 ChromaDB 补拉
+                    # BM25 不返回原文，从 ChromaDB 按相同 scope 补拉。
                     if cid not in chunk_map:
-                        chunk_map[cid] = self._fetch_chunk_text(cid)
+                        chunk = self._fetch_chunk_text(cid, metadata_filter)
+                        if chunk is not None:
+                            chunk_map[cid] = chunk
 
         logger.info("Vector hits: {} unique, BM25 hits: {} unique",
                      len(all_vector_hits), len(all_bm25_hits))
@@ -160,40 +177,58 @@ class HybridRetrieverNode(Node):
                      len(sorted_chunks), len(results), mode)
         return results
 
-    def _fetch_chunk_text(self, chunk_id: str) -> dict:
-        """从 ChromaDB 按 chunk_id 拉取原文（BM25 结果补全用）"""
+    def _resolve_allowed_chunk_ids(
+        self, metadata_filter: dict | None
+    ) -> set[str] | None:
+        """Resolve the Chroma scope once for BM25 and fusion."""
+        if not metadata_filter:
+            return None
+
+        collection = self._get_collection()
+        if collection is None:
+            return set()
+
+        result = collection.get(where=metadata_filter, include=[])
+        return set(result.get("ids", []))
+
+    def _fetch_chunk_text(
+        self, chunk_id: str, metadata_filter: dict | None
+    ) -> dict | None:
+        """从 ChromaDB 按相同 scope 补拉 BM25 原文。"""
         try:
-            import chromadb
-            client = chromadb.PersistentClient(
-                path=str(settings.chroma_path.resolve()),
-                settings=chromadb.config.Settings(anonymized_telemetry=False),
-            )
-            collection = client.get_collection("rag_collection")
-            result = collection.get(ids=[chunk_id])
+            collection = self._get_collection()
+            if collection is None:
+                return None
+            kwargs = {"ids": [chunk_id]}
+            if metadata_filter:
+                kwargs["where"] = metadata_filter
+            result = collection.get(**kwargs)
             if result["documents"]:
                 return {
                     "chunk_id": chunk_id,
                     "text": result["documents"][0],
                     "metadata": result["metadatas"][0] if result["metadatas"] else {},
                 }
+        except Exception as exc:
+            logger.warning("Failed to fetch scoped chunk {}: {}", chunk_id, exc)
+        return None
+
+    def _get_collection(self):
+        client = chromadb.PersistentClient(
+            path=str(settings.chroma_path.resolve()),
+            settings=chromadb.config.Settings(anonymized_telemetry=False),
+        )
+        try:
+            return client.get_collection("rag_collection")
         except Exception:
-            pass
-        return {"chunk_id": chunk_id, "text": "", "metadata": {}}
+            logger.warning("ChromaDB collection not found, run build_index.py first")
+            return None
 
     def _vector_search(self, query: str, metadata_filter: dict = None) -> List[dict]:
         """单次向量检索"""
         query_vec = llm_client.embed_single(query)
-
-        persist_dir = str(settings.chroma_path.resolve())
-        client = chromadb.PersistentClient(
-            path=persist_dir,
-            settings=chromadb.config.Settings(anonymized_telemetry=False),
-        )
-
-        try:
-            collection = client.get_collection("rag_collection")
-        except Exception:
-            logger.warning("ChromaDB collection not found, run build_index.py first")
+        collection = self._get_collection()
+        if collection is None:
             return []
 
         kwargs = dict(

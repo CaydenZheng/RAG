@@ -446,6 +446,8 @@ ragrag/
 
 普通查询、流式查询、Agent 知识库工具和四组消融评测都通过 `KnowledgeSystem` 执行检索。调用方只选择检索模式并接收统一的查询变体、候选集和最终 chunk，不再自行拼接改写、Dense／BM25、RRF 与 Rerank 节点。Agent 工具只取得检索上下文，最终答案仍由 Agent 生成，避免一次问题重复生成。
 
+当请求带有 `filter` 时，它同时定义本次检索的数据范围：Dense 查询直接使用相同的 Chroma `where`，BM25 在截取 Top-K 前按 Chroma 解析出的允许 chunk 集合过滤，融合和 BM25 原文补拉也只接受该范围内的 chunk。
+
 ```
 候选集 = VectorRetrieval(query, top_k=20)
        ∪ BM25Retrieval(query, top_k=20)
