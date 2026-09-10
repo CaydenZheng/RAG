@@ -95,8 +95,7 @@ class IndexBuilderNode(Node):
             if active_before.version_id == manifest.version_id:
                 collection = client.get_collection(manifest.collection_name)
                 self._validate_collection(collection, ids)
-                self._runtime_bm25.activate(candidate_bm25)
-                self._update_cache_version(manifest.version_id)
+                self._activate_runtime(candidate_bm25, manifest.version_id)
                 return self._result(manifest, published=False)
 
             self._delete_collection_if_present(client, manifest.collection_name)
@@ -112,13 +111,10 @@ class IndexBuilderNode(Node):
             self._write_collection(collection, versioned_chunks)
             self._validate_collection(collection, ids)
 
-            # Switching the cache namespace early can only cause misses while
-            # readers still use the old index; it cannot return stale answers.
-            self._update_cache_version(manifest.version_id)
-            self._catalog.publish(
-                manifest,
-                lambda: self._runtime_bm25.activate(candidate_bm25),
-            )
+            self._catalog.publish(manifest)
+            # The durable pointer is the commit point. Until these in-memory
+            # adapters catch up, version checks make retrieval use vector-only.
+            self._activate_runtime(candidate_bm25, manifest.version_id)
             logger.info(
                 "Published index version {} with {} chunks",
                 manifest.version_id,
@@ -136,6 +132,29 @@ class IndexBuilderNode(Node):
             raise IndexBuildError(
                 f"index candidate {manifest.version_id} failed validation"
             ) from exc
+
+    def _activate_runtime(
+        self,
+        candidate_bm25: BM25Store,
+        version_id: str,
+    ) -> None:
+        """Refresh optional runtime adapters after durable publication."""
+        try:
+            self._runtime_bm25.activate(candidate_bm25)
+        except Exception as exc:
+            logger.warning(
+                "BM25 activation failed for index {}: {}",
+                version_id,
+                exc,
+            )
+        try:
+            self._update_cache_version(version_id)
+        except Exception as exc:
+            logger.warning(
+                "Cache fingerprint update failed for index {}: {}",
+                version_id,
+                exc,
+            )
 
     def _write_collection(self, collection: Any, chunks: List[dict]) -> None:
         for start in range(0, len(chunks), self.BATCH_SIZE):

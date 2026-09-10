@@ -168,6 +168,57 @@ def test_failed_candidate_never_replaces_active_index(
     )
 
 
+def test_failed_pointer_commit_keeps_old_runtime_index(
+    isolated_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from config.settings import settings
+    from src.core.errors import IndexBuildError
+    from src.core.index_versions import IndexVersion
+    from src.core.indexing import IndexBuilderNode
+    from src.core.ingestion import CHUNKER_VERSION, PARSER_VERSION, ChunkerNode
+    from src.infra.index_catalog import IndexCatalog
+    from src.utils.bm25_store import BM25Store
+
+    catalog = IndexCatalog(isolated_runtime / "manifests")
+    runtime_bm25 = BM25Store()
+    client = FakeClient()
+    cache = FakeCache()
+    builder = IndexBuilderNode(
+        catalog=catalog,
+        runtime_bm25=runtime_bm25,
+        client_factory=lambda: client,
+        cache=cache,
+    )
+    builder.exec(_chunks("published content"))
+    active_before = catalog.capture()
+
+    next_manifest = IndexVersion.create(
+        _chunks("replacement content"),
+        parser=PARSER_VERSION,
+        chunker=CHUNKER_VERSION,
+        chunk_size=ChunkerNode.CHUNK_SIZE,
+        chunk_overlap=ChunkerNode.CHUNK_OVERLAP,
+        embedding_model=settings.local_embedding_model,
+    )
+    write_json_atomic = catalog._write_json_atomic
+
+    def fail_active_pointer(path: Path, payload: dict) -> None:
+        if path.name == "active.json":
+            raise OSError("pointer commit failed")
+        write_json_atomic(path, payload)
+
+    monkeypatch.setattr(catalog, "_write_json_atomic", fail_active_pointer)
+
+    with pytest.raises(IndexBuildError):
+        builder.exec(_chunks("replacement content"))
+
+    assert catalog.capture() == active_before
+    assert runtime_bm25.version_id == active_before.version_id
+    assert cache.versions == [active_before.version_id]
+    assert next_manifest.collection_name not in client.collections
+
+
 def test_published_manifest_matches_real_chroma_collection(
     isolated_runtime: Path,
 ) -> None:

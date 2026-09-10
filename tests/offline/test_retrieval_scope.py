@@ -73,12 +73,14 @@ def test_hybrid_retrieval_keeps_one_scope_across_all_paths(
         top_k: int,
         *,
         allowed_chunk_ids: set[str] | None,
+        version_id: str,
     ) -> list[tuple[str, float]]:
         bm25_calls.append(
             {
                 "query": query,
                 "top_k": top_k,
                 "allowed_chunk_ids": allowed_chunk_ids,
+                "version_id": version_id,
             }
         )
         return [("blocked-bm25", 9.0), ("allowed-bm25", 5.0)]
@@ -106,6 +108,7 @@ def test_hybrid_retrieval_keeps_one_scope_across_all_paths(
             "query": "question",
             "top_k": retrieval.settings.bm25_top_k,
             "allowed_chunk_ids": {"allowed-vector", "allowed-bm25"},
+            "version_id": "legacy",
         }
     ]
 

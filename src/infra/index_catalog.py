@@ -4,7 +4,7 @@ import json
 import os
 import threading
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -67,12 +67,8 @@ class IndexCatalog:
             )
             return self._cached_active
 
-    def publish(
-        self,
-        manifest: IndexVersion,
-        activate_runtime: Callable[[], None],
-    ) -> ActiveIndex:
-        """Persist a complete candidate, then switch disk and runtime state."""
+    def publish(self, manifest: IndexVersion) -> ActiveIndex:
+        """Persist a complete candidate, then atomically switch the pointer."""
         with self._lock:
             root = self.root.resolve()
             versions = root / "versions"
@@ -92,10 +88,6 @@ class IndexCatalog:
                 manifest = persisted
             else:
                 self._write_json_atomic(manifest_path, manifest.to_dict())
-            # Runtime activation happens before the pointer commit. Readers that
-            # still hold the old version will see a BM25 version mismatch and
-            # safely use vector-only retrieval during this brief interval.
-            activate_runtime()
             pointer = root / "active.json"
             self._write_json_atomic(
                 pointer,

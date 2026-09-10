@@ -14,10 +14,7 @@ from loguru import logger
 from pocketflow import AsyncNode, Node
 
 from config.settings import settings
-from src.core.index_versions import (
-    LEGACY_INDEX_VERSION,
-    CandidateBatch,
-)
+from src.core.index_versions import CandidateBatch
 from src.infra.index_catalog import index_catalog
 from src.infra.prompt_manager import prompt_manager
 from src.llm import llm_client
@@ -156,19 +153,12 @@ class HybridRetrieverNode(Node):
 
             # --- BM25 检索 ---
             if use_bm25:
-                if active_index.version_id == LEGACY_INDEX_VERSION:
-                    bm25_results = bm25_store.search(
-                        query,
-                        top_k=bm25_limit,
-                        allowed_chunk_ids=allowed_chunk_ids,
-                    )
-                else:
-                    bm25_results = bm25_store.search(
-                        query,
-                        top_k=bm25_limit,
-                        allowed_chunk_ids=allowed_chunk_ids,
-                        version_id=active_index.version_id,
-                    )
+                bm25_results = bm25_store.search(
+                    query,
+                    top_k=bm25_limit,
+                    allowed_chunk_ids=allowed_chunk_ids,
+                    version_id=active_index.version_id,
+                )
                 for rank, (cid, score) in enumerate(bm25_results):
                     if (
                         allowed_chunk_ids is not None
