@@ -62,7 +62,14 @@ def test_agent_knowledge_tool_awaits_retrieval_flow(
     registry = ToolRegistry(dedup_window=0)
     registry.register(_create_search_kb_tool())
     result = registry.execute(
-        "search_knowledge_base", {"query": "probe", "top_k": 1}, "session"
+        "search_knowledge_base",
+        {
+            "query": "probe",
+            "top_k": 1,
+            "filter": {"category": "public"},
+            "retrieval_mode": "bm25_only",
+        },
+        "session",
     )
 
     assert result.success
@@ -71,7 +78,14 @@ def test_agent_knowledge_tool_awaits_retrieval_flow(
         "context": "context",
         "sources": [{"id": 1}],
     }
-    assert calls == [{"query": "probe"}]
+    assert calls == [
+        {
+            "query": "probe",
+            "top_k": 1,
+            "filter": {"category": "public"},
+            "retrieval_mode": "bm25_only",
+        }
+    ]
 
 
 def test_streaming_agent_knowledge_tool_awaits_retrieval_flow(
@@ -105,7 +119,14 @@ def test_streaming_agent_knowledge_tool_awaits_retrieval_flow(
         "context": "retrieval context",
         "sources": [{"id": 1}],
     }
-    assert calls == [{"query": "probe"}]
+    assert calls == [
+        {
+            "query": "probe",
+            "top_k": 1,
+            "filter": None,
+            "retrieval_mode": "hybrid+rerank",
+        }
+    ]
 
 
 def test_agent_knowledge_tool_preserves_flow_failure(

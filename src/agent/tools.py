@@ -41,6 +41,9 @@ class ToolParam:
     description: str
     required: bool = True
     default: Any = None
+    minimum: float | None = None
+    maximum: float | None = None
+    choices: tuple[Any, ...] | None = None
 
 
 @dataclass
@@ -119,6 +122,10 @@ class ToolRegistry:
                     "type": p.type,
                     "description": p.description,
                     "required": p.required,
+                    "default": p.default,
+                    "minimum": p.minimum,
+                    "maximum": p.maximum,
+                    "choices": p.choices,
                 }
                 for p in tool.params
             }
@@ -226,10 +233,37 @@ class ToolRegistry:
                     "list": list,
                 }
                 expected = type_map.get(param_def.type)
-                if expected and not isinstance(value, expected):
+                wrong_type = expected and not isinstance(value, expected)
+                if param_def.type == "int" and isinstance(value, bool):
+                    wrong_type = True
+                if wrong_type:
                     return (
                         f"Param '{param_def.name}' expected type '{param_def.type}', "
                         f"got '{type(value).__name__}'"
+                    )
+                if (
+                    param_def.minimum is not None
+                    and value < param_def.minimum
+                ):
+                    return (
+                        f"Param '{param_def.name}' must be at least "
+                        f"{param_def.minimum:g}"
+                    )
+                if (
+                    param_def.maximum is not None
+                    and value > param_def.maximum
+                ):
+                    return (
+                        f"Param '{param_def.name}' must be at most "
+                        f"{param_def.maximum:g}"
+                    )
+                if (
+                    param_def.choices is not None
+                    and value not in param_def.choices
+                ):
+                    return (
+                        f"Param '{param_def.name}' must be one of "
+                        f"{list(param_def.choices)}"
                     )
         return None
 
@@ -283,14 +317,33 @@ def _create_search_kb_tool() -> ToolDef:
     """
 
     def execute(params: dict) -> ToolResult:
-        query = params["query"]
-        top_k = params.get("top_k", 5)
-
         try:
+            from src.core.knowledge import (
+                DEFAULT_RETRIEVAL_MODE,
+                DEFAULT_RETRIEVAL_TOP_K,
+                validate_metadata_filter,
+                validate_retrieval_mode,
+                validate_retrieval_top_k,
+            )
+
+            query = params["query"]
+            top_k = validate_retrieval_top_k(
+                params.get("top_k", DEFAULT_RETRIEVAL_TOP_K)
+            )
+            metadata_filter = validate_metadata_filter(params.get("filter"))
+            retrieval_mode = validate_retrieval_mode(
+                params.get("retrieval_mode", DEFAULT_RETRIEVAL_MODE)
+            )
+
             # 仅执行统一检索与上下文构建，最终回答由 Agent 生成。
             from src.orchestration.rag import get_retrieval_flow
             flow = get_retrieval_flow()
-            shared = {"query": query}
+            shared = {
+                "query": query,
+                "top_k": top_k,
+                "filter": metadata_filter,
+                "retrieval_mode": retrieval_mode,
+            }
 
             import time as _time
             t0 = _time.time()
@@ -317,7 +370,34 @@ def _create_search_kb_tool() -> ToolDef:
         description="检索知识库获取信息。适用于需要查找文档、概念解释、技术细节。",
         params=[
             ToolParam("query", "str", "检索查询语句"),
-            ToolParam("top_k", "int", "返回结果数量", required=False, default=5),
+            ToolParam(
+                "top_k",
+                "int",
+                "返回结果数量（1-20）",
+                required=False,
+                default=5,
+                minimum=1,
+                maximum=20,
+            ),
+            ToolParam(
+                "filter",
+                "dict",
+                "Chroma metadata where 条件",
+                required=False,
+            ),
+            ToolParam(
+                "retrieval_mode",
+                "str",
+                "检索模式",
+                required=False,
+                default="hybrid+rerank",
+                choices=(
+                    "vector_only",
+                    "bm25_only",
+                    "hybrid",
+                    "hybrid+rerank",
+                ),
+            ),
         ],
         safety_level=SafetyLevel.WHITELIST,  # 纯读取，无副作用
         execute_fn=execute,

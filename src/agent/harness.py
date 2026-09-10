@@ -464,14 +464,31 @@ class AgentHarness:
 
     async def _search_kb_async(self, params: dict, session_id: str):
         """异步知识库检索，不重复执行 RAG 答案生成。"""
-        from src.orchestration.rag import get_retrieval_flow
-
-        query = params["query"]
-        top_k = params.get("top_k", 5)
-
         try:
+            from src.core.knowledge import (
+                DEFAULT_RETRIEVAL_MODE,
+                DEFAULT_RETRIEVAL_TOP_K,
+                validate_metadata_filter,
+                validate_retrieval_mode,
+                validate_retrieval_top_k,
+            )
+            from src.orchestration.rag import get_retrieval_flow
+
+            query = params["query"]
+            top_k = validate_retrieval_top_k(
+                params.get("top_k", DEFAULT_RETRIEVAL_TOP_K)
+            )
+            metadata_filter = validate_metadata_filter(params.get("filter"))
+            retrieval_mode = validate_retrieval_mode(
+                params.get("retrieval_mode", DEFAULT_RETRIEVAL_MODE)
+            )
             flow = get_retrieval_flow()
-            shared = {"query": query}
+            shared = {
+                "query": query,
+                "top_k": top_k,
+                "filter": metadata_filter,
+                "retrieval_mode": retrieval_mode,
+            }
             t0 = time.time()
             await flow.run_async(shared)
             latency = (time.time() - t0) * 1000

@@ -1,9 +1,10 @@
 """Unified retrieval interface for HTTP, Agent, and evaluation callers."""
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
-from config.settings import settings
+from chromadb.api.types import validate_where
+
 from src.core.retrieval import (
     HybridRetrieverNode,
     QueryRewriterNode,
@@ -17,6 +18,47 @@ RetrievalMode = Literal[
     "hybrid+rerank",
 ]
 
+RETRIEVAL_MODES = frozenset(
+    {"vector_only", "bm25_only", "hybrid", "hybrid+rerank"}
+)
+DEFAULT_RETRIEVAL_MODE: RetrievalMode = "hybrid+rerank"
+DEFAULT_RETRIEVAL_TOP_K = 5
+MAX_RETRIEVAL_TOP_K = 20
+
+
+def validate_retrieval_mode(mode: str) -> RetrievalMode:
+    """Return a supported retrieval mode or raise a public-safe error."""
+    if not isinstance(mode, str) or mode not in RETRIEVAL_MODES:
+        choices = ", ".join(sorted(RETRIEVAL_MODES))
+        raise ValueError(f"retrieval_mode must be one of: {choices}")
+    return cast(RetrievalMode, mode)
+
+
+def validate_retrieval_top_k(top_k: int) -> int:
+    """Keep the public result budget within the supported candidate window."""
+    if isinstance(top_k, bool) or not isinstance(top_k, int):
+        raise ValueError("top_k must be an integer")
+    if not 1 <= top_k <= MAX_RETRIEVAL_TOP_K:
+        raise ValueError(
+            f"top_k must be between 1 and {MAX_RETRIEVAL_TOP_K}"
+        )
+    return top_k
+
+
+def validate_metadata_filter(
+    metadata_filter: dict | None,
+) -> dict | None:
+    """Validate the Chroma where grammar before retrieval starts."""
+    if metadata_filter is None:
+        return None
+    if not isinstance(metadata_filter, dict):
+        raise ValueError("filter must be an object")
+    try:
+        validate_where(metadata_filter)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("filter is not a valid metadata filter") from exc
+    return metadata_filter
+
 
 class QueryRewriter(Protocol):
     async def rewrite(self, query: str) -> list[str]: ...
@@ -28,11 +70,17 @@ class CandidateRetriever(Protocol):
         queries: list[str],
         metadata_filter: dict | None,
         mode: RetrievalMode,
+        top_k: int,
     ) -> list[dict]: ...
 
 
 class CandidateReranker(Protocol):
-    def rerank(self, query: str, candidates: list[dict]) -> list[dict]: ...
+    def rerank(
+        self,
+        query: str,
+        candidates: list[dict],
+        top_k: int,
+    ) -> list[dict]: ...
 
 
 @dataclass(frozen=True)
@@ -62,10 +110,15 @@ class KnowledgeSystem:
         self,
         query: str,
         *,
+        top_k: int = DEFAULT_RETRIEVAL_TOP_K,
         metadata_filter: dict | None = None,
-        mode: RetrievalMode = "hybrid+rerank",
+        mode: RetrievalMode = DEFAULT_RETRIEVAL_MODE,
     ) -> RetrievalResult:
-        """Run the configured retrieval strategy behind one interface."""
+        """Run one validated retrieval strategy behind a single interface."""
+        top_k = validate_retrieval_top_k(top_k)
+        mode = validate_retrieval_mode(mode)
+        metadata_filter = validate_metadata_filter(metadata_filter)
+
         if mode in ("hybrid", "hybrid+rerank"):
             variants = await self._rewriter.rewrite(query)
         else:
@@ -75,9 +128,10 @@ class KnowledgeSystem:
             variants,
             metadata_filter,
             mode,
+            top_k,
         )
         if mode == "hybrid+rerank":
-            chunks = self._reranker.rerank(query, candidates)
+            chunks = self._reranker.rerank(query, candidates, top_k)
         else:
             chunks = sorted(
                 (
@@ -89,7 +143,7 @@ class KnowledgeSystem:
                 ),
                 key=lambda candidate: candidate["rerank_score"],
                 reverse=True,
-            )[: settings.rerank_top_k]
+            )[:top_k]
 
         return RetrievalResult(
             query=query,

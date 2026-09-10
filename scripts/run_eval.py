@@ -133,6 +133,7 @@ async def run_ablation(testset_path: str) -> None:
 
             shared = {
                 "query": question,
+                "top_k": settings.rerank_top_k,
                 "retrieval_mode": mode,
             }
 
