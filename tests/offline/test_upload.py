@@ -27,19 +27,38 @@ def upload_client(
     )
 
     import app as api
+    from src.core.index_jobs import IndexJob, IndexJobState, IndexOperation
 
     calls: list[dict] = []
 
-    def index(shared: dict) -> None:
-        calls.append(shared)
-        shared["index_info"] = {
-            "chunks_count": 1,
-            "fingerprint": "offline-upload",
-            "version_id": "offline-upload",
-            "published": True,
-        }
+    class FakeJobs:
+        def status(self, job_id):
+            if job_id != "1" * 32:
+                return None
+            return IndexJob(
+                job_id=job_id,
+                operation=IndexOperation.REBUILD,
+                state=IndexJobState.SUCCEEDED,
+                submitted_at="2026-09-10T00:00:00+00:00",
+                finished_at="2026-09-10T00:00:01+00:00",
+                index_version="2" * 24,
+            )
 
-    monkeypatch.setattr(api, "get_offline_flow", lambda: SimpleNamespace(run=index))
+        def submit(self, command, *, idempotency_key=None):
+            calls.append(
+                {
+                    "command": command,
+                    "idempotency_key": idempotency_key,
+                }
+            )
+            return IndexJob(
+                job_id="1" * 32,
+                operation=command.operation,
+                state=IndexJobState.QUEUED,
+                submitted_at="2026-09-10T00:00:00+00:00",
+            )
+
+    monkeypatch.setattr(api, "get_index_jobs", lambda: FakeJobs())
     monkeypatch.setattr(api.settings, "max_upload_bytes", 20)
     client = TestClient(api.app)
     try:
@@ -66,18 +85,21 @@ def test_valid_upload_is_saved_and_indexed(
 
     response = post_document(client, "normal.txt")
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json() == {
-        "status": "indexed",
-        "chunks": 1,
-        "fingerprint": "offline-upload",
-        "version_id": "offline-upload",
-        "published": True,
+        "job_id": "1" * 32,
+        "operation": "upload",
+        "state": "queued",
+        "submitted_at": "2026-09-10T00:00:00+00:00",
+        "started_at": None,
+        "finished_at": None,
+        "index_version": None,
+        "error_code": None,
     }
-    assert (isolated_runtime / "data/raw/normal.txt").read_bytes() == (
-        b"x" * 20
-    )
+    assert not (isolated_runtime / "data/raw/normal.txt").exists()
     assert len(calls) == 1
+    assert calls[0]["command"].filename == "normal.txt"
+    assert calls[0]["command"].content == b"x" * 20
 
 
 @pytest.mark.parametrize(
@@ -135,7 +157,7 @@ def test_invalid_content_has_no_side_effects(
     assert calls == []
 
 
-def test_existing_document_is_not_overwritten_or_indexed(
+def test_existing_document_is_queued_without_synchronous_overwrite(
     upload_client: tuple[TestClient, list[dict]], isolated_runtime: Path
 ) -> None:
     client, calls = upload_client
@@ -146,9 +168,41 @@ def test_existing_document_is_not_overwritten_or_indexed(
 
     response = post_document(client, "document.md", b"replacement")
 
-    assert response.status_code == 409
+    assert response.status_code == 202
     assert existing.read_text(encoding="utf-8") == "original"
-    assert calls == []
+    assert len(calls) == 1
+    assert calls[0]["command"].replace is False
+
+
+def test_index_job_control_endpoints(
+    upload_client: tuple[TestClient, list[dict]],
+) -> None:
+    client, calls = upload_client
+
+    rebuild = client.post(
+        "/index/rebuild", headers={"Idempotency-Key": "rebuild-v1"}
+    )
+    rollback = client.post(
+        "/index/rollback?version_id=" + "2" * 24,
+        headers={"Idempotency-Key": "rollback-v1"},
+    )
+    delete = client.delete(
+        "/documents/guide.md",
+        headers={"Idempotency-Key": "delete-v1"},
+    )
+    status = client.get("/index/jobs/" + "1" * 32)
+
+    assert rebuild.status_code == 202
+    assert rollback.status_code == 202
+    assert delete.status_code == 202
+    assert [call["command"].operation for call in calls] == [
+        "rebuild",
+        "rollback",
+        "delete",
+    ]
+    assert status.status_code == 200
+    assert status.json()["state"] == "succeeded"
+    assert client.get("/index/jobs/not-a-job").status_code == 422
 
 
 def test_windows_absolute_path_is_rejected_before_writing(

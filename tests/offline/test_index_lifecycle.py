@@ -219,6 +219,122 @@ def test_failed_pointer_commit_keeps_old_runtime_index(
     assert next_manifest.collection_name not in client.collections
 
 
+def test_rollback_activates_previous_validated_version(
+    isolated_runtime: Path,
+) -> None:
+    from src.core.indexing import IndexBuilderNode
+    from src.infra.index_catalog import IndexCatalog
+    from src.utils.bm25_store import BM25Store
+
+    catalog = IndexCatalog(isolated_runtime / "manifests")
+    runtime_bm25 = BM25Store()
+    client = FakeClient()
+    cache = FakeCache()
+    builder = IndexBuilderNode(
+        catalog=catalog,
+        runtime_bm25=runtime_bm25,
+        client_factory=lambda: client,
+        cache=cache,
+    )
+
+    first = builder.exec(_chunks("first version"))
+    second = builder.exec(_chunks("second version"))
+
+    assert catalog.previous().version_id == first["version_id"]
+    result = builder.rollback()
+
+    assert result["version_id"] == first["version_id"]
+    assert result["rolled_back_from"] == second["version_id"]
+    assert catalog.capture().version_id == first["version_id"]
+    assert catalog.previous().version_id == second["version_id"]
+    assert runtime_bm25.version_id == first["version_id"]
+    assert cache.versions == [
+        first["version_id"],
+        second["version_id"],
+        first["version_id"],
+    ]
+
+
+def test_rollback_rejects_a_missing_retained_collection(
+    isolated_runtime: Path,
+) -> None:
+    from src.core.errors import IndexBuildError
+    from src.core.indexing import IndexBuilderNode
+    from src.infra.index_catalog import IndexCatalog
+    from src.utils.bm25_store import BM25Store
+
+    catalog = IndexCatalog(isolated_runtime / "manifests")
+    runtime_bm25 = BM25Store()
+    client = FakeClient()
+    builder = IndexBuilderNode(
+        catalog=catalog,
+        runtime_bm25=runtime_bm25,
+        client_factory=lambda: client,
+        cache=FakeCache(),
+    )
+    first = builder.exec(_chunks("first version"))
+    second = builder.exec(_chunks("second version"))
+    client.delete_collection(first["collection_name"])
+
+    with pytest.raises(IndexBuildError):
+        builder.rollback()
+
+    assert catalog.capture().version_id == second["version_id"]
+    assert runtime_bm25.version_id == second["version_id"]
+
+
+def test_empty_document_set_publishes_an_empty_index(
+    isolated_runtime: Path,
+    fixed_embedder,
+) -> None:
+    from src.core.indexing import IndexBuilderNode
+    from src.infra.index_catalog import IndexCatalog
+    from src.utils.bm25_store import BM25Store
+
+    fixed_embedder.vectors["dimension-probe"] = [1.0, 0.0]
+    catalog = IndexCatalog(isolated_runtime / "manifests")
+    runtime_bm25 = BM25Store()
+    client = FakeClient()
+    result = IndexBuilderNode(
+        catalog=catalog,
+        runtime_bm25=runtime_bm25,
+        client_factory=lambda: client,
+        cache=FakeCache(),
+    ).exec([])
+
+    active = catalog.capture()
+    assert result["chunks_count"] == 0
+    assert active.manifest.sources == ()
+    assert client.collections[active.collection_name].count() == 0
+    assert runtime_bm25.version_id == active.version_id
+    assert runtime_bm25.is_ready is False
+
+
+def test_offline_flow_publishes_empty_index_after_last_document_deleted(
+    isolated_runtime: Path,
+    fixed_embedder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import tiktoken
+
+    monkeypatch.setattr(
+        tiktoken,
+        "get_encoding",
+        lambda name: SimpleNamespace(encode=lambda text: []),
+    )
+
+    from src.orchestration.rag import create_offline_flow
+
+    fixed_embedder.vectors["dimension-probe"] = [1.0, 0.0]
+    shared: dict = {}
+    create_offline_flow().run(shared)
+
+    assert shared["index_info"]["chunks_count"] == 0
+    assert shared["index_info"]["version_id"]
+
+
 def test_published_manifest_matches_real_chroma_collection(
     isolated_runtime: Path,
 ) -> None:

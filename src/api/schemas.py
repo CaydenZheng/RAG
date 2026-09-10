@@ -14,6 +14,17 @@ from src.core.knowledge import (
 )
 
 
+class IndexJobResponse(BaseModel):
+    job_id: str
+    operation: str
+    state: str
+    submitted_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    index_version: str | None = None
+    error_code: str | None = None
+
+
 class QueryRequest(BaseModel):
     query: str = Field(..., description="用户查询")
     session_id: str = Field(

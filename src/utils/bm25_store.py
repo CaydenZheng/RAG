@@ -41,13 +41,15 @@ class BM25Store:
         version_id: str = LEGACY_INDEX_VERSION,
     ):
         """Build one complete BM25 snapshot and assign its index version."""
+        if len(texts) != len(chunk_ids):
+            raise ValueError("BM25 texts and chunk IDs must align")
         corpus = [self._tokenize(t) for t in texts]
         with self._lock:
-            self._bm25 = BM25Okapi(corpus)
+            self._bm25 = BM25Okapi(corpus) if corpus else None
             self._corpus = corpus
             self._chunk_ids = list(chunk_ids)
             self._version_id = version_id
-            self._ready = True
+            self._ready = bool(corpus)
         logger.info("BM25 built: {} docs ready", len(corpus))
 
     def activate(self, candidate: "BM25Store") -> None:
