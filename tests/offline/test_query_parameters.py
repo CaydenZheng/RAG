@@ -214,16 +214,9 @@ def test_knowledge_system_rejects_invalid_parameters_before_retrieval(
 
 def test_sync_agent_rejects_out_of_range_top_k(
     isolated_runtime: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.agent.tools import ToolRegistry, _create_search_kb_tool
-    from src.orchestration import rag
 
-    monkeypatch.setattr(
-        rag,
-        "get_retrieval_flow",
-        lambda: pytest.fail("invalid Agent params reached retrieval"),
-    )
     registry = ToolRegistry(dedup_window=0)
     registry.register(_create_search_kb_tool())
 
@@ -234,29 +227,25 @@ def test_sync_agent_rejects_out_of_range_top_k(
     )
 
     assert not result.success
+    assert result.error_code == "invalid_tool_parameters"
     assert "at most 20" in result.error
 
 
-def test_streaming_agent_rejects_invalid_mode(
+def test_async_agent_rejects_invalid_mode(
     isolated_runtime: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from src.agent.harness import AgentHarness
-    from src.orchestration import rag
+    from src.agent.tools import ToolRegistry, _create_search_kb_tool
 
-    monkeypatch.setattr(
-        rag,
-        "get_retrieval_flow",
-        lambda: pytest.fail("invalid Agent params reached retrieval"),
-    )
-    harness = object.__new__(AgentHarness)
-
+    registry = ToolRegistry(dedup_window=0)
+    registry.register(_create_search_kb_tool())
     result = asyncio.run(
-        harness._search_kb_async(
+        registry.execute_async(
+            "search_knowledge_base",
             {"query": "probe", "retrieval_mode": "semantic"},
             "session",
         )
     )
 
     assert not result.success
-    assert "retrieval_mode must be one of" in result.error
+    assert result.error_code == "invalid_tool_parameters"
+    assert "must be one of" in result.error

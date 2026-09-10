@@ -44,25 +44,33 @@ def test_query_endpoint_awaits_flow_failure(
     assert "query orchestration failed" not in response.text
 
 
-def test_agent_knowledge_tool_awaits_retrieval_flow(
+def test_agent_knowledge_tool_calls_knowledge_system_directly(
     monkeypatch: pytest.MonkeyPatch, isolated_runtime: Path
 ) -> None:
     from src.agent.tools import ToolRegistry, _create_search_kb_tool
-    from src.orchestration import rag
+    from src.core import knowledge
+    from src.core.knowledge import RetrievalResult
 
     calls: list[dict] = []
 
-    class SuccessfulFlow:
-        async def run_async(self, shared: dict) -> None:
-            calls.append(shared.copy())
-            shared.update(
-                answer="answer",
-                context="context",
-                sources=[{"id": 1}, {"id": 2}],
+    class Knowledge:
+        async def retrieve(self, query: str, **kwargs) -> RetrievalResult:
+            calls.append({"query": query, **kwargs})
+            return RetrievalResult(
+                query=query,
+                query_variants=[query],
+                candidates=[],
+                chunks=[
+                    {
+                        "chunk_id": "chunk-1",
+                        "text": "retrieved context",
+                        "metadata": {"source": "guide.md"},
+                    }
+                ],
+                index_version="1" * 24,
             )
 
-    monkeypatch.setattr(rag, "get_retrieval_flow", SuccessfulFlow)
-
+    monkeypatch.setattr(knowledge, "knowledge_system", Knowledge())
     registry = ToolRegistry(dedup_window=0)
     registry.register(_create_search_kb_tool())
     result = registry.execute(
@@ -77,82 +85,66 @@ def test_agent_knowledge_tool_awaits_retrieval_flow(
     )
 
     assert result.success
-    assert result.data == {
-        "answer": "answer",
-        "context": "context",
-        "sources": [{"id": 1}],
-    }
+    assert result.data["context"] == "[1] guide.md\nretrieved context"
+    assert result.data["index_version"] == "1" * 24
     assert calls == [
         {
             "query": "probe",
             "top_k": 1,
-            "filter": {"category": "public"},
-            "retrieval_mode": "bm25_only",
+            "metadata_filter": {"category": "public"},
+            "mode": "bm25_only",
         }
     ]
 
 
-def test_streaming_agent_knowledge_tool_awaits_retrieval_flow(
+def test_async_knowledge_tool_uses_the_same_interface(
     monkeypatch: pytest.MonkeyPatch, isolated_runtime: Path
 ) -> None:
-    from src.agent.harness import AgentHarness
-    from src.orchestration import rag
+    from src.agent.tools import ToolRegistry, _create_search_kb_tool
+    from src.core import knowledge
+    from src.core.knowledge import RetrievalResult
 
-    calls: list[dict] = []
+    class Knowledge:
+        async def retrieve(self, query: str, **kwargs) -> RetrievalResult:
+            return RetrievalResult(query, [query], [], [])
 
-    class SuccessfulFlow:
-        async def run_async(self, shared: dict) -> None:
-            calls.append(shared.copy())
-            shared.update(
-                context="retrieval context",
-                sources=[{"id": 1}, {"id": 2}],
-            )
+    monkeypatch.setattr(knowledge, "knowledge_system", Knowledge())
+    registry = ToolRegistry(dedup_window=0)
+    registry.register(_create_search_kb_tool())
 
-    monkeypatch.setattr(rag, "get_retrieval_flow", SuccessfulFlow)
-
-    harness = object.__new__(AgentHarness)
     result = asyncio.run(
-        harness._search_kb_async(
-            {"query": "probe", "top_k": 1}, "session"
+        registry.execute_async(
+            "search_knowledge_base", {"query": "probe"}, "session"
         )
     )
 
     assert result.success
-    assert result.data == {
-        "answer": "",
-        "context": "retrieval context",
-        "sources": [{"id": 1}],
-    }
-    assert calls == [
-        {
-            "query": "probe",
-            "top_k": 1,
-            "filter": None,
-            "retrieval_mode": "hybrid+rerank",
-        }
-    ]
+    assert result.data["query"] == "probe"
 
 
-def test_agent_knowledge_tool_preserves_flow_failure(
+def test_agent_knowledge_tool_hides_retrieval_failure(
     monkeypatch: pytest.MonkeyPatch, isolated_runtime: Path
 ) -> None:
     from src.agent.tools import ToolRegistry, _create_search_kb_tool
-    from src.orchestration import rag
+    from src.core import knowledge
 
-    class FailingFlow:
-        async def run_async(self, shared: dict) -> None:
-            raise RuntimeError("knowledge retrieval failed")
+    class Knowledge:
+        async def retrieve(self, query: str, **kwargs):
+            raise RuntimeError("private retrieval failure")
 
-    monkeypatch.setattr(rag, "get_retrieval_flow", FailingFlow)
-
+    monkeypatch.setattr(knowledge, "knowledge_system", Knowledge())
     registry = ToolRegistry(dedup_window=0)
     registry.register(_create_search_kb_tool())
-    result = registry.execute(
-        "search_knowledge_base", {"query": "probe"}, "session"
+
+    result = asyncio.run(
+        registry.execute_async(
+            "search_knowledge_base", {"query": "probe"}, "session"
+        )
     )
 
     assert not result.success
-    assert result.error == "knowledge retrieval failed"
+    assert result.error_code == "tool_execution_failed"
+    assert "private" not in result.error
 
 
 def test_ablation_flows_use_async_orchestration(

@@ -39,11 +39,11 @@
 
 ## 2. Agent 升级
 
-在 RAG 管线基础上，进一步升级为具备自主规划能力的 Agent（`src/agent/`），新增 4 个核心模块：
+在 RAG 管线基础上，Agent 通过 `AgentRuntime` 接口运行；普通响应和 SSE 消费同一个异步事件核心：
 
 | 模块 | 文件 | 功能 |
 |---|---|---|
-| **Agent 循环** | `harness.py` | Plan → Execute → Observe 循环，LLM JSON 规划 + 最大 5 轮迭代，支持同步 + **异步流式(SSE)** 两种模式 |
+| **Agent 运行时** | `core/agent_runtime.py`、`agent/harness.py` | 统一 `ToolCall`、`ToolResult`、`AgentEvent`；一个有界异步循环同时支持普通响应和 SSE |
 | **Hook 管线** | `hooks.py` | 9 个生命周期事件 + 正则模式匹配，日志/限流/审计/黑名单阻断解耦 |
 | **结构化记忆** | `memory.py` | 两层记忆（长期偏好 + 短期历史），三级压缩（截断→硬截断→LLM 摘要） |
 | **工具安全** | `tools.py` | 三级审批（白名单/灰名单/黑名单）+ 参数校验 + 30s 去重，内置 **4 个工具**：`search_knowledge_base`、`calculator`、`get_weather`、`search_web` |
@@ -58,13 +58,15 @@
 | `/agent/reset` | POST | 重置会话记忆 |
 | `/agent/memory/{id}` | GET | 查看会话记忆 |
 
+普通接口通过 `AgentRuntime.execute` 聚合事件，SSE 接口通过 `AgentRuntime.events` 原样传递事件。规划、工具执行、历史保存和错误语义只实现一次。运行时限制迭代次数、工具调用次数、保守预留的 Token 预算和总时长；工具参数在副作用前严格校验，工具输出以不可信数据封装并截断。
+
 **评测结果**：8 条 Benchmark（规划/安全/记忆/多步推理）通过率 100%，6 项单元测试全部通过。详见 [`AGENT_IMPROVEMENTS.md`](AGENT_IMPROVEMENTS.md)。
 
 **内置工具**：
 
 | 工具 | 功能 | 安全等级 |
 |---|---|---|
-| `search_knowledge_base` | 检索本地知识库（复用 RAG 管线） | WHITELIST |
+| `search_knowledge_base` | 直接调用统一 `KnowledgeSystem.retrieve`，只返回证据，由 Agent 生成最终答案 | WHITELIST |
 | `calculator` | 安全数学计算（受限 eval + 白名单） | WHITELIST |
 | `get_weather` | 查询实时天气（wttr.in 免费 API） | WHITELIST |
 | `search_web` | 搜索互联网（DDG，优先 duckduckgo_search 库，5s 超时后走 HTML fallback） | GRAYLIST |
@@ -86,7 +88,7 @@ Agent 核心循环控制器（`src/agent/harness.py`）实现了经典的 **Plan
               └────────────┬────────────┘
                            ▼
               ┌─────────────────────────┐
-              │  2. LLM Planner (JSON)  │◄──── 最大 5 轮迭代
+              │  2. LLM Planner (JSON)  │◄──── 默认最多 5 轮迭代
               │  {action, tool_name,    │
               │   tool_params, reasoning}│
               └────────────┬────────────┘
@@ -851,6 +853,15 @@ RERANK_TIMEOUT_SECONDS=5
 MAX_CONCURRENT_QUERIES=8
 REQUEST_TIMEOUT_SECONDS=90
 LLM_MAX_RETRIES=1
+
+# Agent 运行预算
+AGENT_MAX_ITERATIONS=5
+AGENT_MAX_TOOL_CALLS=5
+AGENT_MAX_TOKEN_BUDGET=12000
+AGENT_TIMEOUT_SECONDS=60
+AGENT_PLANNER_MAX_TOKENS=512
+AGENT_FINAL_MAX_TOKENS=1024
+AGENT_MAX_TOOL_RESULT_LENGTH=1000
 
 OLLAMA_BASE_URL=http://localhost:11434        # 可选：本地降级
 

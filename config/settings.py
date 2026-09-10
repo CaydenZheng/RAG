@@ -120,13 +120,28 @@ class Settings(BaseSettings):
     # Agent 配置
     # ================================================================
     agent_max_iterations: int = Field(
-        default=5, alias="AGENT_MAX_ITERATIONS"
+        default=5, ge=1, le=20, alias="AGENT_MAX_ITERATIONS"
+    )
+    agent_max_tool_calls: int = Field(
+        default=5, ge=0, le=20, alias="AGENT_MAX_TOOL_CALLS"
+    )
+    agent_max_token_budget: int = Field(
+        default=12000, ge=256, le=131072, alias="AGENT_MAX_TOKEN_BUDGET"
+    )
+    agent_timeout_seconds: float = Field(
+        default=60.0, gt=0, le=300, alias="AGENT_TIMEOUT_SECONDS"
     )
     agent_planner_temperature: float = Field(
-        default=0.1, alias="AGENT_PLANNER_TEMPERATURE"
+        default=0.1, ge=0, le=2, alias="AGENT_PLANNER_TEMPERATURE"
+    )
+    agent_planner_max_tokens: int = Field(
+        default=512, ge=64, le=4096, alias="AGENT_PLANNER_MAX_TOKENS"
+    )
+    agent_final_max_tokens: int = Field(
+        default=1024, ge=64, le=8192, alias="AGENT_FINAL_MAX_TOKENS"
     )
     agent_max_tool_result_length: int = Field(
-        default=1000, alias="AGENT_MAX_TOOL_RESULT_LENGTH"
+        default=1000, ge=128, le=20000, alias="AGENT_MAX_TOOL_RESULT_LENGTH"
     )
     agent_verbose: bool = Field(
         default=True, alias="AGENT_VERBOSE"

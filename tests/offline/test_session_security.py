@@ -36,6 +36,11 @@ def session_clients(
     import app as api
     from src.agent import memory as memory_module
     from src.agent.memory import MemoryManager
+    from src.core.agent_runtime import (
+        AgentEvent,
+        AgentEventKind,
+        AgentResponse,
+    )
 
     Path("logs").mkdir(exist_ok=True)
     agent_memory = MemoryManager(str(isolated_runtime / "agent-memory"))
@@ -49,12 +54,20 @@ def session_clients(
                 )
             shared.update(answer="answer", sources=[])
 
-    class AgentFlow:
-        def run(self, shared: dict) -> None:
-            agent_memory.add_turn(
-                shared["session_id"], "user", shared["user_message"]
+    class AgentRuntime:
+        async def execute(
+            self, session_id: str, user_message: str
+        ) -> AgentResponse:
+            agent_memory.add_turn(session_id, "user", user_message)
+            return AgentResponse(
+                session_id=session_id,
+                answer="answer",
+                iterations=1,
             )
-            shared.update(answer="answer", tool_calls=[], iterations=1)
+
+        async def events(self, session_id: str, user_message: str):
+            result = await self.execute(session_id, user_message)
+            yield AgentEvent(AgentEventKind.DONE, response=result)
 
     class AgentResetFlow:
         def run(self, shared: dict) -> None:
@@ -64,7 +77,7 @@ def session_clients(
             shared["answer"] = "Session reset."
 
     monkeypatch.setattr(api, "get_online_flow", QueryFlow)
-    monkeypatch.setattr(api, "get_agent_flow", AgentFlow)
+    monkeypatch.setattr(api, "agent_runtime", AgentRuntime())
     monkeypatch.setattr(api, "get_agent_reset_flow", AgentResetFlow)
 
     client_a = TestClient(api.app)
@@ -260,15 +273,19 @@ def test_agent_stream_returns_public_id_without_leaking_storage_key(
     session_clients: SessionClients,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from src.agent.harness import agent_harness
+    import app as api
+    from src.core.agent_runtime import AgentEvent, AgentEventKind, AgentResponse
 
     storage_ids: list[str] = []
 
     async def stream(session_id: str, message: str):
         storage_ids.append(session_id)
-        yield f'data: {json.dumps({"done": True, "session_id": session_id})}\n\n'
+        yield AgentEvent(
+            AgentEventKind.DONE,
+            response=AgentResponse(session_id=session_id, answer="answer"),
+        )
 
-    monkeypatch.setattr(agent_harness, "run_async_stream", stream)
+    monkeypatch.setattr(api.agent_runtime, "events", stream)
     response = session_clients.client_a.get(
         "/agent/chat/stream",
         params={"message": "probe", "session_id": "public-agent"},

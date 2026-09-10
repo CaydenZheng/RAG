@@ -81,7 +81,8 @@ class AgentChatRequest(BaseModel):
 class AgentChatResponse(BaseModel):
     session_id: str
     answer: str
-    tool_calls: list[dict] = []
+    tool_calls: list[dict] = Field(default_factory=list)
     iterations: int = 0
     latency_ms: float = 0.0
+    error_code: str = ""
     error: str = ""
