@@ -9,18 +9,20 @@ Chunker           → 语义分块（Markdown 按标题 / 通用递归字符切�
 """
 
 import hashlib
-import re
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List
 
-from pocketflow import Node, BatchNode
 from langchain_text_splitters import (
     MarkdownHeaderTextSplitter,
     RecursiveCharacterTextSplitter,
 )
 from loguru import logger
+from pocketflow import BatchNode, Node
 
 from config.settings import settings
+
+PARSER_VERSION = "text-markdown-v1"
+CHUNKER_VERSION = "recursive-character-v1"
 
 # ================================================================
 # 数据结构
