@@ -1,7 +1,6 @@
 """Regression coverage for callers of PocketFlow async pipelines."""
 
 import asyncio
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -145,47 +144,3 @@ def test_agent_knowledge_tool_hides_retrieval_failure(
     assert not result.success
     assert result.error_code == "tool_execution_failed"
     assert "private" not in result.error
-
-
-def test_ablation_flows_use_async_orchestration(
-    isolated_runtime: Path,
-) -> None:
-    from pocketflow import AsyncFlow
-
-    from scripts.run_eval import build_ablation_flows
-
-    assert all(
-        isinstance(flow, AsyncFlow)
-        for flow, mode in build_ablation_flows().values()
-    )
-
-
-def test_evaluation_propagates_flow_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    isolated_runtime: Path,
-) -> None:
-    from scripts import run_eval
-    from src.llm.cache import llm_cache
-
-    class FailingFlow:
-        async def run_async(self, shared: dict) -> None:
-            raise RuntimeError("evaluation flow failed")
-
-    testset = isolated_runtime / "testset.json"
-    testset.write_text(
-        json.dumps([{"question": "probe", "ground_truth": "expected"}]),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        run_eval,
-        "build_ablation_flows",
-        lambda: {"A": (FailingFlow(), "vector_only")},
-    )
-    monkeypatch.setattr(run_eval, "_warmup_bm25", lambda: None)
-    monkeypatch.setattr(llm_cache, "clear", lambda: None)
-    monkeypatch.setattr(run_eval, "compute_retrieval_metrics", lambda results: {})
-    monkeypatch.setattr(run_eval, "run_ragas_eval", lambda results: {})
-    monkeypatch.setattr(run_eval, "_write_results", lambda *args: None)
-
-    with pytest.raises(RuntimeError, match="evaluation flow failed"):
-        asyncio.run(run_eval.run_ablation(str(testset)))

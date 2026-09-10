@@ -10,7 +10,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.evaluation import load_dataset_catalog  # noqa: E402
+from src.evaluation.datasets import load_dataset_catalog  # noqa: E402
 
 DEFAULT_MANIFEST = PROJECT_ROOT / "data/testset/manifest.json"
 

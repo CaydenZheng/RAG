@@ -12,6 +12,7 @@ venv/
 data/cache.db
 data/chroma/
 data/index-manifests/
+data/eval-runs/
 logs/
 memory/
 

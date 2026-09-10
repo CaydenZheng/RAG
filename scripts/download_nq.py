@@ -16,7 +16,7 @@ from loguru import logger
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.evaluation import write_dataset  # noqa: E402
+from src.evaluation.datasets import write_dataset  # noqa: E402
 
 DEFAULT_OUT_FILE = PROJECT_ROOT / "data/testset/nq_candidates.json"
 DATASET_NAME = "google/natural_questions"

@@ -38,7 +38,7 @@ jobs:
       - name: Install runtime and development dependencies
         run: uv sync --locked --no-default-groups --group dev
       - name: Check baseline code
-        run: uv run --no-sync --offline --no-env-file ruff check app.py src/api src/orchestration src/web src/agent/tools.py src/core/indexing.py src/core/index_versions.py src/core/retrieval.py src/core/ingestion.py src/infra/index_catalog.py src/infra/uploads.py src/utils/bm25_store.py tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline scripts/build_index.py scripts/demo_eval_metrics.py scripts/run_eval.py
+        run: uv run --no-sync --offline --no-env-file ruff check app.py src/api src/evaluation src/orchestration src/web src/agent/tools.py src/core/indexing.py src/core/index_versions.py src/core/retrieval.py src/core/ingestion.py src/infra/index_catalog.py src/infra/uploads.py src/utils/bm25_store.py tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline scripts/build_index.py scripts/run_eval.py
       - name: Run offline tests
         run: uv run --no-sync --offline --no-env-file python -B -m pytest -q --junitxml="${{ runner.temp }}/offline-results.xml"
       - name: Upload test report
@@ -78,7 +78,7 @@ jobs:
       - name: Install runtime and development dependencies
         run: uv sync --locked --no-default-groups --group dev
       - name: Check baseline code
-        run: uv run --no-sync --offline --no-env-file ruff check app.py src/api src/orchestration src/web src/agent/tools.py src/core/indexing.py src/core/index_versions.py src/core/retrieval.py src/core/ingestion.py src/infra/index_catalog.py src/infra/uploads.py src/utils/bm25_store.py tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline scripts/build_index.py scripts/demo_eval_metrics.py scripts/run_eval.py
+        run: uv run --no-sync --offline --no-env-file ruff check app.py src/api src/evaluation src/orchestration src/web src/agent/tools.py src/core/indexing.py src/core/index_versions.py src/core/retrieval.py src/core/ingestion.py src/infra/index_catalog.py src/infra/uploads.py src/utils/bm25_store.py tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline scripts/build_index.py scripts/run_eval.py
       - name: Run offline tests
         run: uv run --no-sync --offline --no-env-file python -B -m pytest -q --junitxml="${{ runner.temp }}/offline-results.xml"
       - name: Upload test report

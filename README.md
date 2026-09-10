@@ -318,7 +318,6 @@ ragrag/
 │   │   ├── retrieval.py          #   QueryRewriter, HybridRetriever, Reranker
 │   │   ├── generation.py         #   ContextBuilder, Generator
 │   │   ├── knowledge.py           #   统一 KnowledgeSystem 检索接口
-│   │   └── evaluation.py         #   RagasEvaluator（PocketFlow Node）
 │   │
 │   ├── llm/                      # LLM 调用层
 │   │   ├── __init__.py
@@ -376,8 +375,7 @@ ragrag/
 │
 ├── scripts/
 │   ├── build_index.py            # 离线索引构建脚本
-│   ├── run_eval.py               # 离线评估（消融实验 + RAGAS + 检索指标）
-│   ├── demo_eval_metrics.py      # 人工样例指标演示，Ragas 显式启用
+│   ├── run_eval.py               # 统一核心评测 Runner（慢评测显式启用）
 │   ├── download_wiki.py          # Wikipedia 文章下载
 │   └── generate_testset.py       # LLM 自动生成测试集
 │
@@ -442,7 +440,7 @@ ragrag/
 | 5.1 测试集构建 | 版本化开发候选与人工核验 final 集；现有 50 条 AI 数据不视为 golden answers | 无 |
 | 5.2 Ragas 集成 | 接入 ragas 评估，计算 Faithfulness/Context Precision/Recall/Answer Correctness | 3.7 |
 | 5.3 消融实验 | 4 组对照：纯向量 / 纯 BM25 / 混合融合 / 混合+Rerank，输出对比报告 | 5.2 |
-| 5.4 Eval Flow | PocketFlow 编排评估流程，`run_eval.py` 一键执行 | 5.1-5.3 |
+| 5.4 Eval Runner | 直接调用统一检索与生成接口，保存逐样本输出和完整复现信息 | 5.1-5.3 |
 
 ---
 
@@ -832,8 +830,8 @@ uv run --locked python scripts/build_index.py
 # 校验数据 provenance、版本与开发／最终划分
 uv run --locked python scripts/validate_eval_dataset.py
 
-# 在未核验开发候选上运行探索性消融（50 题 × 4 组，约 15 分钟）
-uv run --locked --group eval python scripts/run_eval.py --testset data/testset/generated_test.json
+# 在未核验开发候选上运行 5 条 hybrid+rerank smoke
+uv run --locked python scripts/run_eval.py --split development --limit 5
 ```
 
 ---
@@ -1119,7 +1117,7 @@ Ruff 的版本、目标 Python 与规则统一维护在 `pyproject.toml`；本�
 ```powershell
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
 uv lock --check --offline
-uv run --no-sync --offline --no-env-file ruff check tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline scripts/demo_eval_metrics.py
+uv run --no-sync --offline --no-env-file ruff check tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline
 uv run --no-sync --offline --no-env-file python -B -m pytest -q
 ```
 
@@ -1130,12 +1128,14 @@ uv run --no-sync --offline --no-env-file python -B -m pytest -q
 ### 运行评估
 
 ```bash
-# 人工样例指标演示（不代表真实检索对照结果）
-uv run --locked --group eval python scripts/demo_eval_metrics.py
-# 需要真实 LLM 评判时，显式添加 --with-ragas
+# 5 条真实 hybrid+rerank smoke（开发数据未经人工核验，仅供探索）
+uv run --locked python scripts/run_eval.py --split development --limit 5
 
-# RAG 消融实验
-uv run --locked --group eval python scripts/run_eval.py --testset ./data/testset/ground_truth.json --ablation
+# 完整四模式消融；耗时较长
+uv run --locked python scripts/run_eval.py --split final --ablation
+
+# Ragas 模型评判；需额外依赖、密钥和人工核验数据
+uv run --locked --group eval python scripts/run_eval.py --split final --with-ragas
 
 # Agent Benchmark + 单元测试
 uv run --locked python tests/test_agent.py

@@ -1,4 +1,4 @@
-"""Evaluation datasets and runners."""
+"""Versioned evaluation data and reproducible RAG runs."""
 
 from .datasets import (
     DatasetCatalog,

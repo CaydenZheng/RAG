@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.settings import settings  # noqa: E402
-from src.evaluation import write_dataset  # noqa: E402
+from src.evaluation.datasets import write_dataset  # noqa: E402
 from src.llm import llm_client  # noqa: E402
 
 DEFAULT_OUT_FILE = PROJECT_ROOT / "data/testset/generated_candidates.json"
