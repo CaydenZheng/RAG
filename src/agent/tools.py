@@ -7,7 +7,7 @@
   BLACKLIST → 直接阻断 + 写审计日志（危险操作）
 
 内置工具：
-  search_knowledge_base — 复用现有 RAG 管线，检索知识库
+  search_knowledge_base — 直连统一 KnowledgeSystem，检索知识库
   calculator            — 安全数学表达式求值（受限 eval + 白名单）
 """
 
@@ -21,6 +21,8 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
+
+from src.core.agent_runtime import ToolResult
 
 # ================================================================
 # 数据模型
@@ -44,16 +46,8 @@ class ToolParam:
     minimum: float | None = None
     maximum: float | None = None
     choices: tuple[Any, ...] | None = None
-
-
-@dataclass
-class ToolResult:
-    """工具执行结果"""
-    success: bool
-    data: Any = None
-    error: str = ""
-    tool_name: str = ""
-    latency_ms: float = 0.0
+    min_length: int | None = None
+    max_length: int | None = None
 
 
 @dataclass
@@ -64,6 +58,7 @@ class ToolDef:
     params: List[ToolParam]       # 参数列表
     safety_level: SafetyLevel     # 安全等级
     execute_fn: Callable          # 执行函数 (params: dict) -> ToolResult
+    execute_async_fn: Callable | None = None
     category: str = "general"     # 分类
     max_retries: int = 1          # 失败重试次数
 
@@ -126,6 +121,8 @@ class ToolRegistry:
                     "minimum": p.minimum,
                     "maximum": p.maximum,
                     "choices": p.choices,
+                    "min_length": p.min_length,
+                    "max_length": p.max_length,
                 }
                 for p in tool.params
             }
@@ -146,75 +143,141 @@ class ToolRegistry:
         params: dict,
         session_id: str = "default",
     ) -> ToolResult:
-        """安全执行工具调用"""
+        """Validate and execute a tool synchronously."""
         start = time.time()
+        prepared = self._prepare(tool_name, params, session_id)
+        if isinstance(prepared, ToolResult):
+            return prepared
+        tool, call_hash = prepared
+        for attempt in range(tool.max_retries + 1):
+            try:
+                result = tool.execute_fn(params)
+                return self._complete(
+                    tool, params, result, session_id, call_hash, start
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Tool {} attempt {} failed: {}",
+                    tool_name,
+                    attempt + 1,
+                    exc,
+                )
+        return ToolResult(
+            success=False,
+            error="Tool execution failed",
+            error_code="tool_execution_failed",
+            tool_name=tool_name,
+            latency_ms=(time.time() - start) * 1000,
+        )
 
-        # 1. 工具存在检查
+    async def execute_async(
+        self,
+        tool_name: str,
+        params: dict,
+        session_id: str = "default",
+    ) -> ToolResult:
+        """Validate once, then run async tools directly and sync tools in a thread."""
+        start = time.time()
+        prepared = self._prepare(tool_name, params, session_id)
+        if isinstance(prepared, ToolResult):
+            return prepared
+        tool, call_hash = prepared
+        for attempt in range(tool.max_retries + 1):
+            try:
+                if tool.execute_async_fn is not None:
+                    result = await tool.execute_async_fn(params)
+                else:
+                    result = await asyncio.to_thread(tool.execute_fn, params)
+                return self._complete(
+                    tool, params, result, session_id, call_hash, start
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Tool {} async attempt {} failed: {}",
+                    tool_name,
+                    attempt + 1,
+                    exc,
+                )
+        return ToolResult(
+            success=False,
+            error="Tool execution failed",
+            error_code="tool_execution_failed",
+            tool_name=tool_name,
+            latency_ms=(time.time() - start) * 1000,
+        )
+
+    def _prepare(
+        self, tool_name: str, params: dict, session_id: str
+    ) -> tuple[ToolDef, str] | ToolResult:
         tool = self._tools.get(tool_name)
         if tool is None:
             return ToolResult(
                 success=False,
-                error=f"Unknown tool: {tool_name}. Available: {list(self._tools.keys())}",
+                error="Unknown tool",
+                error_code="unknown_tool",
                 tool_name=tool_name,
             )
-
-        # 2. 参数校验
         param_error = self._validate_params(tool, params)
         if param_error:
-            return ToolResult(success=False, error=param_error, tool_name=tool_name)
-
-        # 3. 安全等级判断
+            return ToolResult(
+                success=False,
+                error=param_error,
+                error_code="invalid_tool_parameters",
+                tool_name=tool_name,
+            )
         if tool.safety_level == SafetyLevel.BLACKLIST:
             logger.warning("BLACKLIST tool blocked: {}", tool_name)
             return ToolResult(
                 success=False,
-                error=f"Tool '{tool_name}' is blocked by safety policy (blacklist).",
+                error="Tool blocked by safety policy",
+                error_code="tool_blocked",
                 tool_name=tool_name,
             )
-
-        # 4. 去重检查
         call_hash = self._hash_call(tool_name, params)
         if self._is_duplicate(session_id, call_hash):
             return ToolResult(
                 success=False,
-                error=f"Duplicate call detected for '{tool_name}' within {self._dedup_window}s window.",
+                error="Duplicate tool call",
+                error_code="duplicate_tool_call",
                 tool_name=tool_name,
             )
+        return tool, call_hash
 
-        # 5. 执行（含重试）
-        last_error = ""
-        for attempt in range(tool.max_retries + 1):
-            try:
-                result = tool.execute_fn(params)
-                result.tool_name = tool_name
-                result.latency_ms = (time.time() - start) * 1000
-
-                # 记录去重缓存
-                self._record_call(session_id, call_hash)
-
-                # 灰名单：写审计日志
-                if tool.safety_level == SafetyLevel.GRAYLIST:
-                    self._audit(tool_name, params, result, session_id)
-
-                return result
-
-            except Exception as e:
-                last_error = str(e)
-                logger.warning("Tool {} attempt {} failed: {}", tool_name, attempt + 1, e)
-
-        return ToolResult(
-            success=False,
-            error=f"Tool '{tool_name}' failed after {tool.max_retries + 1} attempts: {last_error}",
-            tool_name=tool_name,
-            latency_ms=(time.time() - start) * 1000,
-        )
+    def _complete(
+        self,
+        tool: ToolDef,
+        params: dict,
+        result: ToolResult,
+        session_id: str,
+        call_hash: str,
+        start: float,
+    ) -> ToolResult:
+        result.tool_name = tool.name
+        result.latency_ms = (time.time() - start) * 1000
+        if not result.success and not result.error_code:
+            result.error_code = "tool_failed"
+        self._record_call(session_id, call_hash)
+        if tool.safety_level == SafetyLevel.GRAYLIST:
+            self._audit(tool.name, params, result, session_id)
+        return result
 
     # ----------------------------------------------------------------
     # 校验 & 去重 & 审计
     # ----------------------------------------------------------------
 
     def _validate_params(self, tool: ToolDef, params: dict) -> Optional[str]:
-        """参数类型和必填校验"""
+        """Reject malformed and undeclared parameters before side effects."""
+        if not isinstance(params, dict):
+            return f"Params for tool '{tool.name}' must be an object"
+        allowed = {param.name for param in tool.params}
+        unexpected = sorted(
+            str(name) for name in params if name not in allowed
+        )
+        if unexpected:
+            return (
+                f"Unexpected params for tool '{tool.name}': "
+                f"{', '.join(unexpected)}"
+            )
         for param_def in tool.params:
             value = params.get(param_def.name)
 
@@ -265,6 +328,22 @@ class ToolRegistry:
                         f"Param '{param_def.name}' must be one of "
                         f"{list(param_def.choices)}"
                     )
+                if (
+                    isinstance(value, str)
+                    and param_def.min_length is not None
+                    and len(value) < param_def.min_length
+                ):
+                    return (
+                        f"Param '{param_def.name}' is shorter than allowed"
+                    )
+                if (
+                    isinstance(value, str)
+                    and param_def.max_length is not None
+                    and len(value) > param_def.max_length
+                ):
+                    return (
+                        f"Param '{param_def.name}' is longer than allowed"
+                    )
         return None
 
     def _hash_call(self, tool_name: str, params: dict) -> str:
@@ -308,68 +387,80 @@ class ToolRegistry:
 # 内置工具定义
 # ================================================================
 
-def _create_search_kb_tool() -> ToolDef:
-    """
-    知识库检索工具 — 复用现有 RAG 管线。
+async def _execute_search_kb(params: dict) -> ToolResult:
+    """Call KnowledgeSystem directly; Agent owns final answer generation."""
+    from src.core.knowledge import (
+        DEFAULT_RETRIEVAL_MODE,
+        DEFAULT_RETRIEVAL_TOP_K,
+        knowledge_system,
+        validate_metadata_filter,
+        validate_retrieval_mode,
+        validate_retrieval_top_k,
+    )
 
-    这是 Agent 最核心的工具：Agent Plan 决定搜索什么 → 调用此工具
-    → 获取检索结果 → 基于结果规划下一步或直接回答。
-    """
+    query = params["query"]
+    top_k = validate_retrieval_top_k(
+        params.get("top_k", DEFAULT_RETRIEVAL_TOP_K)
+    )
+    metadata_filter = validate_metadata_filter(params.get("filter"))
+    retrieval_mode = validate_retrieval_mode(
+        params.get("retrieval_mode", DEFAULT_RETRIEVAL_MODE)
+    )
+    result = await knowledge_system.retrieve(
+        query,
+        top_k=top_k,
+        metadata_filter=metadata_filter,
+        mode=retrieval_mode,
+    )
+    sources: list[dict] = []
+    snippets: list[str] = []
+    for ref, chunk in enumerate(result.chunks[:top_k], 1):
+        metadata = dict(chunk.get("metadata") or {})
+        source = {
+            "ref": ref,
+            "chunk_id": chunk.get("chunk_id", ""),
+            "source": metadata.get("source", chunk.get("source", "")),
+            "version": metadata.get(
+                "source_version", chunk.get("version", "")
+            ),
+            "score": chunk.get(
+                "rerank_score", chunk.get("rrf_score", 0)
+            ),
+        }
+        sources.append(source)
+        snippets.append(
+            f"[{ref}] {source['source'] or 'unknown'}\n"
+            f"{chunk.get('text', '')}"
+        )
+    return ToolResult(
+        success=True,
+        data={
+            "query": result.query,
+            "context": "\n\n".join(snippets),
+            "sources": sources,
+            "warnings": list(result.warnings),
+            "index_version": result.index_version,
+        },
+    )
+
+
+def _create_search_kb_tool() -> ToolDef:
+    """Create the read-only KnowledgeSystem retrieval adapter."""
 
     def execute(params: dict) -> ToolResult:
-        try:
-            from src.core.knowledge import (
-                DEFAULT_RETRIEVAL_MODE,
-                DEFAULT_RETRIEVAL_TOP_K,
-                validate_metadata_filter,
-                validate_retrieval_mode,
-                validate_retrieval_top_k,
-            )
-
-            query = params["query"]
-            top_k = validate_retrieval_top_k(
-                params.get("top_k", DEFAULT_RETRIEVAL_TOP_K)
-            )
-            metadata_filter = validate_metadata_filter(params.get("filter"))
-            retrieval_mode = validate_retrieval_mode(
-                params.get("retrieval_mode", DEFAULT_RETRIEVAL_MODE)
-            )
-
-            # 仅执行统一检索与上下文构建，最终回答由 Agent 生成。
-            from src.orchestration.rag import get_retrieval_flow
-            flow = get_retrieval_flow()
-            shared = {
-                "query": query,
-                "top_k": top_k,
-                "filter": metadata_filter,
-                "retrieval_mode": retrieval_mode,
-            }
-
-            import time as _time
-            t0 = _time.time()
-            asyncio.run(flow.run_async(shared))
-            latency = (_time.time() - t0) * 1000
-
-            answer = shared.get("answer", "")
-            sources = shared.get("sources", [])
-
-            return ToolResult(
-                success=True,
-                data={
-                    "answer": answer,
-                    "sources": sources[:top_k],
-                    "context": shared.get("context", "")[:1000],
-                },
-                latency_ms=latency,
-            )
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
+        return asyncio.run(_execute_search_kb(params))
 
     return ToolDef(
         name="search_knowledge_base",
         description="检索知识库获取信息。适用于需要查找文档、概念解释、技术细节。",
         params=[
-            ToolParam("query", "str", "检索查询语句"),
+            ToolParam(
+                "query",
+                "str",
+                "检索查询语句",
+                min_length=1,
+                max_length=2000,
+            ),
             ToolParam(
                 "top_k",
                 "int",
@@ -399,8 +490,9 @@ def _create_search_kb_tool() -> ToolDef:
                 ),
             ),
         ],
-        safety_level=SafetyLevel.WHITELIST,  # 纯读取，无副作用
+        safety_level=SafetyLevel.WHITELIST,
         execute_fn=execute,
+        execute_async_fn=_execute_search_kb,
         category="retrieval",
     )
 
@@ -450,7 +542,13 @@ def _create_calculator_tool() -> ToolDef:
         name="calculator",
         description="安全数学计算器。支持基本算术、三角函数、对数等。示例: 'sqrt(16) + 2*pi'",
         params=[
-            ToolParam("expression", "str", "数学表达式，例如 '2 + 3 * 4'"),
+            ToolParam(
+                "expression",
+                "str",
+                "数学表达式，例如 '2 + 3 * 4'",
+                min_length=1,
+                max_length=512,
+            ),
         ],
         safety_level=SafetyLevel.WHITELIST,  # 受限 eval，无副作用
         execute_fn=execute,
@@ -498,7 +596,13 @@ def _create_weather_tool() -> ToolDef:
         name="get_weather",
         description="查询指定城市的实时天气（温度、湿度、风速、天气描述）。参数 city 为英文城市名，如 'Beijing'、'Tokyo'、'London'。",
         params=[
-            ToolParam("city", "str", "城市名（英文），例如 Beijing, Tokyo, London"),
+            ToolParam(
+                "city",
+                "str",
+                "城市名（英文），例如 Beijing, Tokyo, London",
+                min_length=1,
+                max_length=100,
+            ),
         ],
         safety_level=SafetyLevel.WHITELIST,
         execute_fn=execute,
@@ -601,7 +705,13 @@ def _create_web_search_tool() -> ToolDef:
         name="search_web",
         description="搜索互联网获取最新信息。当知识库中没有相关信息时使用。返回标题、摘要和链接。",
         params=[
-            ToolParam("query", "str", "搜索关键词"),
+            ToolParam(
+                "query",
+                "str",
+                "搜索关键词",
+                min_length=1,
+                max_length=500,
+            ),
             ToolParam("max_results", "int", "最多返回结果数", required=False, default=3),
         ],
         safety_level=SafetyLevel.GRAYLIST,

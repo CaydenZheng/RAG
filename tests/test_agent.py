@@ -24,12 +24,13 @@ import json
 import sys
 import time
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from typing import Dict, List, Tuple
 from dataclasses import dataclass, field
-from loguru import logger
+from typing import Any, Dict, List, Tuple
 
+from loguru import logger
 
 # ================================================================
 # 数据模型
@@ -157,7 +158,7 @@ QUICK_CASES = BENCHMARK_CASES[:3]
 # 验证器
 # ================================================================
 
-def verify_result(case: BenchmarkCase, result: "AgentResponse") -> Tuple[bool, str]:
+def verify_result(case: BenchmarkCase, result: Any) -> Tuple[bool, str]:
     """
     验证 Agent 响应是否符合预期。
 
@@ -171,14 +172,19 @@ def verify_result(case: BenchmarkCase, result: "AgentResponse") -> Tuple[bool, s
     if result.error:
         return False, f"Agent error: {result.error}"
 
+    tool_calls = [
+        call.to_dict() if hasattr(call, "to_dict") else call
+        for call in result.tool_calls
+    ]
+
     # 3. 期望工具检查
     if case.expected_tool:
-        called_tools = [t["tool"] for t in result.tool_calls if t.get("success") or t.get("blocked")]
+        called_tools = [t["tool"] for t in tool_calls if t.get("success") or t.get("blocked")]
         if case.expected_tool not in called_tools:
             return False, f"Expected tool '{case.expected_tool}' not called. Called: {called_tools}"
 
     # 4. 最小工具调用次数
-    actual_tool_count = len([t for t in result.tool_calls if t.get("success")])
+    actual_tool_count = len([t for t in tool_calls if t.get("success")])
     if actual_tool_count < case.expected_min_tool_calls:
         return False, f"Too few successful tool calls: {actual_tool_count} < {case.expected_min_tool_calls}"
 
@@ -191,7 +197,7 @@ def verify_result(case: BenchmarkCase, result: "AgentResponse") -> Tuple[bool, s
 
 def run_benchmark(quick: bool = False) -> BenchmarkReport:
     """运行完整 benchmark"""
-    from src.agent.harness import AgentHarness, AgentResponse
+    from src.agent.harness import AgentHarness
 
     harness = AgentHarness()
     cases = QUICK_CASES if quick else BENCHMARK_CASES
@@ -218,7 +224,7 @@ def run_benchmark(quick: bool = False) -> BenchmarkReport:
                 case_id=case.id,
                 passed=passed,
                 answer=resp.answer[:200],
-                tool_calls=resp.tool_calls,
+                tool_calls=[call.to_dict() for call in resp.tool_calls],
                 iterations=resp.iterations,
                 latency_ms=resp.total_latency_ms,
                 failure_reason="" if passed else reason,
@@ -277,8 +283,10 @@ def run_benchmark(quick: bool = False) -> BenchmarkReport:
 def test_hook_pipeline():
     """测试 Hook 管线"""
     from src.agent.hooks import (
-        HookPipeline, HookContext, HookEvent,
-        create_blacklist_block_hook, create_logging_hook,
+        HookContext,
+        HookEvent,
+        HookPipeline,
+        create_blacklist_block_hook,
     )
 
     pipeline = HookPipeline()
@@ -311,7 +319,7 @@ def test_hook_pipeline():
 
 def test_memory_compress_trigger():
     """测试记忆压缩触发条件"""
-    from src.agent.memory import MemoryManager, MemoryConfig, MemoryTurn
+    from src.agent.memory import MemoryConfig, MemoryManager
 
     config = MemoryConfig(compress_trigger_turns=5, compress_keep_recent=2)
     mm = MemoryManager(memory_dir="memory_test", config=config)
@@ -342,7 +350,13 @@ def test_memory_compress_trigger():
 
 def test_tool_validation():
     """测试工具参数校验"""
-    from src.agent.tools import ToolRegistry, ToolDef, ToolParam, SafetyLevel, ToolResult
+    from src.agent.tools import (
+        SafetyLevel,
+        ToolDef,
+        ToolParam,
+        ToolRegistry,
+        ToolResult,
+    )
 
     registry = ToolRegistry()
 
@@ -377,7 +391,12 @@ def test_tool_validation():
 
 def test_tool_blacklist():
     """测试黑名单阻断"""
-    from src.agent.tools import ToolRegistry, ToolDef, ToolParam, SafetyLevel, ToolResult
+    from src.agent.tools import (
+        SafetyLevel,
+        ToolDef,
+        ToolRegistry,
+        ToolResult,
+    )
 
     registry = ToolRegistry()
 
@@ -398,7 +417,13 @@ def test_tool_blacklist():
 
 def test_tool_dedup():
     """测试工具去重"""
-    from src.agent.tools import ToolRegistry, ToolDef, ToolParam, SafetyLevel, ToolResult
+    from src.agent.tools import (
+        SafetyLevel,
+        ToolDef,
+        ToolParam,
+        ToolRegistry,
+        ToolResult,
+    )
 
     registry = ToolRegistry(dedup_window=60)  # 60s 去重窗口
 
@@ -431,12 +456,14 @@ def test_tool_dedup():
 
 def test_agent_response_structure():
     """测试 AgentResponse 结构完整性"""
-    from src.agent.harness import AgentResponse
+    from src.core.agent_runtime import AgentResponse, ToolCall
 
     resp = AgentResponse(
         session_id="test",
         answer="Hello",
-        tool_calls=[{"tool": "calc", "success": True}],
+        tool_calls=(
+            ToolCall("call-id", "calc", {}, success=True),
+        ),
         iterations=2,
         total_latency_ms=150.0,
     )
