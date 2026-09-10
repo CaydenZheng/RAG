@@ -8,10 +8,12 @@ BM25 关键词索引封装。
 """
 
 import threading
-from typing import List, Tuple, Optional
-from rank_bm25 import BM25Okapi
+from collections.abc import Collection
+from typing import List, Optional, Tuple
+
 import jieba
 from loguru import logger
+from rank_bm25 import BM25Okapi
 
 
 class BM25Store:
@@ -86,18 +88,31 @@ class BM25Store:
     def is_ready(self) -> bool:
         return self._ready and self._bm25 is not None
 
-    def search(self, query: str, top_k: int = 20) -> List[Tuple[str, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 20,
+        *,
+        allowed_chunk_ids: Collection[str] | None = None,
+    ) -> List[Tuple[str, float]]:
         """
         检索并返回 [(chunk_id, score), ...]，按分数降序。
+        allowed_chunk_ids 在截取 top_k 前生效，避免无权结果挤占召回名额。
         若索引未就绪，返回空列表（调用方自动降级为纯向量检索）。
         """
         with self._lock:
             if not self.is_ready:
                 return []
+            if allowed_chunk_ids is not None and not allowed_chunk_ids:
+                return []
             tokens = self._tokenize(query)
             scores = self._bm25.get_scores(tokens)
-            # 按分数降序取 top_k
-            indexed = list(enumerate(scores))
+            indexed = [
+                (idx, score)
+                for idx, score in enumerate(scores)
+                if allowed_chunk_ids is None
+                or self._chunk_ids[idx] in allowed_chunk_ids
+            ]
             indexed.sort(key=lambda x: x[1], reverse=True)
             results = []
             for idx, score in indexed[:top_k]:
