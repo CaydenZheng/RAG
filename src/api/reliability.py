@@ -10,6 +10,7 @@ from typing import Any
 from config.settings import settings
 from src.api.public_errors import public_error
 from src.api.streaming import answer_event, encode_sse_event
+from src.infra.tracer import tracer
 
 
 class RequestGate:
@@ -66,9 +67,11 @@ class RAGRequestReliabilityMiddleware:
             await self.app(scope, receive, send)
             return
 
-        query_id = secrets.token_hex(6)
-        scope.setdefault("state", {})["request_id"] = query_id
+        state = scope.setdefault("state", {})
+        query_id = state.get("request_id") or secrets.token_hex(6)
+        state["request_id"] = query_id
         if not self._gate.try_acquire():
+            tracer.record_error("query_capacity_exceeded")
             await self._send_json_error(
                 send,
                 status=503,
@@ -90,6 +93,7 @@ class RAGRequestReliabilityMiddleware:
                 async with asyncio.timeout(self._timeout):
                     await self.app(scope, receive, track_response)
             except TimeoutError:
+                tracer.record_error("request_timeout")
                 if response_started and scope.get("path") == "/query/stream":
                     await send(
                         {

@@ -40,6 +40,7 @@ from loguru import logger
 from config.settings import settings
 from src.agent.harness import agent_harness
 from src.api.client_identity import ClientIdentityMiddleware, scope_request_session
+from src.api.observability import RequestTracingMiddleware
 from src.api.public_errors import public_error
 from src.api.reliability import RAGRequestReliabilityMiddleware
 from src.api.schemas import (
@@ -90,6 +91,7 @@ app = FastAPI(
 
 app.add_middleware(RAGRequestReliabilityMiddleware)
 app.add_middleware(ClientIdentityMiddleware)
+app.add_middleware(RequestTracingMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.router.add_event_handler("startup", warm_up_runtime)
 
@@ -124,10 +126,7 @@ async def query(req: QueryRequest, request: Request):
         request, req.session_id, "rag", allow_empty=True
     )
     query_id = request.state.request_id
-    start = time.time()
-
-    from src.infra.tracer import tracer
-    trace = tracer.start_trace(query_id, req.query)
+    started_at = time.perf_counter()
 
     shared = {
         "query": req.query,
@@ -141,29 +140,16 @@ async def query(req: QueryRequest, request: Request):
         flow = get_online_flow()
         await flow.run_async(shared)
     except Exception as exc:
-        logger.exception("Query {} failed", query_id)
-        tracer.finish_trace(
-            trace,
-            answer="",
-            error=type(exc).__name__,
-        )
+        from src.infra.tracer import tracer
+
+        tracer.record_error("query_failed")
+        logger.error("Query {} failed: {}", query_id, type(exc).__name__)
         raise HTTPException(
             status_code=503,
             detail=public_error("query_failed"),
         ) from exc
 
-    latency = (time.time() - start) * 1000
     answer = shared.get("answer", "")
-
-    tracer.add_span(trace, "rewrite",
-                    variants=len(shared.get("queries", [])))
-    tracer.add_span(trace, "hybrid_retriever",
-                    candidates=len(shared.get("candidates", [])))
-    tracer.add_span(trace, "reranker",
-                    kept=len(shared.get("retrieved_chunks", [])))
-    tracer.add_span(trace, "generator",
-                    answer_chars=len(answer))
-    tracer.finish_trace(trace, answer=answer, sources=len(shared.get("sources", [])))
 
     return QueryResponse(
         query_id=query_id,
@@ -171,7 +157,7 @@ async def query(req: QueryRequest, request: Request):
         sources=shared.get("sources", []),
         warnings=shared.get("warnings", []),
         index_version=shared.get("index_version", "legacy"),
-        latency_ms=round(latency, 1),
+        latency_ms=round((time.perf_counter() - started_at) * 1000, 1),
     )
 
 
@@ -322,7 +308,10 @@ async def query_stream(
         retrieval_flow = get_retrieval_flow()
         await retrieval_flow.run_async(shared)
     except Exception as exc:
-        logger.exception("Retrieval {} failed", query_id)
+        from src.infra.tracer import tracer
+
+        tracer.record_error("retrieval_failed")
+        logger.error("Retrieval {} failed: {}", query_id, type(exc).__name__)
         raise HTTPException(
             status_code=503,
             detail=public_error("retrieval_failed"),

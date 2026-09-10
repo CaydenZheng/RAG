@@ -279,3 +279,40 @@ def test_registry_rejects_undeclared_params_before_execution() -> None:
     assert not result.success
     assert result.error_code == "invalid_tool_parameters"
     assert side_effects == []
+
+def test_cancelled_agent_run_records_a_stable_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent import harness as harness_module
+    from src.infra.tracer import TraceLogger
+
+    harness, _, _ = _runtime(tmp_path)
+    planning_started = asyncio.Event()
+
+    async def plan(messages, max_tokens=None):
+        planning_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(harness, "_plan_async", plan)
+    local = TraceLogger(tmp_path / "agent-cancelled.jsonl")
+    monkeypatch.setattr(harness_module, "tracer", local)
+    trace = local.start_trace(
+        "request-id", "/agent/chat/stream", trace_id="trace-id"
+    )
+
+    async def cancel_run() -> None:
+        token = local.bind(trace)
+        events = harness.events("agent-session", "private message")
+        first = await anext(events)
+        assert first.kind.value == "planning"
+        pending = asyncio.create_task(anext(events))
+        await planning_started.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        await events.aclose()
+        local.reset(token)
+
+    asyncio.run(cancel_run())
+    assert trace["status"] == "cancelled"
+    assert trace["error_code"] == "agent_cancelled"

@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from loguru import logger
 
 from src.core.agent_runtime import ToolResult
+from src.infra.tracer import tracer
 
 # ================================================================
 # 数据模型
@@ -371,12 +372,15 @@ class ToolRegistry:
         from pathlib import Path
         audit_path = Path("logs") / "audit.jsonl"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
+        trace = tracer.current or {}
         record = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "session_id": session_id,
+            "request_id": trace.get("request_id", "unavailable"),
+            "trace_id": trace.get("trace_id", "unavailable"),
             "tool_name": tool_name,
-            "params": {k: str(v)[:100] for k, v in params.items()},
+            "parameter_names": sorted(params),
             "success": result.success,
+            "error_code": result.error_code,
             "latency_ms": round(result.latency_ms, 1),
         }
         with open(audit_path, "a", encoding="utf-8") as f:
@@ -649,7 +653,9 @@ def _create_web_search_tool() -> ToolDef:
         except ImportError:
             logger.debug("duckduckgo_search not installed, using fallback")
         except Exception as e:
-            logger.debug("duckduckgo_search failed: {}, trying fallback", e)
+            logger.debug(
+                "duckduckgo_search failed: {}; trying fallback", type(e).__name__
+            )
 
         # Fallback: DDG Lite HTML
         try:
