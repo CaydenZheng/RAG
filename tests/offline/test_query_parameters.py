@@ -87,7 +87,9 @@ def test_stream_query_forwards_all_retrieval_parameters(
         yield "answer"
 
     monkeypatch.setattr(api, "get_retrieval_flow", RetrievalFlow)
-    monkeypatch.setattr(api.llm_client, "chat_stream_async", stream_answer)
+    from src.core import generation
+
+    monkeypatch.setattr(generation.llm_client, "chat_stream_async", stream_answer)
 
     client = TestClient(api.app)
     try:

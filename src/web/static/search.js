@@ -123,7 +123,10 @@
       if (data.error) {
         loading.classList.remove("active");
         answerEl.classList.remove("streaming");
-        error.textContent = "⚠️ " + data.error;
+        const errorMessage = typeof data.error === "object"
+          ? data.error.message
+          : data.error;
+        error.textContent = "⚠️ " + String(errorMessage || "回答生成失败，请稍后重试");
         error.classList.add("active");
         searchBtn.classList.remove("hidden");
         stopBtn.classList.remove("active");
