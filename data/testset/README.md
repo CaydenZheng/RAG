@@ -36,7 +36,7 @@
 
 离线校验命令：
 
-    python scripts/validate_eval_dataset.py
-    pytest tests/offline/test_eval_datasets.py -q
+    uv run --no-sync python scripts/validate_eval_dataset.py
+    uv run --no-sync pytest tests/offline/test_eval_datasets.py -q
 
 新增 AI 数据由 scripts/generate_testset.py 写入独立的 generated_candidates.json，默认固定抽样 seed，并记录模型、Prompt 版本、时间、来源和生成上下文。Natural Questions 导入脚本会跳过缺少短答案的记录，不再把问题本身错误地当作答案。

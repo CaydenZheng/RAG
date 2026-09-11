@@ -16,12 +16,12 @@
     "source_documents": [
       {
         "path": "data/raw/wiki/Ada Lovelace.txt",
-        "sha256": "fc430010ff221ca2d91190647f4dca3dff2407388822e1f20d0406eb8d711f18",
+        "sha256": "578417e6af8b6c3548d2bd46089a99bb5bca75083a4eae1970127e1cb1899b00",
         "association": "explicit"
       },
       {
         "path": "data/raw/wiki/Abraham Lincoln.txt",
-        "sha256": "8527abde6a8d3ee7c374ce8bc3391ecddc543632a4a66a90b88293ca7bfb5769",
+        "sha256": "4d99eeb437704e99639d608af0213c18282bf420c2f2eda75f695480f976c81b",
         "association": "explicit"
       }
     ],
@@ -49,7 +49,7 @@
       "reviewed_at": null,
       "notes": "AI-authored coverage candidate; factual wording and difficulty require human review."
     },
-    "dataset_version": "sha256:5939f246e3f99de25a9cae1998979d639082c91fc69a33c434d55042ad9f3c8b"
+    "dataset_version": "sha256:64383d1a6046cd828b734c0fbf37228faca59a2002a42f678d4c6fe743e1d9fd"
   },
   {
     "schema_version": 1,
@@ -64,7 +64,7 @@
     "source_documents": [
       {
         "path": "data/raw/wiki/Ada Lovelace.txt",
-        "sha256": "fc430010ff221ca2d91190647f4dca3dff2407388822e1f20d0406eb8d711f18",
+        "sha256": "578417e6af8b6c3548d2bd46089a99bb5bca75083a4eae1970127e1cb1899b00",
         "association": "explicit"
       }
     ],
@@ -91,7 +91,7 @@
       "reviewed_at": null,
       "notes": "AI-authored coverage candidate; factual wording and difficulty require human review."
     },
-    "dataset_version": "sha256:5939f246e3f99de25a9cae1998979d639082c91fc69a33c434d55042ad9f3c8b"
+    "dataset_version": "sha256:64383d1a6046cd828b734c0fbf37228faca59a2002a42f678d4c6fe743e1d9fd"
   },
   {
     "schema_version": 1,
@@ -108,7 +108,7 @@
     "source_documents": [
       {
         "path": "data/raw/wiki/Aardvark.txt",
-        "sha256": "6113e68adab50d3140f3d1f32a9a27d4589cd91f3487a0f22f64481743ea7d71",
+        "sha256": "fb772810d1b98ecaa787b07082358e0563e2d5858631a5432326c7039eeab8ef",
         "association": "explicit"
       }
     ],
@@ -136,6 +136,6 @@
       "reviewed_at": null,
       "notes": "AI-authored coverage candidate; factual wording and difficulty require human review."
     },
-    "dataset_version": "sha256:5939f246e3f99de25a9cae1998979d639082c91fc69a33c434d55042ad9f3c8b"
+    "dataset_version": "sha256:64383d1a6046cd828b734c0fbf37228faca59a2002a42f678d4c6fe743e1d9fd"
   }
 ]

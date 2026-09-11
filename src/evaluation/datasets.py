@@ -78,8 +78,13 @@ def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _canonical_text(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _sha256_file(path: Path) -> str:
-    return _sha256_bytes(path.read_bytes())
+    canonical: str = _canonical_text(path.read_bytes().decode("utf-8"))
+    return _sha256_bytes(canonical.encode("utf-8"))
 
 
 def compute_dataset_version(records: list[dict[str, Any]] | tuple[dict[str, Any], ...]) -> str:
@@ -102,11 +107,16 @@ def stamp_dataset_version(records: list[dict[str, Any]]) -> list[dict[str, Any]]
     return stamped
 
 
-def write_dataset(path: str | Path, records: list[dict[str, Any]]) -> EvaluationDataset:
+def write_dataset(
+    path: str | Path,
+    records: list[dict[str, Any]],
+    *,
+    repository_root: str | Path | None = None,
+) -> EvaluationDataset:
     """Stamp and write candidate data; catalog publication remains a review step."""
     output_path = Path(path).resolve()
     stamped = stamp_dataset_version(records)
-    root = _repository_root(output_path)
+    root = Path(repository_root).resolve() if repository_root else _repository_root(output_path)
     sample_ids: set[str] = set()
     for index, record in enumerate(stamped):
         _validate_record(record, index=index, repository_root=root)
@@ -160,7 +170,7 @@ def _local_source_text(
         raise DatasetValidationError(f"{label}.path does not exist: {relative.as_posix()}")
     if _sha256_file(absolute) != digest:
         raise DatasetValidationError(f"{label}.sha256 does not match {relative.as_posix()}")
-    return absolute.read_bytes().decode("utf-8")
+    return _canonical_text(absolute.read_bytes().decode("utf-8"))
 
 
 def _validate_record(record: Any, *, index: int, repository_root: Path) -> None:
@@ -240,9 +250,9 @@ def _validate_record(record: Any, *, index: int, repository_root: Path) -> None:
         isinstance(quote, str) and quote.strip() for quote in quotes
     ):
         raise DatasetValidationError(f"{label}.evidence_quotes must contain text")
-    normalized_sources = [text.replace("\r\n", "\n") for text in local_texts]
+    normalized_sources = [_canonical_text(text) for text in local_texts]
     if normalized_sources and any(
-        not any(quote.replace("\r\n", "\n") in text for text in normalized_sources)
+        not any(_canonical_text(quote) in text for text in normalized_sources)
         for quote in quotes
     ):
         raise DatasetValidationError(f"{label}.evidence_quotes must be exact source text")
