@@ -6,10 +6,10 @@ import asyncio
 import json
 import math
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from src.core.knowledge import RetrievalResult
 from src.evaluation.datasets import DatasetCatalog, EvaluationDataset
 from src.evaluation.metrics import (
     citation_metrics,
@@ -18,12 +18,23 @@ from src.evaluation.metrics import (
     score_sample,
     summarize_results,
 )
-from src.evaluation.runner import (
-    EvaluationConfig,
-    EvaluationRunner,
-    GeneratedAnswer,
-    write_report,
-)
+
+
+@pytest.fixture
+def evaluation_runner_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> ModuleType:
+    import tiktoken
+
+    monkeypatch.setattr(
+        tiktoken,
+        "get_encoding",
+        lambda name: SimpleNamespace(encode=lambda text: list(text)),
+    )
+
+    from src.evaluation import runner
+
+    return runner
 
 
 def _sample(*, behavior: str = "answer") -> dict:
@@ -148,9 +159,11 @@ def test_no_answer_and_summary_metrics_are_deterministic() -> None:
 def test_runner_calls_unified_core_and_applies_opt_in_judge(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    evaluation_runner_module: ModuleType,
 ) -> None:
-    from src.evaluation import runner as runner_module
+    from src.core.knowledge import RetrievalResult
 
+    GeneratedAnswer: type = evaluation_runner_module.GeneratedAnswer
     calls: list[tuple] = []
 
     class FakeKnowledgeSystem:
@@ -168,7 +181,7 @@ def test_runner_calls_unified_core_and_applies_opt_in_judge(
     class FakeAnswerGenerator:
         async def generate(self, query, chunks, index_version) -> GeneratedAnswer:
             calls.append(("generate", query, len(chunks), index_version))
-            return GeneratedAnswer(
+            return evaluation_runner_module.GeneratedAnswer(
                 answer="Ada Lovelace was born in 1815 [1].",
                 context="context",
                 sources=[{"ref": 1, "source": "wiki/Ada Lovelace.txt"}],
@@ -185,7 +198,7 @@ def test_runner_calls_unified_core_and_applies_opt_in_judge(
             }
 
     monkeypatch.setattr(
-        runner_module,
+        evaluation_runner_module,
         "capture_reproducibility",
         lambda catalog, config, project_root: {"captured": True},
     )
@@ -199,7 +212,7 @@ def test_runner_calls_unified_core_and_applies_opt_in_judge(
         datasets=(dataset,),
         version="sha256:catalog",
     )
-    runner = EvaluationRunner(
+    runner = evaluation_runner_module.EvaluationRunner(
         knowledge_system=FakeKnowledgeSystem(),
         answer_generator=FakeAnswerGenerator(),
         judge=FakeJudge(),
@@ -209,7 +222,7 @@ def test_runner_calls_unified_core_and_applies_opt_in_judge(
     report = asyncio.run(
         runner.run(
             catalog,
-            EvaluationConfig(
+            evaluation_runner_module.EvaluationConfig(
                 split="development",
                 modes=("hybrid+rerank",),
                 top_k=5,
@@ -227,9 +240,14 @@ def test_runner_calls_unified_core_and_applies_opt_in_judge(
     assert report["reproducibility"] == {"captured": True}
 
 
-def test_report_write_is_complete_json(tmp_path: Path) -> None:
+def test_report_write_is_complete_json(
+    tmp_path: Path,
+    evaluation_runner_module: ModuleType,
+) -> None:
     report = {"schema_version": 1, "samples": [{"answer": "完整"}]}
-    destination = write_report(tmp_path / "run.json", report)
+    destination = evaluation_runner_module.write_report(
+        tmp_path / "run.json", report
+    )
 
     assert json.loads(destination.read_text(encoding="utf-8")) == report
     assert not list(tmp_path.glob("*.tmp"))
