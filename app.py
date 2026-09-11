@@ -68,7 +68,6 @@ from src.core.knowledge import (
 )
 from src.infra.index_jobs import get_index_jobs
 from src.infra.uploads import read_upload, validate_document_filename
-from src.orchestration.agent import get_agent_reset_flow
 from src.orchestration.rag import (
     get_online_flow,
     get_retrieval_flow,
@@ -449,19 +448,16 @@ async def agent_chat_stream(
 
 
 @app.post("/agent/reset")
-def agent_reset(request: Request, session_id: str):
+def agent_reset(request: Request, session_id: str) -> dict[str, str]:
     """重置当前客户端的 Agent 会话。"""
     session = scope_request_session(request, session_id, "agent")
-    flow = get_agent_reset_flow()
-    shared = {"session_id": session.storage_id}
-    flow.run(shared)
-    if not shared.get("session_found", False):
+    if not agent_runtime.reset_session(session.storage_id):
         raise HTTPException(
             status_code=404,
             detail="Session not found",
             headers={"Cache-Control": "no-store"},
         )
-    return {"status": "ok", "message": shared.get("answer", "Session reset.")}
+    return {"status": "ok", "message": "Session reset."}
 
 
 @app.get("/agent/memory/{session_id}")

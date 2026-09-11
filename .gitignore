@@ -7,8 +7,19 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+.pytest_cache/
+.test-tmp/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # 本地数据
+data/sessions.db
+data/.fingerprint
+data/agent_benchmark_report.json
+/ablation_results.txt
+/.cache/
+/data/models/
 data/cache.db
 data/chroma/
 data/index-manifests/

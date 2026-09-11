@@ -142,3 +142,7 @@ class AgentRuntime(Protocol):
         self, session_id: str, user_message: str
     ) -> AsyncIterator[AgentEvent]: ...
 
+    def reset_session(self, session_id: str) -> bool:
+        """Delete one Agent session and report whether it existed."""
+        ...
+

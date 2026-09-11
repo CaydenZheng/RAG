@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from urllib.parse import quote
 
 import pytest
@@ -23,7 +24,7 @@ class SessionClients:
 def session_clients(
     monkeypatch: pytest.MonkeyPatch,
     isolated_runtime: Path,
-    temporary_sessions,
+    temporary_sessions: Any,
 ) -> Iterator[SessionClients]:
     import tiktoken
 
@@ -69,16 +70,11 @@ def session_clients(
             result = await self.execute(session_id, user_message)
             yield AgentEvent(AgentEventKind.DONE, response=result)
 
-    class AgentResetFlow:
-        def run(self, shared: dict) -> None:
-            shared["session_found"] = agent_memory.clear_session(
-                shared["session_id"]
-            )
-            shared["answer"] = "Session reset."
+        def reset_session(self, session_id: str) -> bool:
+            return agent_memory.clear_session(session_id)
 
     monkeypatch.setattr(api, "get_online_flow", QueryFlow)
     monkeypatch.setattr(api, "agent_runtime", AgentRuntime())
-    monkeypatch.setattr(api, "get_agent_reset_flow", AgentResetFlow)
 
     client_a = TestClient(api.app)
     client_b = TestClient(api.app)
