@@ -3,7 +3,8 @@ FastAPI 服务入口。
 
 端点:
   GET  /               搜索页面
-  GET  /health          健康检查
+  GET  /health          存活检查
+  GET  /ready           运行依赖就绪检查
   POST /query           检索问答
   POST /upload          上传文档（触发增量索引）
   POST /agent/chat      Agent 对话（Plan-Execute-Observe）
@@ -51,7 +52,7 @@ from src.api.schemas import (
     QueryResponse,
     parse_metadata_filter_json,
 )
-from src.api.startup import warm_up_runtime
+from src.api.startup import runtime_readiness, warm_up_runtime
 from src.api.streaming import iter_answer_sse
 from src.core.agent_runtime import AgentRuntime
 from src.core.generation import AnswerInput, answer_service
@@ -114,8 +115,18 @@ def agent_page():
 # ================================================================
 
 @app.get("/health")
-def health():
+def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness(response: Response) -> dict[str, object]:
+    """Report required startup dependencies and optional degradation."""
+    snapshot = runtime_readiness.snapshot()
+    response.headers["Cache-Control"] = "no-store"
+    if snapshot["status"] in {"starting", "unavailable"}:
+        response.status_code = 503
+    return dict(snapshot)
 
 
 @app.post("/query", response_model=QueryResponse)
