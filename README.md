@@ -1,1148 +1,331 @@
-# RAGFlow — RAG 管线 + Agent 智能体系统
+# RAGFlow
 
-> 以 [PocketFlow](https://github.com/The-Pocket/PocketFlow)（100 行 LLM 框架）为编排引擎，实现混合检索 + Rerank 的 RAG 管线，并进一步升级为具备工具调用、记忆管理和安全防护的 Agent。
+基于 FastAPI、PocketFlow 和本地检索模型构建的 RAG 与 Agent 应用。项目提供版本化文档索引、混合检索、带引用回答、会话隔离、Agent 工具调用、SSE 流式输出、可观测性和可复现评测。
 
----
+当前代码面向本地开发和小规模服务部署。默认评测数据仍是未经人工核验的 AI 生成候选，不能把开发集结果当作正式质量结论。
 
-## 目录
+导航：[架构](#架构) · [配置](#配置) · [索引与回滚](#索引生命周期) · [测试与 CI](#测试与-ci) · [评测](#评测) · [排障](#排障) · [已知限制](#已知限制) · [ADR 0001](docs/adr/0001-core-seams.md)
 
-- [1. 项目定位](#1-项目定位)
-- [2. Agent 升级](#2-agent-升级)
-  - [2.1 Agent Harness 设计](#21-agent-harness-设计)
-  - [2.2 Agent 端点](#22-agent-端点)
-- [3. 架构总览](#3-架构总览)
-- [4. 技术选型与复用策略](#4-技术选型与复用策略)
-- [5. 项目结构](#5-项目结构)
-- [6. 子任务拆分与开发计划](#6-子任务拆分与开发计划)
-- [7. 核心设计细节](#7-核心设计细节)
-  - [7.8 Prompt Engineering](#78-prompt-engineering)
-  - [7.9 多轮会话服务](#79-多轮会话服务)
-  - [7.10 异步编排](#710-异步编排)
-  - [7.11 流式响应](#711-流式响应)
-- [8. 评估方案](#8-评估方案)
-- [9. 工程落地](#9-工程落地)
-- [10. 快速开始](#10-快速开始)
+## 核心能力
 
----
+| 能力 | 当前行为 |
+|---|---|
+| RAG 查询 | 查询改写、Dense／BM25、RRF、可选 Rerank、上下文预算和引用约束 |
+| Agent | 有界迭代、结构化工具调用、会话记忆、同步结果与 SSE 共用事件模型 |
+| 索引 | 上传、删除、全量重建、版本化 collection、原子发布和回滚 |
+| 可靠性 | 并发上限、总时限、有限重试、稳定错误码和显式降级警告 |
+| 安全 | 客户端会话隔离、metadata filter 校验、上传校验、工具参数和输出约束 |
+| 可观测性 | request/trace ID、阶段 Span、延迟、模型用量、缓存命中和索引版本 |
+| 评测 | 版本化数据、确定性检索／引用指标、可选 Ragas、逐样本可复现报告 |
 
-## 1. 项目定位
+## 架构
 
-**RAG 管线**：用最轻的框架（PocketFlow 100 行），做最扎实的 RAG。
-
-**核心原则**：
-- **聚焦 4 层核心**：摄入 → 检索 → 生成 → 评估，每层做深不做宽
-- **复用优先**：不重复造轮子，能用成熟开源库的一律复用，手写只在编排逻辑和关键决策点
-- **数据说话**：4 组消融实验 + 8 条 Agent Benchmark
-- **工程意识**：缓存失效、降级兜底、一致性保证
-
----
-
-## 2. Agent 升级
-
-在 RAG 管线基础上，Agent 通过 `AgentRuntime` 接口运行；普通响应和 SSE 消费同一个异步事件核心：
-
-| 模块 | 文件 | 功能 |
-|---|---|---|
-| **Agent 运行时** | `core/agent_runtime.py`、`agent/harness.py` | 统一 `ToolCall`、`ToolResult`、`AgentEvent`；一个有界异步循环同时支持普通响应和 SSE |
-| **Hook 管线** | `hooks.py` | 9 个生命周期事件 + 正则模式匹配，日志/限流/审计/黑名单阻断解耦 |
-| **结构化记忆** | `memory.py` | 两层记忆（长期偏好 + 短期历史），三级压缩（截断→硬截断→LLM 摘要） |
-| **工具安全** | `tools.py` | 三级审批（白名单/灰名单/黑名单）+ 参数校验 + 30s 去重，内置 **4 个工具**：`search_knowledge_base`、`calculator`、`get_weather`、`search_web` |
-
-
-
-| 端点 | 方法 | 功能 |
-|---|---|---|
-| `/agent` | GET | Agent 对话 Web UI（实时展示思考过程） |
-| `/agent/chat` | POST | Agent 对话（Plan-Execute-Observe） |
-| `/agent/chat/stream` | GET | Agent 流式对话（SSE，实时推送规划→工具调用→答案） |
-| `/agent/reset` | POST | 重置会话记忆 |
-| `/agent/memory/{id}` | GET | 查看会话记忆 |
-
-普通接口通过 `AgentRuntime.execute` 聚合事件，SSE 接口通过 `AgentRuntime.events` 原样传递事件。规划、工具执行、历史保存和错误语义只实现一次。运行时限制迭代次数、工具调用次数、保守预留的 Token 预算和总时长；工具参数在副作用前严格校验，工具输出以不可信数据封装并截断。
-
-**评测结果**：8 条 Benchmark（规划/安全/记忆/多步推理）通过率 100%，6 项单元测试全部通过。详见 [`AGENT_IMPROVEMENTS.md`](AGENT_IMPROVEMENTS.md)。
-
-**内置工具**：
-
-| 工具 | 功能 | 安全等级 |
-|---|---|---|
-| `search_knowledge_base` | 直接调用统一 `KnowledgeSystem.retrieve`，只返回证据，由 Agent 生成最终答案 | WHITELIST |
-| `calculator` | 安全数学计算（受限 eval + 白名单） | WHITELIST |
-| `get_weather` | 查询实时天气（wttr.in 免费 API） | WHITELIST |
-| `search_web` | 搜索互联网（DDG，优先 duckduckgo_search 库，5s 超时后走 HTML fallback） | GRAYLIST |
-
-### 2.1 Agent Harness 设计
-
-Agent 核心循环控制器（`src/agent/harness.py`）实现了经典的 **Plan → Execute → Observe** 自主推理模式，是 Agent 的"大脑"。
-
-#### 核心循环
-
-```
-                     ┌──────────────┐
-                     │  用户输入     │
-                     └──────┬───────┘
-                            ▼
-              ┌─────────────────────────┐
-              │  1. 加载记忆 + 构建 messages │
-              │  (长期偏好 ⊕ 近期历史 ⊕ 当前消息)│
-              └────────────┬────────────┘
-                           ▼
-              ┌─────────────────────────┐
-              │  2. LLM Planner (JSON)  │◄──── 默认最多 5 轮迭代
-              │  {action, tool_name,    │
-              │   tool_params, reasoning}│
-              └────────────┬────────────┘
-                           ▼
-                   ┌───────┴───────┐
-                   │  action 类型？ │
-                   └───┬───────┬───┘
-               tool_call     final_answer
-                   │               │
-                   ▼               ▼
-    ┌──────────────────────┐  ┌──────────┐
-    │ 3a. Hook 管线检查    │  │ 返回答案  │
-    │  → 日志/限流/黑名单  │  │ 更新记忆  │
-    │  → 阻断则跳过执行    │  └──────────┘
-    ├──────────────────────┤
-    │ 3b. 工具安全执行     │
-    │  → 三级审批          │
-    │  → 参数校验          │
-    │  → 30s 去重          │
-    ├──────────────────────┤
-    │ 3c. 结果注入消息列表 │
-    └──────────┬───────────┘
-               │
-               └────→ 回到步骤 2
+```mermaid
+flowchart LR
+    Client[Web / HTTP Client] --> API[FastAPI entry]
+    API --> RAGFlow[PocketFlow adapters]
+    RAGFlow --> Knowledge[KnowledgeSystem.retrieve]
+    Knowledge --> Retrieval[Rewrite / Dense / BM25 / RRF / Rerank]
+    RAGFlow --> Answer[AnswerService]
+    API --> Runtime[AgentRuntime]
+    Runtime --> Tools[ToolRegistry]
+    Tools --> Knowledge
+    API --> Jobs[IndexJobs]
+    Jobs --> Indexing[Ingestion and versioned indexing]
+    Eval[EvaluationRunner] --> Knowledge
+    Eval --> Answer
 ```
 
-#### Planner Prompt 设计
+核心逻辑集中在少量稳定接口：
 
-Planner 的 system prompt 采用极简结构：工具描述（JSON Schema）+ 输出格式约束 + 关键规则：
+- `KnowledgeSystem.retrieve` 隐藏查询改写、候选召回、融合、精排和降级。
+- `AnswerService` 统一普通回答与流式回答的上下文、引用和会话落盘语义。
+- `AgentRuntime` 统一普通 Agent 响应、事件流和会话重置。
+- `IndexJobs` 统一索引任务提交、幂等、状态查询和后台执行。
+- `EvaluationRunner` 直接复用检索与生成接口，不另建一套评测专用 RAG。
 
-```
-You are an AI Agent. Your ENTIRE response must be a single JSON object.
+PocketFlow 只保留离线索引和 RAG 顶层编排。架构决策见 [ADR 0001](docs/adr/0001-core-seams.md)。
 
-## Available Tools
-[{name, description, params: [{name, type, description, required}], ...}]
+## 目录结构
 
-## CRITICAL: Response Format
-Tool call:  {"action":"tool_call","tool_name":"<name>","tool_params":{...},"reasoning":"<why>"}
-Final answer: {"action":"final_answer","answer":"<answer>","reasoning":"<summary>"}
-
-## CRITICAL Rules
-1. 事实类问题 → 必须调用 search_knowledge_base，禁止凭自身知识
-2. 数学计算 → calculator
-3. 天气 → get_weather
-4. 实时/当前事件 → search_web
-5. 仅闲聊时可跳过工具直接回答
-6. 绝不编造信息
-7. search_web 结果必须列出标题和完整 URL
-8. 引用来源
-```
-
-**设计要点**：
-- **JSON-only 输出**：严禁 Planner 输出自然语言前缀/后缀，三级 JSON 解析兜底（代码块提取 → 正则匹配 → 全文降级）
-- **工具描述 JSON Schema 化**：让 LLM 理解每个工具的参数类型、是否必填、默认值
-- **强制检索约束**：规则 1 解决 LLM 过度依赖自身知识而不调用 RAG 的常见问题
-- **工具路由**：规则 3-4 确保 Agent 根据问题类型自动选择合适的工具
-- **低温决策**：Planner temperature=0.1，保证决策稳定可复现
-
-#### Hook 管线架构
-
-```
-Agent 生命周期
-  │
-  ├── SESSION_START  ──→ LoggingHook（记录所有事件）
-  ├── PRE_PLANNING
-  ├── POST_PLANNING
-  ├── PRE_TOOL_USE   ──→ RateLimitHook（30次/分钟限流, priority=10）
-  │                  ──→ BlacklistBlockHook（正则匹配 delete_*/exec/sudo, priority=5）
-  │                  ──→ AuditHook（灰名单工具审计, priority=20, pattern 限定）
-  ├── POST_TOOL_USE
-  ├── PRE_GENERATION
-  ├── POST_GENERATION
-  ├── SESSION_END
-  └── ON_ERROR
-```
-
-**核心设计**：
-- **优先级排序**：priority 越小越先执行，Blacklist(5) > RateLimit(10) > Audit(20) > Logging(1000)
-- **阻断即停**：任一 Hook 设置 `ctx.blocked=True` 后，后续 Hook 不再执行，核心循环跳过该工具
-- **正则模式过滤**：AuditHook 配置 `pattern=r"read_file|web_search"`，只对敏感工具做审计，避免审计风暴
-- **与核心循环解耦**：Hook 管线是独立模块，新增监控/合规需求无需改动 `harness.py`
-
-#### 工具安全体系
-
-```
-三级审批流程：
-  ┌──────────────┐
-  │ 工具调用请求  │
-  └──────┬───────┘
-         ▼
-  ┌──────────────┐
-  │ 1. 参数校验   │ → 类型 + 必填检查，不符合即拒绝
-  └──────┬───────┘
-         ▼
-  ┌──────────────┐     WHITELIST → 自动执行（search_knowledge_base, calculator）
-  │ 2. 安全等级   │─── GRAYLIST  → 审计日志 + 执行（read_file, web_search）
-  └──────┬───────┘     BLACKLIST → 直接阻断（delete_*, execute_code, rm, sudo）
-         ▼
-  ┌──────────────┐
-  │ 3. 去重检查   │ → 同一 session 30s 内相同调用指纹 → 拒绝
-  └──────┬───────┘
-         ▼
-  ┌──────────────┐
-  │ 4. 执行+重试  │
-  └──────────────┘
-```
-
-### 2.2 Agent 端点
-
----
-
-## 3. 架构总览
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                        用户 / API                            │
-└─────────────────────────┬────────────────────────────────────┘
-                          │
-┌─────────────────────────▼────────────────────────────────────┐
-│                     FastAPI 服务层（异步）                     │
-│   POST /upload    POST /query    GET /query/stream (SSE)     │
-│   GET /agent (UI)  POST /agent/chat  GET /agent/chat/stream │
-│   POST /session/reset  GET /session/{id}                     │
-└─────────────────────────┬────────────────────────────────────┘
-                          │
-┌─────────────────────────▼────────────────────────────────────┐
-│              PocketFlow AsyncFlow 编排层                       │
-│                                                               │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │
-│  │ Offline Flow │  │ Online Flow  │  │ Retrieval    │        │
-│  │ 文档摄入建索引 │  │ 查询→检索→生成│  │ Flow(流式用) │        │
-│  └──────────────┘  └──────────────┘  └──────────────┘        │
-└─────────────────────────┬────────────────────────────────────┘
-                          │
-┌─────────────────────────▼────────────────────────────────────┐
-│                     基础设施层 (infra)                         │
-│  LLM Client (sync+async) · Cache (SQLite) · Tracer           │
-│  Prompt Manager (YAML) · Session Store (SQLite) · Fallback   │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 在线查询数据流（异步）
-
-```
-Query ──→ QueryRewriter ──→ HybridRetriever ──→ Reranker ──→ ContextBuilder ──→ Generator
-              │  (async)         (sync)            (sync)        (sync)           (async)
-           改写+原query        ┌─────┴─────┐                                  ↓ 流式SSE输出
-                          Vector(ChromaDB)  BM25                         [session_id]
-                          元数据过滤        分词索引                       ↓ 保存会话历史
-```
-
-> **混合编排**：PocketFlow 的 `AsyncFlow` 自动识别节点类型——涉及 LLM 调用的 `Rewrite`/`Generator` 走 `await` 异步路径，检索/重排等毫秒级节点保持同步，无需全部改造。
-
-### 离线索引数据流
-
-```
-Raw Docs ──→ DocLoader ──→ DocDeduplicator ──→ Chunker ──→ Embedder ──→ Candidate ──→ Publish
-   (MD/TXT)       (UTF-8)        (hash去重)      (语义分块)   (本地 bge)    (Chroma+BM25)   (active)
-```
-
----
-
-## 4. 技术选型与复用策略
-
-| 模块 | 选型 | 复用来源 | 复用程度 |
-|---|---|---|---|
-| **LLM 编排框架** | PocketFlow | 核心 100 行 `__init__.py` | 100% 复用 |
-| **文档解析** | `markitdown` (微软) | pip install | 90% 复用 |
-| **文本分块** | `langchain-text-splitters` (仅子包) | 取 splitters，不引入 LangChain | 80% 复用 |
-| **向量存储** | `ChromaDB` | 文件型，SQLite 底层，自带持久化+元数据过滤 | 95% 复用 |
-| **Embedding** | OpenAI / `sentence-transformers` (bge) | PocketFlow `tool-embeddings` 模式 | 100% 复用 |
-| **关键词检索** | `rank-bm25` | 纯 Python 零依赖 | 100% 复用 |
-| **中文分词** | `jieba` | pip install | 100% 复用 |
-| **Rerank** | `FlagEmbedding` (bge-reranker-base) | CPU 可跑，~200ms/条 | 100% 复用 |
-| **LLM 调用** | `litellm` 或 OpenAI SDK | 多 Provider 统一接口 | 90% 复用 |
-| **LLM 缓存** | SQLite 自建精确缓存 | 手写轻量实现 | 手写 |
-| **追踪监控** | `langfuse` | PocketFlow `tracing/core.py` 100% 复用 | 100% 复用 |
-| **评估框架** | `ragas` | 7+ RAG 专用指标 | 90% 复用 |
-| **API 服务** | `FastAPI` + `uvicorn` | 标准选型 | 100% 复用 |
-| **配置管理** | `pydantic-settings` + `.env` | pip install | 100% 复用 |
-| **日志** | `loguru` | 结构化日志 | 100% 复用 |
-| **Prompt 管理** | 自建 YAML + Git 版本控制 | 参考 promptfoo 理念 | 手写 |
-
-**核心手写部分**（~15 个 PocketFlow Node + Flow 编排 + 工具封装）：
-- 核心接口：`KnowledgeSystem.retrieve()` 统一查询改写、Dense／BM25、RRF 与 Rerank；PocketFlow 只负责外围编排
-- 接口迁移决策：[ADR 0001：核心接口随真实实现逐步收拢](docs/adr/0001-core-seams.md)
-- 混合检索融合算法（RRF）
-- 容错降级链
-- 缓存失效逻辑
-- Prompt 模板设计
-
----
-
-## 5. 项目结构
-
-```
+```text
 ragrag/
-│
-├── README.md                     # 本文件
-├── pyproject.toml                # 项目、依赖分组和测试配置
-├── uv.lock                       # 可复现依赖锁文件
-├── .env.example                  # 环境变量模板
-├── config/
-│   └── settings.py               # pydantic-settings 配置类
-│
-├── prompts/                      # Prompt 版本管理
-│   ├── v1/
-│   │   ├── query_rewrite.yaml    #   查询改写
-│   │   ├── answer_generation.yaml#   答案生成
-│   └── v2/                       #   后续迭代版本
-│
-├── data/                         # 测试数据
-│   ├── raw/                      #   原始文档（Wikipedia 文章 ~300 篇）
-│   ├── chroma/                   #   ChromaDB 持久化目录 (gitignore)
-│   ├── index-manifests/          #   版本 manifest 与 active 指针 (gitignore)
-│   └── testset/                  #   自建评估测试集 (QA pairs)
-│       └── generated_test.json   #   LLM 自动生成 50 条 QA
-│
+├── app.py                    # FastAPI 入口与 HTTP 路由
+├── config/settings.py        # 环境配置及类型校验
+├── prompts/                  # 版本化 Prompt
+├── scripts/                  # 索引、数据和评测命令
 ├── src/
-│   ├── __init__.py
-│   │
-│   ├── core/                     # PocketFlow 节点库
-│   │   ├── __init__.py
-│   │   ├── ingestion.py          #   DocLoader, DocDeduplicator, Chunker
-│   │   ├── indexing.py           #   Embedder, candidate 构建与安全发布
-│   │   ├── index_versions.py     #   IndexVersion 与来源／构建 manifest
-│   │   ├── retrieval.py          #   QueryRewriter, HybridRetriever, Reranker
-│   │   ├── generation.py         #   ContextBuilder, Generator
-│   │   ├── knowledge.py           #   统一 KnowledgeSystem 检索接口
-│   │
-│   ├── llm/                      # LLM 调用层
-│   │   ├── __init__.py
-│   │   ├── client.py             #   统一 LLM 接口 (litellm/OpenAI)
-│   │   └── cache.py              #   SQLite 精确缓存（含知识库版本指纹）
-│   │
-│   ├── infra/                    # 基础设施
-│   │   ├── __init__.py
-│   │   ├── tracer.py             #   本地 JSON Lines trace 日志
-│   │   ├── prompt_manager.py     #   YAML Prompt 加载与管理
-│   │   ├── session_store.py      #   SQLite 会话存储（多轮对话历史）
-│   │   ├── index_catalog.py      #   版本文件与 active 指针原子切换
-│   │   └── fallback.py           #   生成 Provider 降级与显式失败
-│   │
-│   ├── agent/                    # Agent 模块
-│   │   ├── __init__.py
-│   │   ├── harness.py            #   Agent 核心循环（Plan-Execute-Observe）
-│   │   ├── hooks.py              #   Hook 事件拦截管线（日志/限流/审计/阻断）
-│   │   ├── memory.py             #   两层记忆 + 三级压缩
-│   │   └── tools.py              #   工具注册 + 三级安全审批 + 去重
-│   │
-│   ├── api/                      # HTTP 数据模型、身份与启动任务
-│   │   ├── client_identity.py    #   HttpOnly 客户端身份与会话作用域
-│   │   ├── schemas.py            #   请求/响应模型
-│   │   └── startup.py            #   模型与 BM25 预热
-│   │
-│   ├── security/                 # 跨层安全边界
-│   │   └── session_ids.py        #   公开 ID 校验与内部作用域键
-│   │
-│   ├── orchestration/            # PocketFlow 顶层编排
-│   │   ├── rag.py                #   Offline / Online / Retrieval Flow
-│   │   └── agent.py              #   Agent 与会话重置 Flow
-│   │
-│   ├── web/                      # 浏览器页面资源
-│   │   ├── pages.py              #   与工作目录无关的页面加载
-│   │   ├── pages/
-│   │   │   ├── search.html
-│   │   │   └── agent.html
-│   │   └── static/               #   页面公共样式与安全 DOM 渲染脚本
-│   │       ├── common.css
-│   │       ├── search.css
-│   │       ├── agent.css
-│   │       ├── rendering.js
-│   │       ├── search.js
-│   │       └── agent.js
-│   │
-│   └── utils/                    # 工具函数
-│       ├── __init__.py
-│       ├── rrf.py                #   RRF 融合纯函数（可单测）
-│       ├── token_counter.py      #   tiktoken 精确计数
-│       └── bm25_store.py         #   BM25 索引封装（读写同步、冷启动降级）
-│
-
-├── app.py                        # 精简 FastAPI 入口与路由装配
-│
-├── scripts/
-│   ├── build_index.py            # 离线索引构建脚本
-│   ├── run_eval.py               # 统一核心评测 Runner（慢评测显式启用）
-│   ├── download_wiki.py          # Wikipedia 文章下载
-│   └── generate_testset.py       # LLM 自动生成测试集
-│
-├── tests/
-│   ├── test_smoke.py             # 冒烟验证
-│   ├── test_ragas.py             # RAGAS 导入检查
-│   ├── test_rrf.py               # RRF 融合公式单元测试
-│   ├── test_agent.py             # Agent Benchmark + 单元测试
-│   └── offline/                  # 默认离线基础、Trace 与入口回归
-│
+│   ├── agent/                # Agent 循环、工具、Hook 和记忆
+│   ├── api/                  # HTTP schema、中间件、SSE 与启动逻辑
+│   ├── core/                 # 检索、生成、索引和 Agent 核心接口
+│   ├── evaluation/           # 数据规则、指标、Runner 和可选 Judge
+│   ├── infra/                # SQLite、Chroma、任务、Trace 等 Adapter
+│   ├── orchestration/        # PocketFlow 顶层编排
+│   ├── security/             # 会话标识与安全校验
+│   ├── utils/                # RRF、BM25 和 Token 工具
+│   └── web/                  # 页面、样式和前端脚本
+├── data/testset/             # 版本化评测数据和审核说明
+└── tests/                    # 默认离线测试与显式真实模型检查
 ```
 
----
+运行数据库、索引、日志、模型缓存、评测输出和个人辅助资料不进入 Git。
 
-## 6. 子任务拆分与开发计划
+## 快速开始
 
-### Phase 1：基础设施搭建（Day 1-2）
+### 1. 安装
 
-| 子任务 | 内容 | 依赖 |
-|---|---|---|
-| 1.1 项目骨架 | 目录结构、`pyproject.toml`、`uv.lock`、`.env`、`config/settings.py` | 无 |
-| 1.2 LLM Client | 统一 `chat()` / `embed()` 接口，封装 litellm + retry + timeout | 1.1 |
-| 1.3 Prompt Manager | YAML 加载、版本切换、模板渲染 | 1.1 |
-| 1.4 Token Counter | tiktoken 封装，支持多种模型 | 1.1 |
+要求 Python 3.13 和 uv 0.12.11 或更高版本。
 
-### Phase 2：离线索引管线（Day 3-5）
-
-| 子任务 | 内容 | 依赖 |
-|---|---|---|
-| 2.1 DocLoader | 多格式解析（markitdown 封装），输出统一 `{text, metadata}` | 1.1 |
-| 2.2 DocDeduplicator | 内容 MD5 去重，同一文档幂等上传 | 1.1 |
-| 2.3 Chunker | 语义分块（Markdown 按标题 / 通用递归字符），overlap、chunk_id | 2.1 |
-| 2.4 Embedder | 批量 embedding，支持 OpenAI / bge 双后端 | 1.2 |
-| 2.5 IndexBuilder | ChromaDB 写入 + BM25 同步构建，元数据过滤字段 | 2.3, 2.4 |
-| 2.6 Offline Flow | 串联 2.1→2.5，PocketFlow 编排，`build_index.py` 脚本 | 2.1-2.5 |
-
-### Phase 3：在线检索管线（Day 6-9）
-
-| 子任务 | 内容 | 依赖 |
-|---|---|---|
-| 3.1 QueryRewriter | LLM 改写查询，保留原 query 兜底 | 1.2, 1.3 |
-| 3.2 BM25 Store | BM25 索引封装，运行时同步增删，冷启动异步重建+自动降级 | 2.5 |
-| 3.3 HybridRetriever | 向量检索 + BM25 检索 → RRF 融合，元数据过滤，返回候选集 | 3.2 |
-| 3.4 Reranker | bge-reranker 精排，首尾截断适配 max_length，可配置开关 | 3.3 |
-| 3.5 ContextBuilder | 按分数降序，逐 chunk 累加 token，达预算停止，完整 chunk 不截断 | 3.4, 1.4 |
-| 3.6 Generator | 带引用标记的答案生成，模板来自 Prompt Manager | 1.2, 1.3, 3.5 |
-| 3.7 Online Flow | 串联 3.1→3.6，PocketFlow 编排 | 3.1-3.6 |
-
-### Phase 4：基础设施加固（Day 10-11）
-
-| 子任务 | 内容 | 依赖 |
-|---|---|---|
-| 4.1 LLM Cache | SQLite 精确缓存，key = `hash(model + messages + params + 知识库指纹)` | 1.2 |
-| 4.2 Tracer | Langfuse 集成，trace 每次查询的检索/生成全链路 | 1.1 |
-| 4.3 Fallback Chain | LLM 重试(3次)→Provider降级→原文兜底，检索降级(BM25→纯向量→报错) | 1.2 |
-| 4.4 FastAPI 接口 | `/upload`, `/query`, `/query/stream`, 全局异常处理 | 3.7 |
-
-### Phase 5：评估系统（Day 12-13）
-
-| 子任务 | 内容 | 依赖 |
-|---|---|---|
-| 5.1 测试集构建 | 版本化开发候选与人工核验 final 集；现有 50 条 AI 数据不视为 golden answers | 无 |
-| 5.2 Ragas 集成 | 接入 ragas 评估，计算 Faithfulness/Context Precision/Recall/Answer Correctness | 3.7 |
-| 5.3 消融实验 | 4 组对照：纯向量 / 纯 BM25 / 混合融合 / 混合+Rerank，输出对比报告 | 5.2 |
-| 5.4 Eval Runner | 直接调用统一检索与生成接口，保存逐样本输出和完整复现信息 | 5.1-5.3 |
-
----
-
-## 7. 核心设计细节
-
-### 7.1 混合检索与 RRF 融合
-
-普通查询、流式查询、Agent 知识库工具和四组消融评测都通过 `KnowledgeSystem` 执行检索。调用方只选择检索模式并接收统一的查询变体、候选集和最终 chunk，不再自行拼接改写、Dense／BM25、RRF 与 Rerank 节点。Agent 工具只取得检索上下文，最终答案仍由 Agent 生成，避免一次问题重复生成。
-
-当请求带有 `filter` 时，它同时定义本次检索的数据范围：Dense 查询直接使用相同的 Chroma `where`，BM25 在截取 Top-K 前按 Chroma 解析出的允许 chunk 集合过滤，融合和 BM25 原文补拉也只接受该范围内的 chunk。
-
-公开检索参数在普通 HTTP、流式 HTTP 和 Agent 知识库工具中使用同一契约：`top_k` 默认为 5，范围为 1–20；`retrieval_mode` 支持 `vector_only`、`bm25_only`、`hybrid` 和 `hybrid+rerank`；`filter` 使用 Chroma `where` 语法。流式 GET 端点的 `filter` 需要传 JSON 字符串，非法数量、模式或过滤器返回 422。
-
-```
-候选集 = VectorRetrieval(query, top_k=20)
-       ∪ BM25Retrieval(query, top_k=20)
-
-RRF score(chunk) = Σ 1 / (k + rank_i)    # i ∈ {vector, bm25}, k 可配置(默认60)
-
-融合后取 Top-20 送入 Reranker
+```powershell
+uv sync --locked --no-default-groups --group dev
+Copy-Item .env.example .env
 ```
 
-- RRF 的 k 值在 `config/settings.py` 中可配置，评估脚本中做网格搜索确定最优值
-- 元数据过滤（日期/来源/类型）在各自检索阶段前置执行，减少无效计算
+如果多个项目共用虚拟环境，可以显式指定环境，不必在仓库内创建 `.venv`：
 
-### 7.2 查询改写保底策略
-
-```
-检索输入 = 原 query ∪ 改写 query₁ ∪ 改写 query₂
-         ↓ 各自检索
-         ↓ 合并去重
-         ↓ RRF 融合 → Rerank
+```powershell
+$env:UV_PROJECT_ENVIRONMENT = "C:\path\to\shared\.venv"
+uv sync --locked --no-default-groups --group dev --inexact
 ```
 
-- 改写失败时自动跳过，不阻塞主流程
-- 查询改写可通过 API 参数 `rewrite=false` 关闭
+编辑 `.env`，至少设置模型 Provider：
 
-### 7.3 上下文截断规则
-
-```
-1. chunk 按 Rerank 分数降序排列
-2. 预留 token 预算给 system prompt + user query（默认占总预算 30%）
-3. 从高到低逐个累加完整 chunk 的 token 数
-4. 触及预算上限时停止，留 5% 余量防抖动
-5. 绝不拆分单个 chunk（保证引用标记完整性）
-```
-
-### 7.4 Rerank 长度适配
-
-- bge-reranker-base 最大输入长度：512 tokens
-- 超长 chunk 采用**首尾保留截断**：前 256 token + 后 256 token
-- 保证 chunk 的首尾关键信息不因硬截断丢失
-
-### 7.5 索引版本与安全发布
-
-每次全量构建先生成不可变的 `IndexVersion`。版本 manifest 包含内容 SHA-256、逐来源 checksum、chunk 数量，以及 parser、chunker、chunk size／overlap、embedding 模型和维度。相同内容与构建配置得到相同版本 ID；任一输入变化都会产生新版本。
-
-Chroma 使用 `rag_v_<version_id>` 候选 collection，BM25 同时构建同版本候选。只有向量数量、chunk ID 和 manifest 校验完成后，才通过原子替换 `data/index-manifests/active.json` 发布。构建或校验失败会删除候选并继续使用旧 active；旧 collection 不会在发布时删除。
-
-每个检索请求只读取一次 active 指针，并在 Dense、BM25、元数据过滤和原文补拉中复用同一个 collection。BM25 版本不匹配时只降级为该版本的向量检索，避免混合两个索引版本。冷启动按 active 版本重建 BM25，完成前同样使用向量检索。
-
-### 7.6 缓存失效
-
-当前精确缓存以 `IndexVersion.version_id` 作为知识库命名空间；发布新 active 前切换命名空间，因此旧答案不会命中新索引。缓存目前覆盖模型、消息和 temperature，其他生成参数及身份范围将在缓存正确性任务中补齐。
-
-不采用语义缓存，避免相似问题错误复用旧答案。
-
-### 7.7 降级链路
-
-- 主生成 Provider 只使用 OpenAI SDK 对连接错误、限流和服务端错误的有限重试，次数由 `LLM_MAX_RETRIES` 控制；移除外层 Tenacity，避免嵌套重试放大调用次数。
-- 可选 Ollama 只尝试一次，并在线程中执行，避免同步客户端阻塞事件循环。
-- 所有生成 Provider 都失败时抛出明确的生成不可用错误。普通查询返回安全的 HTTP 503，SSE 返回 `answer_generation_failed` 终止事件，不再把故障提示伪装成正常答案。
-- Rerank 超时或异常时保留已经得到的候选，按 RRF／融合分数返回，并在响应的 `warnings` 中标记 `rerank_timeout` 或 `rerank_unavailable`；其他检索依赖整体失败时返回安全的 HTTP 503。
-
-### 7.8 Prompt Engineering
-
-Prompt 是 LLM 应用中最容易被忽视但影响最大的组件。本项目在 Agent Planner 和 RAG 生成两个关键环节做了精细的 Prompt 设计。
-
-#### 版本管理与 A/B 测试
-
-```
-prompts/
-├── v1/
-│   ├── query_rewrite.yaml      # 查询改写模板
-│   └── answer_generation.yaml  # 答案生成模板
-└── v2/                         # 后续迭代版本
-```
-
-- YAML 文件包含完整配置：`version`, `model`, `temperature`, `max_tokens`, `system`, `user_template`
-- 通过 `PROMPT_VERSION=v2` 环境变量一键切换，支持 A/B 对比
-- Git 版本控制，每次 Prompt 修改有完整 diff 历史
-
-#### 答案生成 Prompt 设计
-
-```yaml
-system: |
-  You are a helpful technical documentation assistant.
-
-  Rules:
-  1. For factual/knowledge questions, only use information from the given context.
-  2. Cite sources using the chunk reference numbers, e.g. [1], [2].
-  3. If the context is insufficient, say so clearly.
-  4. If the user asks about the conversation itself (e.g., "what did I just ask?"),
-     answer from conversation history above — no context needed.
-  5. Use conversation history to resolve pronouns ("it", "they") and follow-ups.
-  6. Be concise but complete.
-
-user_template: |
-  ## Context Snippets
-  {context}
-
-  ## Question
-  {query}
-```
-
-**设计要点**：
-- **引用强约束（规则 2）**：每个 chunk 以 `[N]` 标记，LLM 必须输出带编号的引用，这是 Faithfulness > 0.96 的关键
-- **诚实性约束（规则 1,3）**：明确要求"不知道就说不知道"，避免幻觉
-- **多轮感知（规则 5）**：告诉 LLM 对话历史的存在和用途，使其能理解代词和追问
-- **结构化分隔**：`## Context Snippets` / `## Question` 用 Markdown 标题分隔，让 LLM 明确区分检索内容和用户问题
-
-#### Planner Prompt 设计
-
-Agent Planner 的 Prompt 遵循 **JSON-first** 原则：
-
-1. **输出格式绝对约束**：`Your ENTIRE response must be a single JSON object — no text before or after`
-2. **双 action 模型**：`tool_call` 和 `final_answer` 两种 action，简单明确
-3. **工具描述注入**：将 `ToolRegistry` 的工具列表 JSON Schema 化后注入 prompt，LLM 知道每个工具的参数名、类型、是否必填
-4. **反幻觉约束**：`For ANY factual/知识类 question, you MUST call search_knowledge_base. NEVER answer from your own knowledge.`
-5. **三级 JSON 解析兜底**：
-   - 优先：提取 Markdown 代码块 ` ```json ... ``` `
-   - 其次：正则匹配 `{"action":...}` 模式
-   - 兜底：全文降级为 `final_answer`，避免崩溃
-
-### 7.9 多轮会话服务
-
-从"一问一答的搜索框"升级为"可持续对话的 RAG 助手"。
-
-#### 存储设计
-
-```sql
--- SQLite 表结构（零额外依赖，与 cache.py 模式一致）
-CREATE TABLE sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,     -- 会话标识
-    role TEXT NOT NULL,           -- user / assistant / tool / summary
-    content TEXT NOT NULL,        -- 原始消息内容
-    timestamp REAL NOT NULL,
-    metadata TEXT NOT NULL DEFAULT '{}',
-    token_count INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX idx_session_id ON sessions(session_id);
-CREATE INDEX idx_session_order ON sessions(session_id, id);
-```
-
-RAG 与 Agent 共用这个会话存储。每次完整交互作为一组消息在单个事务中追加，失败时整组回滚；同一会话的并发写入按自增 `id` 稳定排序。Agent 保存原始用户消息、工具观察的 `tool` 角色和最终回答，旧版 `history.json` 会在首次读取时迁移并保留为 `.migrated` 备份。
-
-#### 对话历史注入
-
-```
-每次查询的 messages 构建流程：
-
-  [system prompt]                    ← 基础指令
-  [user: "什么是 RRF"]                ┐
-  [assistant: "RRF 是 Reciprocal..."] ├─ 从 SQLite 加载最近 6 条
-  [user: "它的 k 值默认是多少"]        ┘  （3 轮对话）
-  [user: context + query]            ← 当前问题 + 检索到的文档
-```
-
-历史与本次检索证据共用同一个输入 token 预算：先扣除 system／输出预留和安全缓冲，再从最近 6 条消息中选择历史，历史最多占总窗口的 40%，剩余空间按相关性装入完整证据片段。普通查询和流式查询使用 ContextBuilderNode 产出的同一组历史、上下文和引用编号，避免两条入口各自截断后得到不同输入。
-
-每条 source 返回 `ref`、`chunk_id`、`document_id`、`source`、`version`、`chunk_index`、`position`、`text` 和 `score`；旧索引未提供的版本字段保持为空。生成结果只保留本次 sources 中存在的数字引用，例如本次只有 `[1]` 时，`[1, 99]` 会收敛为 `[1]`，流式分片拆开的引用也按相同规则处理。
-
-#### 端点
-
-| 端点 | 方法 | 功能 |
-|---|---|---|
-| `/query` | POST | 查询（传入 `session_id` 启用多轮记忆） |
-| `/query/stream` | GET | 流式查询（同样支持 `session_id`） |
-| `/session/reset` | POST | 清除指定会话的历史 |
-| `/session/{session_id}` | GET | 查看会话历史（调试用） |
-
-#### 身份与会话边界
-
-服务器通过 `ragflow_client` HttpOnly Cookie 签发 128 位随机客户端身份，Cookie 使用 `SameSite=Strict`，在 HTTPS 下同时使用 `Secure`，页面脚本不能读取。公开 `session_id` 只允许 1–64 个 ASCII 字母、数字、下划线或连字符；空值仅在一问一答查询或由服务器自动生成 Agent 会话时允许。
-
-进入存储与 Agent 编排前，服务器按 RAG／Agent 命名空间、客户端身份和公开 ID 生成内部作用域键。响应只返回公开 ID。读取或删除只能命中当前 Cookie 身份下的数据，其他客户端请求同名会话得到 404；会话详情响应使用 `Cache-Control: no-store`。统一会话存储在边界再次校验内部键，拒绝路径分隔符、点路径、Unicode 和超长值。
-
-当前身份是匿名浏览器凭据，不提供账户登录或跨设备同步。API 客户端必须保存响应 Cookie；清除 Cookie 后无法访问此前身份下的会话。升级前未绑定身份的旧会话不会被自动认领，HTTP 会话也不会自动继承旧版全局长期记忆，避免第一个访问者取得旧数据。
-
-#### 前端集成
-
-- 页面首次加载时通过 `localStorage` 生成或恢复公开 `session_id`，客户端身份由服务器 Cookie 管理
-- “新会话”按钮更新公开 ID
-- 所有 `/query` 请求自动携带公开 ID，浏览器自动携带 HttpOnly 身份 Cookie
-
-### 7.10 异步编排
-
-将同步阻塞的 RAG 管线升级为异步并发架构。
-
-#### 改造策略：只改造 I/O 密集节点
-
-```
-节点异步化判断矩阵：
-
-  KnowledgeRetrievalNode → ✅ AsyncNode（适配 KnowledgeSystem）
-    ├─ Query rewrite      → 异步 LLM 调用
-    ├─ Dense／BM25／RRF   → 同步检索与融合
-    └─ Rerank             → 同步 CPU 推理
-  ContextBuilderNode      → ❌ 保持 Node（纯内存操作）
-  GeneratorNode           → ✅ AsyncNode（LLM 调用，3-5s）
-```
-
-#### PocketFlow AsyncFlow 混合编排
-
-```python
-# AsyncFlow 自动识别节点类型，无需全部改造
-class AsyncFlow(Flow, AsyncNode):
-    async def _orch_async(self, shared, params=None):
-        while curr:
-            if isinstance(curr, AsyncNode):
-                last_action = await curr._run_async(shared)  # 异步
-            else:
-                last_action = curr._run(shared)               # 同步
-            curr = self.get_next_node(curr, last_action)
-```
-
-#### 并发收益
-
-```
-改造前（同步，单线程排队）：
-  请求1 ──→ [检索50ms] ──→ [LLM 5s 阻塞══════════] ──→ 返回
-  请求2 ──→ [检索50ms] ──→ [LLM 5s 阻塞══════════] ──→ 返回
-  总耗时: 10s+
-
-改造后（异步，事件循环并发）：
-  请求1 ──→ [检索] ──→ [LLM 5s══════] ──→ 返回
-  请求2 ──→ [检索] ──→ [LLM 5s══════] ──→ 返回
-              ↑ 请求2 在请求1 等 LLM 时并发执行检索
-  总耗时: ~5.5s
-```
-
-#### LLM Client 双模式
-
-```python
-class LLMClient:
-    # 同步（兼容 Agent harness 等旧代码）
-    def chat(self, messages, ...) -> str: ...
-
-    # 异步（供 AsyncNode 使用）
-    async def chat_async(self, messages, ...) -> str: ...
-
-    # 异步流式（供 SSE 端点使用）
-    async def chat_stream_async(self, messages, ...) -> AsyncGenerator[str]: ...
-```
-
-### 7.11 流式响应
-
-基于 SSE（Server-Sent Events）的 Token 级流式输出，实现 ChatGPT 式的逐字显示体验。
-
-#### 两阶段架构
-
-```
-GET /query/stream?query=什么是RRF&session_id=abc
-
-  ┌─ 阶段 1: 检索（~50ms，异步）─────────────────────┐
-  │ RetrievalFlow.run_async(shared)                  │
-  │   Rewriter(async) → Hybrid(sync) → Rerank(sync)  │
-  │   → ContextBuilder(sync)                        │
-  └─→ shared["context"] + shared["sources"]          │
-                                                     │
-  ┌─ 阶段 2: 统一回答核心 + SSE 传输 ─────────────────┐
-  │ AnswerService.stream(answer_input)                │
-  │   → 与普通查询共享消息、Prompt 参数和引用约束       │
-  │ iter_answer_sse(...)                              │
-  │   → chunk 事件 → 保存完整回答 → done 事件          │
-  └─ 断连关闭上游生成，失败发送 error 终止事件 ─────────┘
-```
-
-#### 为什么分两阶段
-
-- 检索阶段必须完整执行才能获得 context（无法流式化）
-- 生成阶段天然适合流式（LLM 逐 token 输出）
-- 分两阶段避免检索失败时已经开始流式输出的尴尬
-
-#### SSE 响应格式
-
-每个 JSON 数据事件都包含 `event`、`query_id` 和 `done`。成功时只有一个 `done` 终止事件；失败时只有一个 `error` 终止事件。
-
-```
-data: {"event": "chunk", "query_id": "a1b2c3", "done": false, "chunk": "RRF"}
-data: {"event": "chunk", "query_id": "a1b2c3", "done": false, "chunk": " 是..."}
-data: {"event": "done", "query_id": "a1b2c3", "done": true, "answer": "完整答案文本", "sources": [...], "session_id": "abc123", "latency_ms": 823.4}
-```
-
-生成失败返回稳定的公开错误，不暴露 Provider 或本地路径：
-
-```
-data: {"event": "error", "query_id": "a1b2c3", "done": true, "error": {"code": "answer_generation_failed", "message": "回答生成失败，请稍后重试"}}
-```
-
-浏览器关闭连接后，服务器关闭上游异步生成器且不保存部分答案；只有完整生成并确认连接仍有效后才追加本轮会话。
-
-#### 前端消费
-
-```javascript
-// 标准 EventSource API，零依赖
-const evtSource = new EventSource('/query/stream?query=什么是RRF');
-evtSource.onmessage = (e) => {
-  const data = JSON.parse(e.data);
-  if (data.chunk) answerEl.textContent += data.chunk;  // 逐字追加
-  if (data.done) {
-    evtSource.close();
-    renderSources(data.sources);  // 渲染引用
-  }
-};
-```
-
-
-### 7.12 请求可靠性
-
-查询请求由 ASGI 中间件统一施加容量和总时限，覆盖普通响应的完整处理过程以及 SSE 响应结束前的整个流生命周期：
-
-- 同时最多处理 `MAX_CONCURRENT_QUERIES` 个 RAG 查询，超出容量立即返回 HTTP 503 `query_capacity_exceeded`，完成、失败或超时后都会释放名额。
-- 每个请求最多运行 `REQUEST_TIMEOUT_SECONDS` 秒。普通查询超时返回 HTTP 504；SSE 已建立连接后超时会取消上游生成并发送 `request_timeout` 终止事件。
-- 客户端响应只包含稳定错误码和公开提示，不包含 Provider 异常、本地路径或凭据。内部日志仍用同一 `query_id` 定位故障。
-- 同步检索和 Rerank 放在线程执行，使事件循环能执行总时限和其他并发请求；底层模型推理一旦开始无法强制终止，但当前请求会按时降级或返回。
-
-
----
-
-## 8. 评估方案
-
-### 8.1 数据可信边界
-
-现有 50 条 Wikipedia QA 是未经充分人工检查的 AI 生成开发候选，来源关系由自动方法回溯。它们不能称为 golden set，也不能用作发布门槛。数据格式、版本、来源和人工审核规则见 [评测数据说明](data/testset/README.md)；final_v1.json 当前为空，只有填写真实审核人和时间的 human_verified 样本才能进入。
-
-### 8.2 评估指标（双轨制）
-
-**检索层**（纯规则计算，秒出，不依赖 LLM）：
-
-| 指标 | 含义 | 计算方式 |
-|---|---|---|
-| Hit Rate@5 / @10 | top-K chunk 是否命中 ground truth 关键词 | token 重叠率 ≥ 30% |
-| MRR | 第一个相关 chunk 排名的倒数均值 | 1 / rank_first_relevant |
-
-**生成层**（RAGAS LLM judge，DeepSeek 评判）：
-
-| 指标 | 含义 |
-|---|---|
-| Context Precision | 检索到的文档中，相关文档的排位是否靠前 |
-| Context Recall | 检索到的文档是否覆盖了答案所需的全部信息 |
-| Faithfulness | 生成的答案是否完全基于提供的上下文（不编造） |
-| Answer Relevancy | 生成的答案是否与问题相关 |
-
-### 8.3 历史消融实验结果（50 条未核验 Wikipedia QA）
-
-以下数字仅保留为历史探索记录；在 final 集完成人工核验并重跑前，不作为正式质量结论。
-
-| 实验组 | Context Precision | Context Recall | Faithfulness | Answer Relevancy | MRR |
-|---|---|---|---|---|---|
-| A. 纯向量 | 0.731 | 0.830 | 0.967 | 0.803 | — |
-| B. 纯 BM25 | 0.743 | 0.813 | 0.971 | 0.806 | — |
-| C. 混合融合 (RRF) | 0.823 | **0.921** | 0.983 | 0.850 | — |
-| **D. 混合 + Rerank** | **0.856** | **0.921** | 0.961 | **0.866** | — |
-
-**关键结论**：
-- RRF 融合是召回覆盖率的决定性一跳：Context Recall 从 0.83 跳到 0.92（+11pp）
-- Reranker 让相关文档排得更前：Context Precision 从 0.82 提升到 0.86（+4pp）
-- 所有组 Faithfulness > 0.96，引用机制有效抑制幻觉
-
-### 8.4 消融实验（4 组对照）
-
-| 实验组 | 配置 |
-|---|---|
-| A. 纯向量 | 仅 ChromaDB 向量检索 → 生成 |
-| B. 纯 BM25 | 仅关键词检索 → 生成 |
-| C. 混合融合 | 向量 + BM25 → RRF 融合 → 生成 |
-| D. 混合 + Rerank（最终方案） | C + bge-reranker 精排 → 生成 |
-
-### 8.5 运行评估
-
-```bash
-# 构建索引
-uv run --locked python scripts/build_index.py
-
-# 校验数据 provenance、版本与开发／最终划分
-uv run --locked python scripts/validate_eval_dataset.py
-
-# 在未核验开发候选上运行 5 条 hybrid+rerank smoke
-uv run --locked python scripts/run_eval.py --split development --limit 5
-```
-
----
-
-## 9. 工程落地
-
-### 9.1 全链路 Trace（本地 JSON Lines）
-
-`src/api/observability.py` 为 RAG 与 Agent 请求建立统一 Trace，`src/infra/tracer.py` 将完成记录追加到 `logs/traces.jsonl`：
-
-- 普通响应和 SSE 都返回 `X-Request-ID`、`X-Trace-ID`，可直接关联一次完整请求。
-- Span 覆盖查询改写、候选检索、Rerank、上下文构建、模型生成、Agent 运行和工具调用，记录真实耗时与稳定错误码。
-- 模型 Span 记录模型名、精确缓存命中，以及 Provider 返回的 prompt/completion/total Token；流式 Provider 未返回 usage 时明确标记 `usage_reported=false`。
-- Trace 顶层记录索引版本。日志不保存查询、回答、会话身份、凭据、工具参数值或完整工具输出；Agent 事件与审计日志复用同一脱敏规则。
-
-### 9.2 配置管理
-
-```bash
-# .env.example
-OPENAI_API_KEY=sk-xxx
+```dotenv
+OPENAI_API_KEY=your-key
 OPENAI_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
 LOCAL_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
 RERANK_MODEL=BAAI/bge-reranker-base
-RERANK_TIMEOUT_SECONDS=5
-
-# 请求容量、总时限与 Provider 瞬时故障重试次数
-MAX_CONCURRENT_QUERIES=8
-REQUEST_TIMEOUT_SECONDS=90
-LLM_MAX_RETRIES=1
-
-# Agent 运行预算
-AGENT_MAX_ITERATIONS=5
-AGENT_MAX_TOOL_CALLS=5
-AGENT_MAX_TOKEN_BUDGET=12000
-AGENT_TIMEOUT_SECONDS=60
-AGENT_PLANNER_MAX_TOKENS=512
-AGENT_FINAL_MAX_TOKENS=1024
-AGENT_MAX_TOOL_RESULT_LENGTH=1000
-
-OLLAMA_BASE_URL=http://localhost:11434        # 可选：本地降级
-
-CHROMA_PERSIST_DIR=./data/chroma
-CACHE_DB_PATH=./data/cache.db
-PROMPT_VERSION=v1
-
-# RRF 参数
-RRF_K=60
-VECTOR_TOP_K=20
-BM25_TOP_K=20
-RERANK_TOP_K=5
-
-# Token 预算
-MAX_CONTEXT_TOKENS=4096
-SYSTEM_RESERVE_RATIO=0.30
-CONTEXT_BUFFER_RATIO=0.05
+CHROMA_PERSIST_DIR=C:\ragflow-data\chroma
 ```
 
-### 9.3 Prompt 版本管理
+> Windows 上，Chroma 1.5.9 可能无法重新加载位于中文路径中的 HNSW 文件。建议让 `CHROMA_PERSIST_DIR` 指向纯英文绝对路径。
 
-```yaml
-# prompts/v1/answer_generation.yaml
-version: "1.0"
-model: "gpt-4o-mini"
-temperature: 0.3
-max_tokens: 1024
-system: |
-  你是一个专业的文档检索助手。请严格基于提供的上下文回答问题。
-  每个上下文片段以 [N] 标记来源，回答时请标注引用编号。
-  如果上下文不足以回答问题，请明确说明。
-user_template: |
-  ## 上下文
-  {context}
+### 2. 构建索引
 
-  ## 问题
-  {query}
-
-  ## 要求
-  - 回答中标注引用来源，如 [1]、[2]
-  - 不要编造上下文中没有的信息
-```
-
-运行时通过 `PROMPT_VERSION` 环境变量切换版本，支持 A/B 对比。
-
-### 9.4 日志
-
-运行日志只输出请求 ID、Trace ID、阶段状态、数量和耗时等诊断元数据。对外错误使用稳定错误码；底层异常只记录异常类型，不写异常消息，避免 Provider 返回体、本地路径或凭据进入日志。
-
-### 9.5 页面输出安全
-
-搜索页和 Agent 页只通过 `textContent`、文本节点及受控 DOM 元素展示文档、来源、模型回答、工具名和工具参数，不把外部内容拼接为 HTML。回答中的链接只识别 `http://` 与 `https://`，新窗口链接使用 `noopener noreferrer`。
-
-页面样式和脚本位于 `src/web/static/`，不使用内联脚本、事件处理器或内联样式。HTML 响应通过 Content Security Policy 仅允许同源脚本和样式，并禁用 object、base 和 frame；同时发送 `Referrer-Policy: no-referrer` 与 `X-Content-Type-Options: nosniff`。
-
----
-
-## 10. 快速开始
-
-### 环境准备
-
-```bash
-# 克隆项目
-git clone <repo-url>
-cd ragrag
-
-# 安装依赖（Python 3.13，预先安装 uv >= 0.12.11）
-uv sync --locked
-
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env 填入你的 API Key
-
-# 准备测试文档（放入 data/raw/）
-cp /path/to/your/docs/*.pdf ./data/raw/
-```
-
-### 构建索引
-
-```bash
-uv run --locked python scripts/build_index.py --data-dir ./data/raw
-# 输出: ✅ Indexed 156 chunks from 12 documents
-```
-
-### 启动服务
-
-```bash
-uv run --locked python app.py
-# FastAPI 运行在 http://localhost:8000
-#   RAG 端点:        POST /query
-#   流式端点:        GET  /query/stream
-#   会话端点:        POST /session/reset  GET /session/{id}
-#   Agent 端点:      POST /agent/chat
-#   Agent 流式:      GET  /agent/chat/stream
-#   Agent UI:        GET  /agent
-```
-
-### API 调用
-
-```bash
-# 普通查询（一问一答）
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "PocketFlow 的 Node lifecycle 是什么？"}'
-
-# 响应
-{
-  "query_id": "a1b2c3d4e5f6",
-  "answer": "PocketFlow 的 Node 生命周期包括三个阶段：prep、exec、post... [1][2]",
-  "sources": [
-    {"chunk_id": "doc1_chunk3", "text": "...", "score": 0.94, "ref": 1},
-    {"chunk_id": "doc1_chunk5", "text": "...", "score": 0.87, "ref": 2}
-  ],
-  "latency_ms": 3421.5
-}
-
-# 多轮对话（传入 session_id）
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "什么是 RRF？", "session_id": "my-session"}'
-
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "它的 k 值默认是多少？", "session_id": "my-session"}'
-# LLM 会从历史中知道"它"指的是 RRF
-
-# 流式查询（SSE，逐 token 输出）
-curl -N http://localhost:8000/query/stream?query=什么是RRF\&session_id=my-session
-# 输出（每行实时到达）：
-#   data: {"chunk":"RRF"}
-#   data: {"chunk":"（Reciprocal"}
-#   data: {"chunk":" Rank"}
-#   ...
-#   data: {"done":true,"answer":"完整文本...","sources":[...]}
-
-# 查看会话历史
-curl http://localhost:8000/session/my-session
-
-# 清除会话
-curl -X POST "http://localhost:8000/session/reset?session_id=my-session"
-```
-
-### 文档上传
-
-`POST /upload` 使用 multipart 字段 `file`，仅接受非空 UTF-8 文本和小写 `.md`／`.txt` 扩展名。PDF 等格式须先转换为 Markdown 或纯文本。客户端文件名必须是单个合法文件名，不允许目录、绝对路径、Windows 设备名或数据流名称。`MAX_UPLOAD_BYTES` 默认 20 MiB。
-
-上传通过校验后返回 `202` 和一个索引任务；后台单线程按提交顺序执行文档变更和全量重建，HTTP 请求无需等待 embedding。默认创建新文档；更新已有文档需传 `?replace=true`。以下接口使用相同任务状态：
-
-| 接口 | 作用 |
-|---|---|
-| `POST /upload` | 创建或更新文档并重建 |
-| `DELETE /documents/{filename}` | 幂等删除文档并重建；删除最后一份文档会发布空索引 |
-| `POST /index/rebuild` | 重建当前文档集合 |
-| `POST /index/rollback?version_id=...` | 切回指定保留版本；省略版本时切回上一 active 版本 |
-| `GET /index/jobs/{job_id}` | 查询 `queued`、`running`、`succeeded` 或 `failed` 状态 |
-
-写操作可携带 `Idempotency-Key`（1～128 位字母、数字、点、下划线、冒号或连字符）。同一键和同一命令始终返回同一个 JobId；同一键用于不同命令返回 409。未提供该请求头时，每次请求创建新任务。
-
-任务失败只记录稳定的 `error_code`，不会把本地路径或底层异常公开。candidate 构建或回滚校验失败时，旧 active 索引继续服务；成功发布会保留上一 collection 和 manifest 供回滚。LLM 精确缓存同时按消息内容、身份范围、模型、Prompt 版本、生成参数和索引版本分区，因此上传、更新、删除或回滚不会复用其他版本或其他客户端的缓存。
-
-应用只读取大小上限外加一个字节，避免将超限内容无界读入内存；multipart 解析发生在接口执行前，部署时仍应配置代理请求体上限。上传和索引管理接口目前没有身份鉴权。
-
-### Agent API
-
-```bash
-# Agent 对话（自主规划 + 工具调用）
-curl -X POST http://localhost:8000/agent/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "What is the half-life of actinium?"}'
-
-# Agent 流式对话（SSE，实时推送思考过程）
-curl -N "http://localhost:8000/agent/chat/stream?message=search%20web%20for%20latest%20AI%20news&session_id=my-agent"
-# 输出:
-#   data: {"step":"planning","iteration":1}
-#   data: {"step":"tool_call","tool":"search_web","params":{...}}
-#   data: {"step":"tool_done","tool":"search_web","success":true}
-#   data: {"chunk":"Here"}
-#   data: {"chunk":" are"}
-#   ...
-#   data: {"done":true,"answer":"...","iterations":2}
-
-# 天气查询
-curl -N "http://localhost:8000/agent/chat/stream?message=what's%20the%20weather%20in%20Tokyo&session_id=w1"
-
-# 多步推理
-curl -X POST http://localhost:8000/agent/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "查一下 actinium 半衰期，然后算出对应多少天"}'
-
-# Web UI（可视化思考过程）
-# 浏览器访问 http://localhost:8000/agent
-
-# 查看会话记忆
-curl http://localhost:8000/agent/memory/abc123
-
-# 重置会话
-curl -X POST "http://localhost:8000/agent/reset?session_id=abc123"
-```
-
-### 默认离线测试
-
-项目使用 Python 3.13、uv 0.12.11 或更新版本。`pyproject.toml` 是依赖和 pytest 配置的唯一维护入口，`uv.lock` 固定直接及传递依赖的版本与来源。首次迁移沿用已验证的直接依赖版本；调整依赖时同时更新锁文件并运行相关测试。
-
-| 用途 | 安装命令 |
-|---|---|
-| 本地开发、离线测试（默认包含 dev） | `uv sync --locked` |
-| Ragas／评测（额外包含 eval） | `uv sync --locked --group eval` |
-| 仅运行服务 | `uv sync --locked --no-dev` |
-
-从仓库根目录运行：
-
-```bash
-uv run --locked --no-env-file python -B -m pytest -q
-```
-
-默认收集 RRF、Agent 单元测试和 `tests/offline/`。不需要 `.env`、API Key、模型权重或现有索引；测试清理继承的应用配置环境变量（保留系统变量），使用临时工作目录、假配置和独立 SQLite 存储，阻止 DNS／socket 连接和真实模型加载。首次安装依赖仍需包源或预备好的离线包缓存。
-
-uv 默认使用项目内的 `.venv`。如需复用已激活的共享环境，在 PowerShell 中设置：
+将 UTF-8 编码的 `.txt` 或 `.md` 文档放入 `data/raw/`，然后执行：
 
 ```powershell
-$env:UV_PROJECT_ENVIRONMENT = $env:VIRTUAL_ENV
-uv sync --locked --all-groups --inexact --dry-run
-# 核对预演中的版本变化后同步；--inexact 保留其他项目的额外依赖。
-uv sync --locked --all-groups --inexact
-uv run --no-sync --no-env-file python -B -m pytest -q
+uv run --no-sync python scripts/build_index.py
 ```
 
-执行前须确认 `VIRTUAL_ENV` 指向预期环境。共享环境后续执行下列 `uv run` 命令时使用 `--no-sync` 替代 `--locked`，避免自动同步影响其他项目；依赖更新仍须先单独预演和同步。
+首次运行会加载本地 Embedding 模型。构建完成后会输出文档数、分块数、版本、校验和及 collection 名称。
 
-新增离线测试放入 `tests/offline/`，在测试函数或 fixture 内导入依赖配置／存储的项目模块，避免收集阶段的全局初始化。可复用 `fake_llm`（逐次指定回复并记录请求）、`fixed_embedder`（显式文本向量）、`temporary_cache` 和 `temporary_sessions`；fixture 完成后还原补丁。存储 fixture 应在导入持有存储引用的业务模块之前使用，尚未覆盖所有业务单例的生命周期。
+### 3. 启动
 
-默认测试验证隔离基础和已有局部行为，不代表 RAG／SSE／Agent 全链路、安全缺陷或评测质量均已通过。真实模型检查 `tests/test_smoke.py`、Ragas 导入检查 `tests/test_ragas.py` 和 Agent benchmark 保留为单独脚本，不在默认收集范围；真实检查须单独准备密钥、模型和数据。Ragas 检查使用 `uv run --locked --group eval python tests/test_ragas.py`。
+```powershell
+uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
+```
 
-若系统默认 pytest 临时目录出现权限错误，可用 `--basetemp <新建且专用于测试的临时路径>`。pytest 会清理该路径，不能指定仓库、已有数据或共享目录。
+- RAG 页面：<http://127.0.0.1:8000/>
+- Agent 页面：<http://127.0.0.1:8000/agent>
+- OpenAPI：<http://127.0.0.1:8000/docs>
+- 存活检查：<http://127.0.0.1:8000/health>
 
-### 自动检查（CI）
+当前 `/health` 只表示 HTTP 进程存活。Embedding、Reranker、BM25 和索引是否就绪，应结合启动日志确认。
 
-[Offline checks](.github/workflows/offline-checks.yml) 在 PR 创建／更新／重新打开，以及推送到 `master` 或 `ci/offline-checks` 时运行；工作流进入默认分支后也可从 Actions 手动触发。Ubuntu 24.04 与 Windows 2022 分别使用 Python 3.13、uv 0.12.11，校验锁文件、安装 runtime + dev 依赖、运行 Ruff 和默认离线测试。安装依赖需要联网，测试不需要仓库密钥、模型权重或真实数据。
+## 配置
 
-Ruff 的版本、目标 Python 与规则统一维护在 `pyproject.toml`；本阶段的静态检查范围是离线测试基础、`tests/offline/` 和指标演示入口。完整类型检查、安全扫描及其余业务代码的规范收敛仍待后续完善。
+环境变量模板见 [`.env.example`](.env.example)。常用配置如下：
 
-依赖已安装时，可在仓库根目录执行同样的检查：
+| 配置 | 用途 |
+|---|---|
+| `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`LLM_MODEL` | 兼容 OpenAI 协议的生成模型 |
+| `LOCAL_EMBEDDING_MODEL` | 本地向量模型，必须与既有索引维度和语义一致 |
+| `RERANK_MODEL`、`RERANK_TIMEOUT_SECONDS` | 本地精排模型及单次时限 |
+| `CHROMA_PERSIST_DIR` | Chroma 持久化目录 |
+| `CACHE_DB_PATH` | 精确 LLM 缓存 SQLite 文件 |
+| `VECTOR_TOP_K`、`BM25_TOP_K`、`RRF_K`、`RERANK_TOP_K` | 候选召回、融合和精排预算 |
+| `MAX_CONTEXT_TOKENS`、`SYSTEM_RESERVE_RATIO`、`CONTEXT_BUFFER_RATIO` | 上下文 Token 预算 |
+| `MAX_CONCURRENT_QUERIES`、`REQUEST_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES` | 请求容量、总时限和 Provider 重试 |
+| `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算 |
+| `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算 |
+| `PROMPT_VERSION` | 选择 `prompts/<version>/` |
+| `LANGFUSE_*` | 预留的远端观测字段；当前运行时未接入 |
+| `MAX_UPLOAD_BYTES` | 单文件上传上限 |
+
+配置在进程启动时由 Pydantic 校验。不要提交 `.env`、密钥或本地数据库。
+
+## RAG 接口
+
+### 普通查询
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/query `
+  -H "Content-Type: application/json" `
+  -d "{\"query\":\"What is reciprocal rank fusion?\",\"top_k\":5,\"retrieval_mode\":\"hybrid+rerank\"}"
+```
+
+请求字段：
+
+- `query`：必填问题。
+- `session_id`：可选；为空时不保存 RAG 历史。
+- `top_k`：1～20，控制最终证据数量。
+- `retrieval_mode`：`vector_only`、`bm25_only`、`hybrid` 或 `hybrid+rerank`。
+- `filter`：受限的 Chroma metadata 条件。
+
+响应包含 `query_id`、`answer`、`sources`、`warnings`、`index_version` 和 `latency_ms`。调用方必须展示 `warnings`，因为其中会说明 BM25 或 Rerank 是否降级。
+
+### 流式查询
+
+```text
+GET /query/stream?query=...&session_id=...&top_k=5&retrieval_mode=hybrid%2Brerank
+```
+
+SSE 使用 `chunk`、`done` 和 `error` 终止语义。只有收到 `done` 才表示回答已完整生成并保存。
+
+### 会话
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/session/{session_id}` | 查看当前客户端可访问的 RAG 历史 |
+| `POST` | `/session/reset?session_id=...` | 清除当前客户端的 RAG 会话 |
+
+公开 session ID 会绑定浏览器客户端身份；另一个客户端即使知道 ID，也不能读取或清除该会话。
+
+## Agent
+
+Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前默认工具包括：
+
+- `search_knowledge_base`：调用 `KnowledgeSystem.retrieve`，只返回证据。
+- `calculator`：执行受限算术表达式。
+- `get_weather`：获取天气信息。
+- `search_web`：受控外部搜索，属于灰名单工具。
+
+工具调用会校验名称、参数、调用次数和总预算；不可信工具输出带明确边界并截断后再交给模型。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/agent/chat` | 普通 Agent 对话 |
+| `GET` | `/agent/chat/stream` | `planning → tool_call → tool_done → chunk → done` 事件流 |
+| `POST` | `/agent/reset?session_id=...` | 清除当前客户端的 Agent 会话 |
+| `GET` | `/agent/memory/{session_id}` | 查看受当前客户端约束的记忆摘要 |
+
+示例：
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/agent/chat `
+  -H "Content-Type: application/json" `
+  -d "{\"message\":\"Search the knowledge base for Ada Lovelace and summarize the evidence.\"}"
+```
+
+## 索引生命周期
+
+全量构建根据语料内容生成不可变版本和 `rag_v_<version>` collection；构建成功后再原子切换 active 指针。旧的 `rag_collection` 仍可作为无 manifest 时的兼容索引。
+
+在线索引操作返回 `202 Accepted` 和 `job_id`：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/upload?replace=false` | 新增或显式替换文档 |
+| `DELETE` | `/documents/{filename}` | 删除文档并重建版本 |
+| `POST` | `/index/rebuild` | 重建当前语料 |
+| `POST` | `/index/rollback?version_id=...` | 激活指定版本；省略版本时回到前一版本 |
+| `GET` | `/index/jobs/{job_id}` | 查询任务状态 |
+
+修改请求可携带 `Idempotency-Key`，重复提交同一操作会复用已有任务。上传、删除和发布使用同一后台任务通道，避免并发覆盖。
+
+## 可靠性与安全
+
+- HTTP 请求先执行客户端身份、Trace 和容量／时限中间件。
+- 查询改写失败时保留原问题；BM25、向量召回或 Rerank 不可用时返回稳定警告并按可用链路降级。
+- 会话历史和 Agent 记忆按客户端身份派生内部存储 ID，接口不暴露实际路径。
+- metadata filter 只接受有限操作符、深度、分支数和标量类型。
+- 上传校验扩展名、文件名、大小和目标路径，索引发布采用原子替换。
+- 页面使用文本节点和安全 Markdown 渲染，响应设置 CSP 等安全头。
+- Agent 拒绝未注册工具、越界参数和超过迭代、工具、Token 或总时间预算的执行。
+
+## 可观测性
+
+普通响应和 SSE 都返回 `X-Request-ID` 与 `X-Trace-ID`。本地 Trace 默认追加到 `logs/traces.jsonl`，覆盖查询改写、候选检索、Rerank、上下文构建、模型生成、Agent 和工具调用。
+
+Trace 记录稳定错误码、耗时、模型名、Token、缓存命中和索引版本；不记录完整查询、回答、会话身份、凭据或原始工具参数。`LANGFUSE_*` 目前只是预留配置，运行时不会向 Langfuse 发送 Trace。
+
+## 评测
+
+评测数据规则见 [`data/testset/README.md`](data/testset/README.md)。当前 53 条 development 样本由 AI 生成且未经人工核验；`final_v1.json` 只有人工确认后才能加入样本。
+
+### 数据校验
+
+```powershell
+uv run --no-sync --offline --no-env-file python scripts/validate_eval_dataset.py
+```
+
+### 5 条真实 RAG smoke
+
+```powershell
+uv run --no-sync --offline --no-env-file python scripts/run_eval.py --split development --limit 5
+```
+
+默认只运行 `hybrid+rerank`。报告写入被忽略的 `data/eval-runs/`，保存逐样本答案、证据、引用、错误、Trace、Token 和复现信息。
+
+> 独立评测进程不会执行 FastAPI startup。运行前应确认 Chroma 可加载、Reranker 权重可用，并检查日志中 BM25 是否实际参与；出现降级警告时不能把结果描述为完整 hybrid+rerank。
+
+### 完整评测
+
+```powershell
+# 四模式消融；只对人工核验后的 final 数据执行
+uv run --no-sync --offline --no-env-file python scripts/run_eval.py --split final --ablation
+
+# Ragas Faithfulness / Relevancy；先安装 eval 依赖，再执行模型评判
+uv sync --locked --no-default-groups --group eval
+uv run --no-sync --offline --no-env-file --group eval python scripts/run_eval.py --split final --with-ragas
+```
+
+Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relevancy 只有显式启用 Ragas 才计算。开发集的小样本满分只能说明来源命中和引用格式通过。
+
+## 测试与 CI
+
+默认测试全部离线，不调用真实模型、浏览器或 Ragas：
 
 ```powershell
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
 uv lock --check --offline
-uv run --no-sync --offline --no-env-file ruff check tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline
 uv run --no-sync --offline --no-env-file python -B -m pytest -q
 ```
 
-共享环境先按上节设置 `UV_PROJECT_ENVIRONMENT`。`PYTEST_DISABLE_PLUGIN_AUTOLOAD` 只影响当前终端中后续启动的 pytest；启用额外插件的其他测试需另开终端或还原该变量。
+真实模型检查需要单独运行：
 
-每个系统的测试结果以 JUnit XML 上传为 `offline-results-<系统>`，保留 7 天，可在 Actions 对应运行的 Artifacts 下载。安装或检查提前失败时可能尚无测试报告，应查看失败步骤日志；某一系统失败不会取消另一系统。当前锁文件在 Linux 包含较大的 CUDA 依赖，首次运行需观察安装耗时和磁盘占用。是否通过以对应提交的 Actions 结果为准，本地验证不能代替 Linux 或云端运行结果。
-
-### 运行评估
-
-```bash
-# 5 条真实 hybrid+rerank smoke（开发数据未经人工核验，仅供探索）
-uv run --locked python scripts/run_eval.py --split development --limit 5
-
-# 完整四模式消融；耗时较长
-uv run --locked python scripts/run_eval.py --split final --ablation
-
-# Ragas 模型评判；需额外依赖、密钥和人工核验数据
-uv run --locked --group eval python scripts/run_eval.py --split final --with-ragas
-
-# Agent Benchmark + 单元测试
-uv run --locked python tests/test_agent.py
-uv run --locked python tests/test_agent.py --unit-only
+```powershell
+uv run --no-sync --offline --no-env-file python tests/test_smoke.py
+uv run --no-sync --offline --no-env-file python tests/test_agent.py
 ```
 
----
+Ragas 依赖位于 `eval` 组，不进入默认 CI。Windows 与 Linux 的离线检查定义在 [`.github/workflows/offline-checks.yml`](.github/workflows/offline-checks.yml)。
+
+## 排障
+
+### 找不到 `rag_collection`
+
+当前 Chroma 目录没有 legacy collection 或 active manifest。确认 `CHROMA_PERSIST_DIR` 后运行 `scripts/build_index.py`。
+
+### `Error loading hnsw index`
+
+先执行 SQLite 完整性检查并确认 HNSW 分片齐全。Windows 下若仓库路径含中文，将索引复制到纯英文目录并修改 `CHROMA_PERSIST_DIR`；不要只复制 `chroma.sqlite3`。
+
+### `rerank_unavailable`
+
+Reranker 权重未缓存、模型路径错误、资源不足或超时。准备完整模型后重启；服务会在启动日志中报告预热结果。降级期间使用 RRF 顺序。
+
+### BM25 命中为 0
+
+服务启动时会从当前 Chroma collection 异步重建 BM25。等待 `BM25 ready` 日志；索引不可读时会降级为纯向量。
+
+### `final` 没有样本
+
+这是数据质量保护。按 `data/testset/README.md` 完成人工审核、来源校验和版本更新后再运行正式评测。
+
+### 共享虚拟环境被 uv 重建
+
+先激活目标环境并设置 `UV_PROJECT_ENVIRONMENT`，随后使用 `uv run --no-sync`。只有依赖确实变化时才执行 `uv sync`。
+
+## 已知限制
+
+- `/health` 尚未汇总模型、BM25 和索引 readiness。
+- 开发评测数据未经人工核验，不能用于发布门槛。
+- 本地 Embedding 与 Reranker 首次加载需要模型文件、内存和启动时间。
+- Windows 下 Chroma HNSW 对 Unicode 持久化路径存在兼容问题。
+- 完整 Agent 评测和新旧实现对照仍待补充。
 
 ## License
 
