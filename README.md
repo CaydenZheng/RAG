@@ -318,7 +318,6 @@ ragrag/
 │   │   ├── retrieval.py          #   QueryRewriter, HybridRetriever, Reranker
 │   │   ├── generation.py         #   ContextBuilder, Generator
 │   │   ├── knowledge.py           #   统一 KnowledgeSystem 检索接口
-│   │   └── evaluation.py         #   RagasEvaluator（PocketFlow Node）
 │   │
 │   ├── llm/                      # LLM 调用层
 │   │   ├── __init__.py
@@ -376,8 +375,7 @@ ragrag/
 │
 ├── scripts/
 │   ├── build_index.py            # 离线索引构建脚本
-│   ├── run_eval.py               # 离线评估（消融实验 + RAGAS + 检索指标）
-│   ├── demo_eval_metrics.py      # 人工样例指标演示，Ragas 显式启用
+│   ├── run_eval.py               # 统一核心评测 Runner（慢评测显式启用）
 │   ├── download_wiki.py          # Wikipedia 文章下载
 │   └── generate_testset.py       # LLM 自动生成测试集
 │
@@ -439,10 +437,10 @@ ragrag/
 
 | 子任务 | 内容 | 依赖 |
 |---|---|---|
-| 5.1 测试集构建 | 自建 50 条 QA pairs（手动标注 golden answers），存入 `data/testset/` | 无 |
+| 5.1 测试集构建 | 版本化开发候选与人工核验 final 集；现有 50 条 AI 数据不视为 golden answers | 无 |
 | 5.2 Ragas 集成 | 接入 ragas 评估，计算 Faithfulness/Context Precision/Recall/Answer Correctness | 3.7 |
 | 5.3 消融实验 | 4 组对照：纯向量 / 纯 BM25 / 混合融合 / 混合+Rerank，输出对比报告 | 5.2 |
-| 5.4 Eval Flow | PocketFlow 编排评估流程，`run_eval.py` 一键执行 | 5.1-5.3 |
+| 5.4 Eval Runner | 直接调用统一检索与生成接口，保存逐样本输出和完整复现信息 | 5.1-5.3 |
 
 ---
 
@@ -776,7 +774,11 @@ evtSource.onmessage = (e) => {
 
 ## 8. 评估方案
 
-### 8.1 评估指标（双轨制）
+### 8.1 数据可信边界
+
+现有 50 条 Wikipedia QA 是未经充分人工检查的 AI 生成开发候选，来源关系由自动方法回溯。它们不能称为 golden set，也不能用作发布门槛。数据格式、版本、来源和人工审核规则见 [评测数据说明](data/testset/README.md)；final_v1.json 当前为空，只有填写真实审核人和时间的 human_verified 样本才能进入。
+
+### 8.2 评估指标（双轨制）
 
 **检索层**（纯规则计算，秒出，不依赖 LLM）：
 
@@ -794,7 +796,9 @@ evtSource.onmessage = (e) => {
 | Faithfulness | 生成的答案是否完全基于提供的上下文（不编造） |
 | Answer Relevancy | 生成的答案是否与问题相关 |
 
-### 8.2 消融实验结果（50 条 Wikipedia QA）
+### 8.3 历史消融实验结果（50 条未核验 Wikipedia QA）
+
+以下数字仅保留为历史探索记录；在 final 集完成人工核验并重跑前，不作为正式质量结论。
 
 | 实验组 | Context Precision | Context Recall | Faithfulness | Answer Relevancy | MRR |
 |---|---|---|---|---|---|
@@ -808,7 +812,7 @@ evtSource.onmessage = (e) => {
 - Reranker 让相关文档排得更前：Context Precision 从 0.82 提升到 0.86（+4pp）
 - 所有组 Faithfulness > 0.96，引用机制有效抑制幻觉
 
-### 8.3 消融实验（4 组对照）
+### 8.4 消融实验（4 组对照）
 
 | 实验组 | 配置 |
 |---|---|
@@ -817,14 +821,17 @@ evtSource.onmessage = (e) => {
 | C. 混合融合 | 向量 + BM25 → RRF 融合 → 生成 |
 | D. 混合 + Rerank（最终方案） | C + bge-reranker 精排 → 生成 |
 
-### 8.4 运行评估
+### 8.5 运行评估
 
 ```bash
 # 构建索引
 uv run --locked python scripts/build_index.py
 
-# 运行消融实验（50 题 × 4 组，包含检索指标 + RAGAS，约 15 分钟）
-uv run --locked --group eval python scripts/run_eval.py --testset data/testset/generated_test.json
+# 校验数据 provenance、版本与开发／最终划分
+uv run --locked python scripts/validate_eval_dataset.py
+
+# 在未核验开发候选上运行 5 条 hybrid+rerank smoke
+uv run --locked python scripts/run_eval.py --split development --limit 5
 ```
 
 ---
@@ -1110,7 +1117,7 @@ Ruff 的版本、目标 Python 与规则统一维护在 `pyproject.toml`；本�
 ```powershell
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
 uv lock --check --offline
-uv run --no-sync --offline --no-env-file ruff check tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline scripts/demo_eval_metrics.py
+uv run --no-sync --offline --no-env-file ruff check tests/conftest.py tests/offline_environment.py tests/offline_fakes.py tests/offline
 uv run --no-sync --offline --no-env-file python -B -m pytest -q
 ```
 
@@ -1121,12 +1128,14 @@ uv run --no-sync --offline --no-env-file python -B -m pytest -q
 ### 运行评估
 
 ```bash
-# 人工样例指标演示（不代表真实检索对照结果）
-uv run --locked --group eval python scripts/demo_eval_metrics.py
-# 需要真实 LLM 评判时，显式添加 --with-ragas
+# 5 条真实 hybrid+rerank smoke（开发数据未经人工核验，仅供探索）
+uv run --locked python scripts/run_eval.py --split development --limit 5
 
-# RAG 消融实验
-uv run --locked --group eval python scripts/run_eval.py --testset ./data/testset/ground_truth.json --ablation
+# 完整四模式消融；耗时较长
+uv run --locked python scripts/run_eval.py --split final --ablation
+
+# Ragas 模型评判；需额外依赖、密钥和人工核验数据
+uv run --locked --group eval python scripts/run_eval.py --split final --with-ragas
 
 # Agent Benchmark + 单元测试
 uv run --locked python tests/test_agent.py
