@@ -7,9 +7,9 @@ Pydantic Settings — 读取 .env 的所有配置项，提供类型校验与默�
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Self
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -38,64 +38,55 @@ class Settings(BaseSettings):
     # ================================================================
     # Rerank (本地模型)
     # ================================================================
-    rerank_model: str = Field(
-        default="BAAI/bge-reranker-base", alias="RERANK_MODEL"
-    )
+    rerank_model: str = Field(default="BAAI/bge-reranker-base", alias="RERANK_MODEL")
     rerank_timeout_seconds: float = Field(
         default=5.0, gt=0, alias="RERANK_TIMEOUT_SECONDS"
+    )
+    startup_preload_reranker: bool = Field(
+        default=True, alias="STARTUP_PRELOAD_RERANKER"
     )
 
     # ================================================================
     # 请求可靠性
     # ================================================================
-    max_concurrent_queries: int = Field(
-        default=8, ge=1, alias="MAX_CONCURRENT_QUERIES"
-    )
+    max_concurrent_queries: int = Field(default=8, ge=1, alias="MAX_CONCURRENT_QUERIES")
     request_timeout_seconds: float = Field(
         default=90.0, gt=0, alias="REQUEST_TIMEOUT_SECONDS"
     )
-    llm_max_retries: int = Field(
-        default=1, ge=0, le=3, alias="LLM_MAX_RETRIES"
-    )
+    llm_max_retries: int = Field(default=1, ge=0, le=3, alias="LLM_MAX_RETRIES")
 
     # ================================================================
     # 多 Provider 降级
     # ================================================================
-    ollama_base_url: Optional[str] = Field(
-        default=None, alias="OLLAMA_BASE_URL"
-    )
+    ollama_base_url: Optional[str] = Field(default=None, alias="OLLAMA_BASE_URL")
 
     # ================================================================
     # 向量存储
     # ================================================================
-    chroma_persist_dir: str = Field(
-        default="./data/chroma", alias="CHROMA_PERSIST_DIR"
-    )
+    chroma_persist_dir: str = Field(default="./data/chroma", alias="CHROMA_PERSIST_DIR")
 
     # ================================================================
     # 精确缓存
     # ================================================================
-    cache_db_path: str = Field(
-        default="./data/cache.db", alias="CACHE_DB_PATH"
-    )
+    cache_db_path: str = Field(default="./data/cache.db", alias="CACHE_DB_PATH")
 
     # ================================================================
     # 检索参数
     # ================================================================
-    rrf_k: int = Field(default=60, alias="RRF_K")
-    vector_top_k: int = Field(default=20, alias="VECTOR_TOP_K")
-    bm25_top_k: int = Field(default=20, alias="BM25_TOP_K")
-    rerank_top_k: int = Field(default=10, alias="RERANK_TOP_K")
+    rrf_k: int = Field(default=60, ge=1, alias="RRF_K")
+    vector_top_k: int = Field(default=20, ge=1, alias="VECTOR_TOP_K")
+    bm25_top_k: int = Field(default=20, ge=1, alias="BM25_TOP_K")
+    rerank_top_k: int = Field(default=10, ge=1, alias="RERANK_TOP_K")
 
     # ================================================================
     # Token 预算
     # ================================================================
-    max_context_tokens: int = Field(default=4096, alias="MAX_CONTEXT_TOKENS")
+    max_context_tokens: int = Field(default=4096, ge=256, alias="MAX_CONTEXT_TOKENS")
     system_reserve_ratio: float = Field(
-        default=0.30, alias="SYSTEM_RESERVE_RATIO"
+        default=0.30, ge=0, lt=1, alias="SYSTEM_RESERVE_RATIO"
     )
     context_buffer_ratio: float = Field(
-        default=0.05, alias="CONTEXT_BUFFER_RATIO"
+        default=0.05, ge=0, lt=1, alias="CONTEXT_BUFFER_RATIO"
     )
 
     # ================================================================
@@ -143,9 +134,7 @@ class Settings(BaseSettings):
     agent_max_tool_result_length: int = Field(
         default=1000, ge=128, le=20000, alias="AGENT_MAX_TOOL_RESULT_LENGTH"
     )
-    agent_verbose: bool = Field(
-        default=True, alias="AGENT_VERBOSE"
-    )
+    agent_verbose: bool = Field(default=True, alias="AGENT_VERBOSE")
 
     # ================================================================
     # 日志
@@ -158,6 +147,43 @@ class Settings(BaseSettings):
     max_upload_bytes: int = Field(
         default=20 * 1024 * 1024, gt=0, alias="MAX_UPLOAD_BYTES"
     )
+
+    @field_validator(
+        "openai_api_key",
+        "openai_base_url",
+        "llm_model",
+        "local_embedding_model",
+        "rerank_model",
+        "chroma_persist_dir",
+        "cache_db_path",
+        "prompt_version",
+    )
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        """Reject values that pass type validation but contain no content."""
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("log_level")
+    @classmethod
+    def normalize_log_level(cls, value: str) -> str:
+        """Normalize and validate Loguru's supported severity names."""
+        normalized: str = value.strip().upper()
+        allowed: frozenset[str] = frozenset(
+            {"TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}
+        )
+        if normalized not in allowed:
+            raise ValueError(f"LOG_LEVEL must be one of {sorted(allowed)}")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_context_reserve(self) -> Self:
+        """Keep a positive share of the context window for retrieved evidence."""
+        reserve_ratio: float = self.system_reserve_ratio + self.context_buffer_ratio
+        if reserve_ratio >= 1:
+            raise ValueError("context reserve ratios must sum to less than 1")
+        return self
 
     # ================================================================
     # 派生属性
@@ -198,8 +224,8 @@ class Settings(BaseSettings):
     model_config = dict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore",       # 忽略 .env 中未定义的变量
-        populate_by_name=True, # 允许用字段名或 alias 访问
+        extra="ignore",  # 忽略 .env 中未定义的变量
+        populate_by_name=True,  # 允许用字段名或 alias 访问
     )
 
 

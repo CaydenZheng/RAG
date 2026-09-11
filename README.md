@@ -121,8 +121,9 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 - Agent 页面：<http://127.0.0.1:8000/agent>
 - OpenAPI：<http://127.0.0.1:8000/docs>
 - 存活检查：<http://127.0.0.1:8000/health>
+- 就绪检查：<http://127.0.0.1:8000/ready>
 
-当前 `/health` 只表示 HTTP 进程存活。Embedding、Reranker、BM25 和索引是否就绪，应结合启动日志确认。
+启动后由一个后台线程按 Embedding → 活跃向量索引／BM25 → 可选 Reranker 的顺序预热，避免多个模型并发加载造成瞬时内存峰值。`/health` 只表示 HTTP 进程存活；`/ready` 在 Embedding 或索引尚未就绪／加载失败时返回 503，必需组件就绪但 BM25 或 Reranker 降级时返回 200 和 `degraded`。低内存机器可设置 `STARTUP_PRELOAD_RERANKER=false`，让精排模型在首次使用 `hybrid+rerank` 时按需加载。
 
 ## 配置
 
@@ -132,7 +133,7 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 |---|---|
 | `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`LLM_MODEL` | 兼容 OpenAI 协议的生成模型 |
 | `LOCAL_EMBEDDING_MODEL` | 本地向量模型，必须与既有索引维度和语义一致 |
-| `RERANK_MODEL`、`RERANK_TIMEOUT_SECONDS` | 本地精排模型及单次时限 |
+| `RERANK_MODEL`、`RERANK_TIMEOUT_SECONDS`、`STARTUP_PRELOAD_RERANKER` | 本地精排模型、单次时限及是否启动预热 |
 | `CHROMA_PERSIST_DIR` | Chroma 持久化目录 |
 | `CACHE_DB_PATH` | 精确 LLM 缓存 SQLite 文件 |
 | `VECTOR_TOP_K`、`BM25_TOP_K`、`RRF_K`、`RERANK_TOP_K` | 候选召回、融合和精排预算 |
@@ -309,7 +310,7 @@ Reranker 权重未缓存、模型路径错误、资源不足或超时。准备�
 
 ### BM25 命中为 0
 
-服务启动时会从当前 Chroma collection 异步重建 BM25。等待 `BM25 ready` 日志；索引不可读时会降级为纯向量。
+服务启动时会在 Embedding 之后从当前 Chroma collection 重建 BM25。查看 `/ready`：索引不可读时返回 503；仅 BM25 重建失败时返回 200 和 `degraded`，查询降级为纯向量。
 
 ### `final` 没有样本
 
@@ -321,7 +322,6 @@ Reranker 权重未缓存、模型路径错误、资源不足或超时。准备�
 
 ## 已知限制
 
-- `/health` 尚未汇总模型、BM25 和索引 readiness。
 - 开发评测数据未经人工核验，不能用于发布门槛。
 - 本地 Embedding 与 Reranker 首次加载需要模型文件、内存和启动时间。
 - Windows 下 Chroma HNSW 对 Unicode 持久化路径存在兼容问题。
