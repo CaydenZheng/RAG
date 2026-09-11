@@ -3,10 +3,12 @@
 离线索引构建脚本。
 
 用法:
-    python scripts/build_index.py
-    python scripts/build_index.py --data-dir ./data/raw
+    uv run --no-sync python scripts/build_index.py
+
+语料目录固定为 Settings.raw_dir（默认 data/raw/）；当前命令不接受参数。
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -15,10 +17,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 
-from src.orchestration.rag import get_offline_flow
 
+def main(argv: list[str] | None = None) -> int:
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(
+        description="Build the versioned RAG index."
+    )
+    parser.parse_args(argv)
 
-def main():
+    from src.orchestration.rag import get_offline_flow
+
     logger.info("=" * 50)
     logger.info("Building RAG index...")
     logger.info("=" * 50)
@@ -38,7 +45,8 @@ def main():
     logger.info("  Checksum:   {}", info.get("content_checksum", "N/A"))
     logger.info("  Collection: {}", info.get("collection_name", "N/A"))
     logger.info("  Published:  {}", info.get("published", False))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

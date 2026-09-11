@@ -126,3 +126,15 @@ def test_host_configuration_cannot_override_defaults(
         if not field.is_required():
             assert getattr(defaults, name) == field.default, name
     assert os.environ["OFFLINE_TEST_SYSTEM_SENTINEL"] == "preserved"
+
+
+def test_build_index_rejects_undocumented_arguments(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from scripts import build_index
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_index.main(["--data-dir", "data/raw"])
+
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
