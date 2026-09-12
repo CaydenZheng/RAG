@@ -1,6 +1,8 @@
 """Contract tests for the shared, bounded Agent runtime."""
 
 import asyncio
+import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -138,6 +140,100 @@ def test_ordinary_execute_collects_the_same_terminal_event(
         (turn.role, turn.content)
         for turn in memory.load_history("ordinary")
     ] == [("user", "question"), ("assistant", "ordinary answer")]
+
+
+def test_chunk_events_preserve_words_and_whitespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.harness import AgentHarness
+    from src.core.agent_runtime import AgentEvent, AgentEventKind
+    from src.llm import llm_client
+
+    harness: AgentHarness = _runtime(tmp_path)[0]
+    answer: str = "stress tests stay stable"
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return json.dumps({"action": "final_answer", "answer": answer})
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+
+    async def consume() -> list[AgentEvent]:
+        return [event async for event in harness.events("chunking", "question")]
+
+    events: list[AgentEvent] = asyncio.run(consume())
+    chunks: list[str] = [
+        event.chunk for event in events if event.kind is AgentEventKind.CHUNK
+    ]
+
+    assert chunks == ["stress", " ", "tests", " ", "stay", " ", "stable"]
+    assert "".join(chunks) == answer
+
+
+def test_wrapped_nested_planner_json_executes_tool_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.harness import AgentHarness
+    from src.core.agent_runtime import AgentEvent, AgentEventKind, ToolCall
+    from src.llm import llm_client
+
+    harness: AgentHarness = _runtime(tmp_path)[0]
+    provider_responses: Iterator[str] = iter(
+        [
+            """Planner result:
+{
+  "action": "tool_call",
+  "tool_name": "lookup",
+  "tool_params": {"filters": {"topic": "stress"}}
+}
+Proceed.""",
+            "  ```json\n"
+            + json.dumps({"action": "final_answer", "answer": "complete"})
+            + "\n```  ",
+        ]
+    )
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return next(provider_responses)
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+
+    async def consume() -> list[AgentEvent]:
+        return [event async for event in harness.events("nested-plan", "question")]
+
+    events: list[AgentEvent] = asyncio.run(consume())
+    tool_calls: list[ToolCall] = [
+        event.tool_call
+        for event in events
+        if event.kind is AgentEventKind.TOOL_CALL and event.tool_call is not None
+    ]
+
+    assert len(tool_calls) == 1
+    assert tool_calls[0].params == {"filters": {"topic": "stress"}}
+    assert events[-1].kind is AgentEventKind.DONE
+
+
+def test_invalid_planner_json_returns_stable_error_without_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.harness import AgentHarness
+    from src.agent.memory import MemoryManager
+    from src.core.agent_runtime import AgentResponse
+    from src.llm import llm_client
+
+    runtime: tuple[AgentHarness, MemoryManager, _ToolStub] = _runtime(tmp_path)
+    harness: AgentHarness = runtime[0]
+    memory: MemoryManager = runtime[1]
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return "not a valid plan"
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+
+    response: AgentResponse = asyncio.run(harness.execute("invalid-plan", "question"))
+
+    assert response.error_code == "invalid_agent_plan"
+    assert response.error == "Agent planner returned an invalid action."
+    assert memory.load_history("invalid-plan") == []
 
 
 def test_tool_budget_rejects_before_side_effect(
