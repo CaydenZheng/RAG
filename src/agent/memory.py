@@ -10,20 +10,42 @@ sessions.db   — RAG／Agent 共用的有序短期历史，达到阈值时 LLM 
   3. 记忆摘要固化：LLM 对旧对话做摘要，替换原始消息
 """
 
+import asyncio
 import json
 import time
+import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from src.infra.session_store import SessionStore, SessionTurn, session_store
+from src.infra.session_store import (
+    HistorySnapshot,
+    SessionStore,
+    SessionTurn,
+    session_store,
+)
 from src.security.session_ids import (
     client_scope_from_scoped_session,
     validate_storage_session_id,
 )
+
+_COMPRESSION_CLAIM_TTL_SECONDS: float = 300.0
+_COMPRESSION_CAS_ATTEMPTS: int = 100
+
+
+class MemoryUpdateStatus(StrEnum):
+    """Observable outcome of one history update."""
+
+    UNCHANGED = "unchanged"
+    APPENDED = "appended"
+    COMPRESSED = "compressed"
+    TRUNCATED = "truncated"
+    STALE_DISCARDED = "stale_discarded"
+
 
 # ================================================================
 # 数据模型
@@ -172,8 +194,9 @@ class MemoryManager:
         path = self._history_path(session_id)
         if not path.exists():
             return []
+        snapshot: HistorySnapshot = self._store.read_snapshot(session_id)
         try:
-            legacy_turns = [
+            legacy_turns: list[MemoryTurn] = [
                 MemoryTurn(**item)
                 for item in json.loads(path.read_text(encoding="utf-8"))
             ]
@@ -181,17 +204,28 @@ class MemoryManager:
             logger.warning("Failed to load history: {}", type(exc).__name__)
             return []
 
-        def import_if_empty(current: list[SessionTurn]) -> list[SessionTurn]:
-            if current:
-                return current
-            return [self._as_session_turn(turn) for turn in legacy_turns]
-
-        stored = self._store.update_history(session_id, import_if_empty)
-        migrated_path = path.with_suffix(".json.migrated")
-        if migrated_path.exists():
-            path.unlink()
+        legacy_session_turns: list[SessionTurn] = [
+            self._as_session_turn(turn) for turn in legacy_turns
+        ]
+        stored: tuple[SessionTurn, ...]
+        if snapshot.turns:
+            stored = self._store.read_snapshot(session_id).turns
+        elif self._store.replace_history_if_revision(
+            session_id, snapshot.revision, legacy_session_turns
+        ):
+            stored = tuple(legacy_session_turns)
         else:
-            path.replace(migrated_path)
+            stored = self._store.read_snapshot(session_id).turns
+
+        migrated_path = path.with_suffix(".json.migrated")
+        if path.exists():
+            try:
+                if migrated_path.exists():
+                    path.unlink()
+                else:
+                    path.replace(migrated_path)
+            except FileNotFoundError:
+                pass
         return [self._as_memory_turn(turn) for turn in stored]
 
     def load_history(self, session_id: str) -> List[MemoryTurn]:
@@ -232,32 +266,115 @@ class MemoryManager:
 
     def add_turns(
         self, session_id: str, new_turns: Iterable[MemoryTurn]
-    ) -> None:
+    ) -> MemoryUpdateStatus:
         """Append one complete Agent interaction as an atomic history update."""
         session_id = validate_storage_session_id(session_id)
-        pending = list(new_turns)
+        pending: list[MemoryTurn] = list(new_turns)
         if not pending:
-            return
+            return MemoryUpdateStatus.UNCHANGED
 
-        def append_and_compress(current: list[SessionTurn]) -> list[SessionTurn]:
-            turns = [self._as_memory_turn(turn) for turn in current]
-            turns.extend(pending)
-            if len(turns) >= self.config.compress_trigger_turns:
-                turns = self._compress_history(turns)
-            return [self._as_session_turn(turn) for turn in turns]
+        snapshot: HistorySnapshot = self._store.read_snapshot(session_id)
+        turns: list[MemoryTurn] = [
+            self._as_memory_turn(turn) for turn in snapshot.turns
+        ]
+        turns.extend(pending)
+        pending_turns: list[SessionTurn] = [
+            self._as_session_turn(turn) for turn in pending
+        ]
+        if len(turns) < self.config.compress_trigger_turns:
+            if self._store.append_turns_if_epoch(
+                session_id, snapshot.revision[0], pending_turns
+            ):
+                return MemoryUpdateStatus.APPENDED
+            return MemoryUpdateStatus.STALE_DISCARDED
 
-        self._store.update_history(session_id, append_and_compress)
+        owner_id: str = uuid.uuid4().hex
+        if not self._store.try_claim_compression(
+            session_id,
+            snapshot.revision[0],
+            owner_id,
+            ttl_seconds=_COMPRESSION_CLAIM_TTL_SECONDS,
+        ):
+            if self._store.append_turns_if_epoch(
+                session_id, snapshot.revision[0], pending_turns
+            ):
+                return MemoryUpdateStatus.APPENDED
+            return MemoryUpdateStatus.STALE_DISCARDED
+
+        try:
+            compressed: list[MemoryTurn]
+            status: MemoryUpdateStatus
+            compressed, status = self._compress_history(
+                turns, protected_tail_count=len(pending)
+            )
+            if status is MemoryUpdateStatus.APPENDED:
+                if self._store.append_turns_if_epoch(
+                    session_id, snapshot.revision[0], pending_turns
+                ):
+                    return status
+                return MemoryUpdateStatus.STALE_DISCARDED
+
+            compressed_prefix: list[SessionTurn] = [
+                self._as_session_turn(turn)
+                for turn in compressed[: -len(pending)]
+            ]
+            for _attempt in range(_COMPRESSION_CAS_ATTEMPTS):
+                current: HistorySnapshot = self._store.read_snapshot(session_id)
+                if current.revision[0] != snapshot.revision[0]:
+                    return MemoryUpdateStatus.STALE_DISCARDED
+                if current.turns[: len(snapshot.turns)] != snapshot.turns:
+                    logger.warning(
+                        "Memory compression discarded after history replacement"
+                    )
+                    if self._store.append_turns_if_epoch(
+                        session_id, snapshot.revision[0], pending_turns
+                    ):
+                        return MemoryUpdateStatus.APPENDED
+                    return MemoryUpdateStatus.STALE_DISCARDED
+                replacement: list[SessionTurn] = [
+                    *compressed_prefix,
+                    *current.turns[len(snapshot.turns) :],
+                    *pending_turns,
+                ]
+                if self._store.replace_history_if_revision(
+                    session_id,
+                    current.revision,
+                    replacement,
+                    compression_owner=owner_id,
+                ):
+                    return status
+
+            logger.warning("Memory compression CAS retries exhausted")
+            if self._store.append_turns_if_epoch(
+                session_id, snapshot.revision[0], pending_turns
+            ):
+                return MemoryUpdateStatus.APPENDED
+            return MemoryUpdateStatus.STALE_DISCARDED
+        finally:
+            self._store.release_compression_claim(session_id, owner_id)
+
+    async def add_turns_async(
+        self, session_id: str, new_turns: Iterable[MemoryTurn]
+    ) -> MemoryUpdateStatus:
+        """Append one Agent interaction without blocking the event loop."""
+        pending: list[MemoryTurn] = list(new_turns)
+        if not pending:
+            return MemoryUpdateStatus.UNCHANGED
+        return await asyncio.to_thread(self.add_turns, session_id, pending)
 
     def clear_session(self, session_id: str) -> bool:
-        """Clear shared history atomically and report whether it existed."""
+        """Clear shared and legacy history without allowing stale migration."""
         session_id = validate_storage_session_id(session_id)
-        existed = self._store.clear(session_id)
-        path = self._history_path(session_id)
-        if path.exists():
-            path.unlink()
-            existed = True
+        path: Path = self._history_path(session_id)
+        legacy_existed: bool = path.exists()
+        if legacy_existed:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        existed: bool = self._store.clear(session_id)
         logger.info("Agent session cleared")
-        return existed
+        return existed or legacy_existed
 
     # ================================================================
     # 构建 Agent 消息列表
@@ -325,7 +442,12 @@ class MemoryManager:
         )
         return truncated
 
-    def _compress_history(self, turns: List[MemoryTurn]) -> List[MemoryTurn]:
+    def _compress_history(
+        self,
+        turns: List[MemoryTurn],
+        *,
+        protected_tail_count: int,
+    ) -> tuple[List[MemoryTurn], MemoryUpdateStatus]:
         """
         第二级 + 第三级：历史消息压缩。
 
@@ -336,9 +458,9 @@ class MemoryManager:
 
         如果 LLM 压缩不可用，退化为硬截断（第二级）。
         """
-        keep = self.config.compress_keep_recent
+        keep = max(self.config.compress_keep_recent, protected_tail_count)
         if len(turns) <= keep:
-            return turns
+            return turns, MemoryUpdateStatus.APPENDED
 
         recent = turns[-keep:]          # 最近 N 轮完整保留
         old = turns[:-keep]             # 需要压缩的旧轮次
@@ -356,11 +478,11 @@ class MemoryManager:
                 token_count=len(summary) // 2,
                 metadata={"compressed_turns": len(old), "method": "llm_summary"},
             )
-            return [summary_turn] + recent
+            return [summary_turn] + recent, MemoryUpdateStatus.COMPRESSED
 
         # 退化：硬截断，只保留旧轮次中最近 2 条
         logger.warning("LLM compression failed, falling back to hard truncation")
-        return old[-2:] + recent
+        return old[-2:] + recent, MemoryUpdateStatus.TRUNCATED
 
     def _llm_compress(self, old_turns: List[MemoryTurn]) -> Optional[str]:
         """
