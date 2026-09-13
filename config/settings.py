@@ -9,7 +9,7 @@ Pydantic Settings — 读取 .env 的所有配置项，提供类型校验与默�
 from pathlib import Path
 from typing import Optional, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -54,6 +54,14 @@ class Settings(BaseSettings):
         default=90.0, gt=0, alias="REQUEST_TIMEOUT_SECONDS"
     )
     llm_max_retries: int = Field(default=1, ge=0, le=3, alias="LLM_MAX_RETRIES")
+
+    # ================================================================
+    # 管理接口认证
+    # ================================================================
+    admin_api_key: SecretStr | None = Field(default=None, alias="ADMIN_API_KEY")
+    allow_unauthenticated_admin: bool = Field(
+        default=False, alias="ALLOW_UNAUTHENTICATED_ADMIN"
+    )
 
     # ================================================================
     # 多 Provider 降级
@@ -176,6 +184,20 @@ class Settings(BaseSettings):
         if normalized not in allowed:
             raise ValueError(f"LOG_LEVEL must be one of {sorted(allowed)}")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_admin_auth(self) -> Self:
+        """Require an admin secret unless local unauthenticated mode is explicit."""
+        if self.allow_unauthenticated_admin:
+            return self
+        if (
+            self.admin_api_key is None
+            or not self.admin_api_key.get_secret_value().strip()
+        ):
+            raise ValueError(
+                "ADMIN_API_KEY must be set unless ALLOW_UNAUTHENTICATED_ADMIN=true"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_context_reserve(self) -> Self:

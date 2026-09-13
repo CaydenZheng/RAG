@@ -96,6 +96,7 @@ OPENAI_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
 LOCAL_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
 RERANK_MODEL=BAAI/bge-reranker-base
+ADMIN_API_KEY=replace-with-a-long-random-secret
 CHROMA_PERSIST_DIR=C:\ragflow-data\chroma
 ```
 
@@ -139,13 +140,14 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 | `VECTOR_TOP_K`、`BM25_TOP_K`、`RRF_K`、`RERANK_TOP_K` | 候选召回、融合和精排预算 |
 | `MAX_CONTEXT_TOKENS`、`SYSTEM_RESERVE_RATIO`、`CONTEXT_BUFFER_RATIO` | 上下文 Token 预算 |
 | `MAX_CONCURRENT_QUERIES`、`REQUEST_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES` | 请求容量、总时限和 Provider 重试 |
+| `ADMIN_API_KEY`、`ALLOW_UNAUTHENTICATED_ADMIN` | 索引管理密钥及仅限本地开发的显式免认证开关 |
 | `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算 |
 | `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算 |
 | `PROMPT_VERSION` | 选择 `prompts/<version>/` |
 | `LANGFUSE_*` | 预留的远端观测字段；当前运行时未接入 |
 | `MAX_UPLOAD_BYTES` | 单文件上传上限 |
 
-配置在进程启动时由 Pydantic 校验。不要提交 `.env`、密钥或本地数据库。
+配置在进程启动时由 Pydantic 校验。默认必须设置 `ADMIN_API_KEY`；只有服务绑定 `127.0.0.1` 且仅供本机开发时，才可显式设置 `ALLOW_UNAUTHENTICATED_ADMIN=true`。不要在对外监听时启用免认证，也不要提交 `.env`、密钥或本地数据库。
 
 ## RAG 接口
 
@@ -159,7 +161,7 @@ curl.exe -X POST http://127.0.0.1:8000/query `
 
 请求字段：
 
-- `query`：必填问题。
+- `query`：必填问题，长度为 1～2000 个字符。
 - `session_id`：可选；为空时不保存 RAG 历史。
 - `top_k`：1～20，控制最终证据数量。
 - `retrieval_mode`：`vector_only`、`bm25_only`、`hybrid` 或 `hybrid+rerank`。
@@ -193,7 +195,7 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 - `get_weather`：获取天气信息。
 - `search_web`：受控外部搜索，属于灰名单工具。
 
-工具调用会校验名称、参数、调用次数和总预算；不可信工具输出带明确边界并截断后再交给模型。
+工具调用会校验名称、参数、调用次数和总预算；不可信工具输出带明确边界并截断后再交给模型。普通与流式 Agent 的 `message` 长度均为 1～2000 个字符。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -214,7 +216,7 @@ curl.exe -X POST http://127.0.0.1:8000/agent/chat `
 
 全量构建根据语料内容生成不可变版本和 `rag_v_<version>` collection；构建成功后再原子切换 active 指针。旧的 `rag_collection` 仍可作为无 manifest 时的兼容索引。
 
-在线索引操作返回 `202 Accepted` 和 `job_id`：
+在线索引操作返回 `202 Accepted` 和 `job_id`。除任务状态查询外，以下接口必须携带 `X-Admin-Key`，其值与 `ADMIN_API_KEY` 一致：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -225,6 +227,13 @@ curl.exe -X POST http://127.0.0.1:8000/agent/chat `
 | `GET` | `/index/jobs/{job_id}` | 查询任务状态 |
 
 修改请求可携带 `Idempotency-Key`，重复提交同一操作会复用已有任务。上传、删除和发布使用同一后台任务通道，避免并发覆盖。
+
+```powershell
+$adminKey = Read-Host "ADMIN_API_KEY"
+curl.exe -X POST http://127.0.0.1:8000/index/rebuild `
+  -H "X-Admin-Key: $adminKey" `
+  -H "Idempotency-Key: rebuild-v1"
+```
 
 ## 可靠性与安全
 

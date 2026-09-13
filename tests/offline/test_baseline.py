@@ -121,9 +121,15 @@ def test_host_configuration_cannot_override_defaults(
     monkeypatch.setenv("OFFLINE_TEST_SYSTEM_SENTINEL", "preserved")
     clear_host_environment(monkeypatch)
 
-    defaults = Settings(_env_file=None, OPENAI_API_KEY="offline-test-key")
+    defaults = Settings(
+        _env_file=None,
+        OPENAI_API_KEY="offline-test-key",
+        ADMIN_API_KEY="offline-admin-key",
+    )
+    assert defaults.admin_api_key is not None
+    assert defaults.admin_api_key.get_secret_value() == "offline-admin-key"
     for name, field in Settings.model_fields.items():
-        if not field.is_required():
+        if not field.is_required() and name != "admin_api_key":
             assert getattr(defaults, name) == field.default, name
     assert os.environ["OFFLINE_TEST_SYSTEM_SENTINEL"] == "preserved"
 

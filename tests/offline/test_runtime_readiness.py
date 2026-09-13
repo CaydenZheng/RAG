@@ -37,11 +37,34 @@ def test_env_template_matches_settings_contract(
 
     for alias in aliases:
         monkeypatch.delenv(alias, raising=False)
-    configured: Settings = Settings(_env_file=ENV_TEMPLATE)
+    configured: Settings = Settings(
+        _env_file=ENV_TEMPLATE,
+        ADMIN_API_KEY="offline-admin-key",
+    )
     assert configured.openai_base_url == "https://api.deepseek.com"
     assert configured.llm_model == "deepseek-chat"
     assert configured.local_embedding_model == "BAAI/bge-base-en-v1.5"
     assert configured.startup_preload_reranker is True
+
+
+def test_settings_require_admin_key_unless_local_bypass_is_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from config.settings import Settings
+
+    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+    monkeypatch.delenv("ALLOW_UNAUTHENTICATED_ADMIN", raising=False)
+
+    with pytest.raises(ValidationError, match="ADMIN_API_KEY"):
+        Settings(_env_file=None, OPENAI_API_KEY="offline-test-key")
+
+    local_settings: Settings = Settings(
+        _env_file=None,
+        OPENAI_API_KEY="offline-test-key",
+        ALLOW_UNAUTHENTICATED_ADMIN=True,
+    )
+    assert local_settings.allow_unauthenticated_admin is True
+    assert local_settings.admin_api_key is None
 
 
 def test_settings_reject_missing_or_blank_api_key(

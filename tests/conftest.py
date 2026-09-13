@@ -53,6 +53,7 @@ def isolated_runtime(
     monkeypatch.chdir(tmp_path)
     clear_host_environment(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "offline-test-key")
+    monkeypatch.setenv("ADMIN_API_KEY", "offline-admin-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/v1")
     monkeypatch.setenv("HF_HOME", str(tmp_path / "huggingface"))
     monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(tmp_path / "models"))

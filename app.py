@@ -40,11 +40,14 @@ from loguru import logger
 
 from config.settings import settings
 from src.agent.harness import agent_harness
+from src.api.admin_auth import AdminAuthMiddleware
 from src.api.client_identity import ClientIdentityMiddleware, scope_request_session
 from src.api.observability import RequestTracingMiddleware
 from src.api.public_errors import public_error
 from src.api.reliability import RAGRequestReliabilityMiddleware
 from src.api.schemas import (
+    USER_INPUT_MAX_LENGTH,
+    USER_INPUT_MIN_LENGTH,
     AgentChatRequest,
     AgentChatResponse,
     IndexJobResponse,
@@ -92,6 +95,7 @@ app = FastAPI(
 app.add_middleware(RAGRequestReliabilityMiddleware)
 app.add_middleware(ClientIdentityMiddleware)
 app.add_middleware(RequestTracingMiddleware)
+app.add_middleware(AdminAuthMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.router.add_event_handler("startup", warm_up_runtime)
 
@@ -274,7 +278,10 @@ def index_job_status(job_id: str):
 @app.get("/query/stream")
 async def query_stream(
     request: Request,
-    query: str,
+    query: str = Query(
+        min_length=USER_INPUT_MIN_LENGTH,
+        max_length=USER_INPUT_MAX_LENGTH,
+    ),
     session_id: str = "",
     top_k: int = Query(
         default=DEFAULT_RETRIEVAL_TOP_K,
@@ -414,7 +421,10 @@ async def agent_chat(req: AgentChatRequest, request: Request):
 @app.get("/agent/chat/stream")
 async def agent_chat_stream(
     request: Request,
-    message: str,
+    message: str = Query(
+        min_length=USER_INPUT_MIN_LENGTH,
+        max_length=USER_INPUT_MAX_LENGTH,
+    ),
     session_id: str = "",
 ):
     """

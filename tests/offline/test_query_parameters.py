@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -249,3 +250,105 @@ def test_async_agent_rejects_invalid_mode(
     assert not result.success
     assert result.error_code == "invalid_tool_parameters"
     assert "must be one of" in result.error
+
+
+@pytest.mark.parametrize("value", ["", "x" * 2001])
+@pytest.mark.parametrize(
+    ("method", "path", "field"),
+    [
+        ("POST", "/query", "query"),
+        ("GET", "/query/stream", "query"),
+        ("POST", "/agent/chat", "message"),
+        ("GET", "/agent/chat/stream", "message"),
+    ],
+)
+def test_public_query_and_agent_inputs_reject_invalid_lengths_before_runtime(
+    isolated_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    method: str,
+    path: str,
+    field: str,
+) -> None:
+    import app as api
+
+    class UnexpectedFlow:
+        async def run_async(self, shared: dict) -> None:
+            raise AssertionError("invalid request reached retrieval")
+
+    class UnexpectedAgentRuntime:
+        async def execute(self, session_id: str, message: str) -> None:
+            raise AssertionError("invalid request reached Agent runtime")
+
+        async def events(self, session_id: str, message: str) -> AsyncIterator[None]:
+            raise AssertionError("invalid request reached Agent runtime")
+            yield
+
+    monkeypatch.setattr(api, "get_online_flow", UnexpectedFlow)
+    monkeypatch.setattr(api, "get_retrieval_flow", UnexpectedFlow)
+    monkeypatch.setattr(api, "agent_runtime", UnexpectedAgentRuntime())
+    client = TestClient(api.app, raise_server_exceptions=False)
+    try:
+        request_kwargs: dict[str, dict[str, str]] = {
+            "json" if method == "POST" else "params": {field: value}
+        }
+        response = client.request(method, path, **request_kwargs)
+    finally:
+        client.close()
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("value", ["x", "x" * 2000])
+@pytest.mark.parametrize(
+    ("method", "path", "field"),
+    [
+        ("POST", "/query", "query"),
+        ("GET", "/query/stream", "query"),
+        ("POST", "/agent/chat", "message"),
+        ("GET", "/agent/chat/stream", "message"),
+    ],
+)
+def test_public_query_and_agent_inputs_accept_length_boundaries(
+    isolated_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    method: str,
+    path: str,
+    field: str,
+) -> None:
+    import app as api
+    from src.core import generation
+    from src.core.agent_runtime import AgentEvent, AgentEventKind, AgentResponse
+
+    class AcceptingFlow:
+        async def run_async(self, shared: dict) -> None:
+            shared.update(answer="answer", context="context", sources=[])
+
+    class AcceptingAgentRuntime:
+        async def execute(self, session_id: str, message: str) -> AgentResponse:
+            return AgentResponse(session_id=session_id, answer="answer")
+
+        async def events(
+            self, session_id: str, message: str
+        ) -> AsyncIterator[AgentEvent]:
+            response = await self.execute(session_id, message)
+            yield AgentEvent(AgentEventKind.DONE, response=response)
+
+    async def stream_answer(*args: object, **kwargs: object) -> AsyncIterator[str]:
+        yield "answer"
+
+    monkeypatch.setattr(api, "get_online_flow", AcceptingFlow)
+    monkeypatch.setattr(api, "get_retrieval_flow", AcceptingFlow)
+    monkeypatch.setattr(api, "agent_runtime", AcceptingAgentRuntime())
+    monkeypatch.setattr(generation.llm_client, "chat_stream_async", stream_answer)
+    client = TestClient(api.app)
+    try:
+        request_kwargs: dict[str, dict[str, str]] = {
+            "json" if method == "POST" else "params": {field: value}
+        }
+        response = client.request(method, path, **request_kwargs)
+    finally:
+        client.close()
+
+    assert response.status_code == 200
