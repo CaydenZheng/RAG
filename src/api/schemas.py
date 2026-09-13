@@ -13,6 +13,9 @@ from src.core.knowledge import (
     validate_metadata_filter,
 )
 
+USER_INPUT_MIN_LENGTH = 1
+USER_INPUT_MAX_LENGTH = 2000
+
 
 class IndexJobResponse(BaseModel):
     job_id: str
@@ -26,7 +29,12 @@ class IndexJobResponse(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    query: str = Field(..., description="用户查询")
+    query: str = Field(
+        ...,
+        min_length=USER_INPUT_MIN_LENGTH,
+        max_length=USER_INPUT_MAX_LENGTH,
+        description="用户查询",
+    )
     session_id: str = Field(
         default="",
         description="会话 ID，空则不保存历史（一问一答）",
@@ -75,7 +83,12 @@ class QueryResponse(BaseModel):
 
 class AgentChatRequest(BaseModel):
     session_id: str = Field(default="", description="会话 ID，空则自动生成")
-    message: str = Field(..., description="用户消息")
+    message: str = Field(
+        ...,
+        min_length=USER_INPUT_MIN_LENGTH,
+        max_length=USER_INPUT_MAX_LENGTH,
+        description="用户消息",
+    )
 
 
 class AgentChatResponse(BaseModel):

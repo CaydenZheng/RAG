@@ -9,6 +9,8 @@ from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 from httpx import Response
 
+ADMIN_HEADERS: dict[str, str] = {"X-Admin-Key": "offline-admin-key"}
+
 
 @pytest.fixture
 def upload_client(
@@ -75,7 +77,62 @@ def post_document(
     return client.post(
         "/upload",
         files={"file": (filename, content, "application/octet-stream")},
+        headers=ADMIN_HEADERS,
     )
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"X-Admin-Key": "wrong-admin-key"},
+    ],
+)
+@pytest.mark.parametrize(
+    ("method", "path", "request_kwargs"),
+    [
+        (
+            "POST",
+            "/upload",
+            {
+                "files": {
+                    "file": (
+                        "document.txt",
+                        b"valid content",
+                        "application/octet-stream",
+                    )
+                }
+            },
+        ),
+        ("DELETE", "/documents/document.txt", {}),
+        ("POST", "/index/rebuild", {}),
+        ("POST", "/index/rollback", {}),
+    ],
+)
+def test_index_write_requires_admin_credential_before_submission(
+    headers: dict[str, str],
+    method: str,
+    path: str,
+    request_kwargs: dict,
+    upload_client: tuple[TestClient, list[dict]],
+) -> None:
+    client, calls = upload_client
+
+    response = client.request(
+        method,
+        path,
+        headers=headers,
+        **request_kwargs,
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": {
+            "code": "admin_auth_required",
+            "message": "需要有效的管理员凭据",
+        }
+    }
+    assert calls == []
 
 
 def test_valid_upload_is_saved_and_indexed(
@@ -180,15 +237,15 @@ def test_index_job_control_endpoints(
     client, calls = upload_client
 
     rebuild = client.post(
-        "/index/rebuild", headers={"Idempotency-Key": "rebuild-v1"}
+        "/index/rebuild", headers={**ADMIN_HEADERS, "Idempotency-Key": "rebuild-v1"}
     )
     rollback = client.post(
         "/index/rollback?version_id=" + "2" * 24,
-        headers={"Idempotency-Key": "rollback-v1"},
+        headers={**ADMIN_HEADERS, "Idempotency-Key": "rollback-v1"},
     )
     delete = client.delete(
         "/documents/guide.md",
-        headers={"Idempotency-Key": "delete-v1"},
+        headers={**ADMIN_HEADERS, "Idempotency-Key": "delete-v1"},
     )
     status = client.get("/index/jobs/" + "1" * 32)
 
@@ -216,3 +273,108 @@ def test_windows_absolute_path_is_rejected_before_writing(
 
     assert error.value.status_code == 400
     assert not (isolated_runtime / "data/raw").exists()
+
+
+def test_unauthenticated_large_upload_is_rejected_before_multipart_spooling(
+    monkeypatch: pytest.MonkeyPatch,
+    upload_client: tuple[TestClient, list[dict]],
+) -> None:
+    from starlette import formparsers
+
+    client, calls = upload_client
+    spool_calls: list[None] = []
+    original_spooled_file = formparsers.SpooledTemporaryFile
+
+    def track_spooled_file(*args: object, **kwargs: object) -> object:
+        spool_calls.append(None)
+        return original_spooled_file(*args, **kwargs)
+
+    monkeypatch.setattr(formparsers, "SpooledTemporaryFile", track_spooled_file)
+
+    response = client.post(
+        "/upload",
+        files={
+            "file": (
+                "large.txt",
+                b"x" * (1024 * 1024 + 1),
+                "application/octet-stream",
+            )
+        },
+    )
+
+    assert response.status_code == 401
+    assert spool_calls == []
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("base_url", "client_host", "status_code"),
+    [
+        ("http://127.0.0.1", "127.0.0.1", 202),
+        ("http://127.0.0.1", "203.0.113.10", 401),
+        ("http://example.com", "127.0.0.1", 401),
+    ],
+)
+def test_unauthenticated_admin_bypass_is_limited_to_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+    upload_client: tuple[TestClient, list[dict]],
+    base_url: str,
+    client_host: str,
+    status_code: int,
+) -> None:
+    import app as api
+
+    _, calls = upload_client
+    monkeypatch.setattr(api.settings, "allow_unauthenticated_admin", True)
+    client = TestClient(
+        api.app,
+        base_url=base_url,
+        client=(client_host, 50000),
+    )
+    try:
+        response = client.post("/index/rebuild")
+    finally:
+        client.close()
+
+    assert response.status_code == status_code
+    assert len(calls) == (1 if status_code == 202 else 0)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "request_kwargs"),
+    [
+        (
+            "POST",
+            "/api/upload",
+            {
+                "files": {
+                    "file": (
+                        "document.txt",
+                        b"valid content",
+                        "application/octet-stream",
+                    )
+                }
+            },
+        ),
+        ("DELETE", "/api/documents/document.txt", {}),
+        ("POST", "/api/index/rebuild", {}),
+        ("POST", "/api/index/rollback", {}),
+    ],
+)
+def test_index_write_auth_applies_behind_root_path(
+    method: str,
+    path: str,
+    request_kwargs: dict[str, object],
+    upload_client: tuple[TestClient, list[dict]],
+) -> None:
+    import app as api
+
+    _, calls = upload_client
+    client = TestClient(api.app, root_path="/api")
+    try:
+        response = client.request(method, path, **request_kwargs)
+    finally:
+        client.close()
+
+    assert response.status_code == 401
+    assert calls == []

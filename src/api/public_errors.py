@@ -1,6 +1,7 @@
 """Stable public errors for RAG HTTP and SSE responses."""
 
 PUBLIC_ERRORS = {
+    "admin_auth_required": "需要有效的管理员凭据",
     "query_capacity_exceeded": "服务繁忙，请稍后重试",
     "request_timeout": "请求处理超时，请稍后重试",
     "query_failed": "查询处理失败，请稍后重试",
