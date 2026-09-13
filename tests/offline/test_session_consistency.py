@@ -3,6 +3,9 @@
 import asyncio
 import json
 import sqlite3
+import threading
+import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -253,3 +256,576 @@ def test_legacy_agent_history_is_migrated_once(tmp_path: Path) -> None:
     assert not legacy_path.exists()
     assert legacy_path.with_suffix(".json.migrated").exists()
     assert store.history_count("legacy") == 2
+
+
+def test_clear_during_legacy_migration_does_not_restore_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.memory import MemoryManager, MemoryTurn
+    from src.infra.session_store import SessionStore
+
+    memory_root: Path = tmp_path / "memory"
+    legacy_path: Path = (
+        memory_root / "sessions" / "legacy-clear-race" / "history.json"
+    )
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        json.dumps(
+            [
+                {
+                    "role": "user",
+                    "content": "legacy question",
+                    "timestamp": 1.0,
+                    "token_count": 2,
+                    "metadata": {},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    store: SessionStore = SessionStore(str(tmp_path / "sessions.db"))
+    memory: MemoryManager = MemoryManager(str(memory_root), store=store)
+    migration_read: threading.Event = threading.Event()
+    migration_release: threading.Event = threading.Event()
+    original_read_text: Callable[..., str] = Path.read_text
+
+    def controlled_read_text(
+        path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        content: str = original_read_text(
+            path,
+            encoding=encoding,
+            errors=errors,
+        )
+        if path == legacy_path:
+            migration_read.set()
+            migration_release.wait(2)
+        return content
+
+    monkeypatch.setattr(Path, "read_text", controlled_read_text)
+
+    async def exercise() -> tuple[list[MemoryTurn], bool]:
+        load_task: asyncio.Task[list[MemoryTurn]] = asyncio.create_task(
+            asyncio.to_thread(memory.load_history, "legacy-clear-race")
+        )
+        assert await asyncio.to_thread(migration_read.wait, 1)
+        existed: bool = memory.clear_session("legacy-clear-race")
+        migration_release.set()
+        return await load_task, existed
+
+    loaded: list[MemoryTurn]
+    existed: bool
+    loaded, existed = asyncio.run(exercise())
+
+    assert existed
+    assert loaded == []
+    assert memory.load_history("legacy-clear-race") == []
+
+
+def test_clear_before_legacy_snapshot_does_not_restore_session(
+    tmp_path: Path,
+) -> None:
+    from src.agent.memory import MemoryManager, MemoryTurn
+    from src.infra.session_store import HistorySnapshot, SessionStore
+
+    class ClearWindowStore(SessionStore):
+        def __init__(self, db_path: str) -> None:
+            super().__init__(db_path)
+            self.snapshot_started: threading.Event = threading.Event()
+            self.snapshot_release: threading.Event = threading.Event()
+            self.clear_completed: threading.Event = threading.Event()
+            self.clear_release: threading.Event = threading.Event()
+            self.pause_snapshot: bool = True
+
+        def read_snapshot(self, session_id: str) -> HistorySnapshot:
+            if self.pause_snapshot:
+                self.pause_snapshot = False
+                self.snapshot_started.set()
+                self.snapshot_release.wait(2)
+            return super().read_snapshot(session_id)
+
+        def clear(self, session_id: str) -> bool:
+            existed: bool = super().clear(session_id)
+            self.clear_completed.set()
+            self.clear_release.wait(2)
+            return existed
+
+    memory_root: Path = tmp_path / "memory"
+    legacy_path: Path = (
+        memory_root / "sessions" / "legacy-clear-window" / "history.json"
+    )
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        json.dumps(
+            [
+                {
+                    "role": "user",
+                    "content": "must stay cleared",
+                    "timestamp": 1.0,
+                    "token_count": 2,
+                    "metadata": {},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    store: ClearWindowStore = ClearWindowStore(str(tmp_path / "sessions.db"))
+    memory: MemoryManager = MemoryManager(str(memory_root), store=store)
+
+    async def exercise() -> tuple[list[MemoryTurn], bool]:
+        load_task: asyncio.Task[list[MemoryTurn]] = asyncio.create_task(
+            asyncio.to_thread(memory.load_history, "legacy-clear-window")
+        )
+        assert await asyncio.to_thread(store.snapshot_started.wait, 1)
+        clear_task: asyncio.Task[bool] = asyncio.create_task(
+            asyncio.to_thread(memory.clear_session, "legacy-clear-window")
+        )
+        try:
+            assert await asyncio.to_thread(store.clear_completed.wait, 1)
+            store.snapshot_release.set()
+            loaded: list[MemoryTurn] = await load_task
+        finally:
+            store.snapshot_release.set()
+            store.clear_release.set()
+        return loaded, await clear_task
+
+    loaded: list[MemoryTurn]
+    existed: bool
+    loaded, existed = asyncio.run(exercise())
+
+    assert loaded == []
+    assert memory.load_history("legacy-clear-window") == []
+    assert existed
+
+
+def test_compression_claim_is_shared_and_owner_scoped(tmp_path: Path) -> None:
+    from src.infra.session_store import SessionStore
+
+    database: Path = tmp_path / "sessions.db"
+    first_store: SessionStore = SessionStore(str(database))
+    second_store: SessionStore = SessionStore(str(database))
+    epoch: int = first_store.read_snapshot("shared-claim").revision[0]
+
+    assert first_store.try_claim_compression(
+        "shared-claim", epoch, "owner-a", ttl_seconds=300.0
+    )
+    assert not second_store.try_claim_compression(
+        "shared-claim", epoch, "owner-b", ttl_seconds=300.0
+    )
+
+    second_store.release_compression_claim("shared-claim", "owner-b")
+    assert not second_store.try_claim_compression(
+        "shared-claim", epoch, "owner-b", ttl_seconds=300.0
+    )
+
+    assert second_store.try_claim_compression(
+        "shared-claim", epoch, "owner-b", ttl_seconds=0.0
+    )
+    first_store.release_compression_claim("shared-claim", "owner-a")
+    assert not first_store.try_claim_compression(
+        "shared-claim", epoch, "owner-c", ttl_seconds=300.0
+    )
+
+    second_store.release_compression_claim("shared-claim", "owner-b")
+    assert first_store.try_claim_compression(
+        "shared-claim", epoch, "owner-c", ttl_seconds=300.0
+    )
+
+
+def test_async_memory_update_does_not_wait_for_compression_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.memory import (
+        MemoryConfig,
+        MemoryManager,
+        MemoryTurn,
+        MemoryUpdateStatus,
+    )
+    from src.infra.session_store import SessionStore, SessionTurn
+    from src.llm import llm_client
+
+    database: Path = tmp_path / "sessions.db"
+    first_store: SessionStore = SessionStore(str(database))
+    second_store: SessionStore = SessionStore(str(database))
+    config: MemoryConfig = MemoryConfig(
+        compress_trigger_turns=3,
+        compress_keep_recent=1,
+    )
+    first_memory: MemoryManager = MemoryManager(
+        str(tmp_path / "memory-a"),
+        config=config,
+        store=first_store,
+    )
+    second_memory: MemoryManager = MemoryManager(
+        str(tmp_path / "memory-b"),
+        config=config,
+        store=second_store,
+    )
+    first_store.append_turns(
+        "nonblocking-memory-update",
+        [
+            SessionTurn(role="user", content="one"),
+            SessionTurn(role="assistant", content="two"),
+        ],
+    )
+    compression_started: threading.Event = threading.Event()
+    compression_release: threading.Event = threading.Event()
+    call_lock: threading.Lock = threading.Lock()
+    compression_calls: int = 0
+
+    def chat(*_args: object, **_kwargs: object) -> str:
+        nonlocal compression_calls
+        with call_lock:
+            compression_calls += 1
+        compression_started.set()
+        compression_release.wait(2)
+        return "summary"
+
+    monkeypatch.setattr(llm_client, "chat", chat)
+
+    async def exercise(
+    ) -> tuple[bool, MemoryUpdateStatus, MemoryUpdateStatus]:
+        first_task: asyncio.Task[MemoryUpdateStatus] = asyncio.create_task(
+            first_memory.add_turns_async(
+                "nonblocking-memory-update",
+                [MemoryTurn(role="assistant", content="pending-a")],
+            )
+        )
+        assert await asyncio.to_thread(compression_started.wait, 1)
+        second_task: asyncio.Task[MemoryUpdateStatus] = asyncio.create_task(
+            second_memory.add_turns_async(
+                "nonblocking-memory-update",
+                [MemoryTurn(role="assistant", content="pending-b")],
+            )
+        )
+        completed_while_compressing: bool = True
+        try:
+            second_status: MemoryUpdateStatus = await asyncio.wait_for(
+                asyncio.shield(second_task), timeout=0.5
+            )
+        except TimeoutError:
+            completed_while_compressing = False
+            second_status = await second_task
+        finally:
+            compression_release.set()
+        first_status: MemoryUpdateStatus = await first_task
+        return completed_while_compressing, second_status, first_status
+
+    result: tuple[bool, MemoryUpdateStatus, MemoryUpdateStatus] = asyncio.run(
+        exercise()
+    )
+    history: list[MemoryTurn] = first_memory.load_history(
+        "nonblocking-memory-update"
+    )
+
+    assert result == (
+        True,
+        MemoryUpdateStatus.APPENDED,
+        MemoryUpdateStatus.COMPRESSED,
+    )
+    assert compression_calls == 1
+    assert [turn.content for turn in history][-2:] == [
+        "pending-b",
+        "pending-a",
+    ]
+
+
+def test_clear_during_async_compression_does_not_restore_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.memory import (
+        MemoryConfig,
+        MemoryManager,
+        MemoryTurn,
+        MemoryUpdateStatus,
+    )
+    from src.infra.session_store import SessionStore, SessionTurn
+
+    store: SessionStore = SessionStore(str(tmp_path / "sessions.db"))
+    memory: MemoryManager = MemoryManager(
+        str(tmp_path / "memory"),
+        config=MemoryConfig(compress_trigger_turns=3, compress_keep_recent=1),
+        store=store,
+    )
+    store.append_turns(
+        "clear-during-compression",
+        [
+            SessionTurn(role="user", content="one"),
+            SessionTurn(role="assistant", content="two"),
+        ],
+    )
+    compression_started: threading.Event = threading.Event()
+    compression_release: threading.Event = threading.Event()
+
+    def compress(_old_turns: list[MemoryTurn]) -> str:
+        compression_started.set()
+        compression_release.wait(2)
+        return "summary"
+
+    monkeypatch.setattr(memory, "_llm_compress", compress)
+
+    async def exercise() -> tuple[MemoryUpdateStatus, bool]:
+        update_task: asyncio.Task[MemoryUpdateStatus] = asyncio.create_task(
+            memory.add_turns_async(
+                "clear-during-compression",
+                [MemoryTurn(role="user", content="pending")],
+            )
+        )
+        assert await asyncio.to_thread(compression_started.wait, 1)
+        existed: bool = memory.clear_session("clear-during-compression")
+        compression_release.set()
+        return await update_task, existed
+
+    status: MemoryUpdateStatus
+    existed: bool
+    status, existed = asyncio.run(exercise())
+
+    assert existed
+    assert status.value == "stale_discarded"
+    assert memory.load_history("clear-during-compression") == []
+
+
+def test_compression_keeps_the_current_interaction_uncompressed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.memory import (
+        MemoryConfig,
+        MemoryManager,
+        MemoryTurn,
+        MemoryUpdateStatus,
+    )
+    from src.infra.session_store import SessionStore, SessionTurn
+    from src.llm import llm_client
+
+    store: SessionStore = SessionStore(str(tmp_path / "sessions.db"))
+    memory: MemoryManager = MemoryManager(
+        str(tmp_path / "memory"),
+        config=MemoryConfig(compress_trigger_turns=3, compress_keep_recent=1),
+        store=store,
+    )
+    store.append_turns(
+        "protected-current-interaction",
+        [
+            SessionTurn(role="user", content="old-question"),
+            SessionTurn(role="assistant", content="old-answer"),
+        ],
+    )
+
+    def chat(*_args: object, **_kwargs: object) -> str:
+        return "summary"
+
+    monkeypatch.setattr(llm_client, "chat", chat)
+
+    status: MemoryUpdateStatus = memory.add_turns(
+        "protected-current-interaction",
+        [
+            MemoryTurn(role="user", content="current-question"),
+            MemoryTurn(role="assistant", content="current-answer"),
+        ],
+    )
+    history: list[MemoryTurn] = memory.load_history(
+        "protected-current-interaction"
+    )
+
+    assert status is MemoryUpdateStatus.COMPRESSED
+    assert [(turn.role, turn.content) for turn in history][-2:] == [
+        ("user", "current-question"),
+        ("assistant", "current-answer"),
+    ]
+
+
+def test_concurrent_async_memory_updates_share_one_compression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.memory import MemoryConfig, MemoryManager, MemoryTurn
+    from src.infra.session_store import SessionStore, SessionTurn
+
+    database: Path = tmp_path / "sessions.db"
+    store: SessionStore = SessionStore(str(database))
+    second_store: SessionStore = SessionStore(str(database))
+    first_memory: MemoryManager = MemoryManager(
+        str(tmp_path / "memory-a"),
+        config=MemoryConfig(compress_trigger_turns=6, compress_keep_recent=2),
+        store=store,
+    )
+    second_memory: MemoryManager = MemoryManager(
+        str(tmp_path / "memory-b"),
+        config=MemoryConfig(compress_trigger_turns=6, compress_keep_recent=2),
+        store=second_store,
+    )
+    store.append_turns(
+        "concurrent-compression",
+        [
+            SessionTurn(role="user", content="base-0"),
+            SessionTurn(role="assistant", content="base-1"),
+            SessionTurn(role="user", content="base-2"),
+            SessionTurn(role="assistant", content="base-3"),
+            SessionTurn(role="user", content="base-4"),
+        ],
+    )
+    call_lock: threading.Lock = threading.Lock()
+    call_count: int = 0
+
+    def compress(_old_turns: list[MemoryTurn]) -> str:
+        nonlocal call_count
+        with call_lock:
+            call_count += 1
+        time.sleep(0.1)
+        return "summary"
+
+    monkeypatch.setattr(first_memory, "_llm_compress", compress)
+    monkeypatch.setattr(second_memory, "_llm_compress", compress)
+
+    async def update_concurrently() -> None:
+        await asyncio.gather(
+            first_memory.add_turns_async(
+                "concurrent-compression",
+                [MemoryTurn(role="assistant", content="pending-a")],
+            ),
+            second_memory.add_turns_async(
+                "concurrent-compression",
+                [MemoryTurn(role="assistant", content="pending-b")],
+            ),
+        )
+
+    asyncio.run(update_concurrently())
+    history: list[MemoryTurn] = first_memory.load_history(
+        "concurrent-compression"
+    )
+    contents: list[str] = [turn.content for turn in history]
+    summary_count: int = sum(turn.role == "summary" for turn in history)
+
+    assert call_count == 1
+    assert summary_count == 1
+    assert "pending-a" in contents
+    assert "pending-b" in contents
+
+
+def test_compression_reuses_summary_after_cas_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.memory import (
+        MemoryConfig,
+        MemoryManager,
+        MemoryTurn,
+        MemoryUpdateStatus,
+    )
+    from src.infra.session_store import SessionStore, SessionTurn
+    from src.llm import llm_client
+
+    class ConflictInjectingStore(SessionStore):
+        def __init__(self, db_path: str) -> None:
+            super().__init__(db_path)
+            self.cas_attempts: int = 0
+
+        def replace_history_if_revision(
+            self,
+            session_id: str,
+            expected_revision: tuple[int, int, int],
+            turns: list[SessionTurn],
+            *,
+            compression_owner: str | None = None,
+        ) -> bool:
+            self.cas_attempts += 1
+            if self.cas_attempts == 1:
+                self.append_turns(
+                    session_id,
+                    [SessionTurn(role="assistant", content="concurrent")],
+                )
+            return super().replace_history_if_revision(
+                session_id,
+                expected_revision,
+                turns,
+                compression_owner=compression_owner,
+            )
+
+    store: ConflictInjectingStore = ConflictInjectingStore(
+        str(tmp_path / "sessions.db")
+    )
+    memory: MemoryManager = MemoryManager(
+        str(tmp_path / "memory"),
+        config=MemoryConfig(compress_trigger_turns=6, compress_keep_recent=2),
+        store=store,
+    )
+    store.append_turns(
+        "compression-cas-conflict",
+        [
+            SessionTurn(role="user", content="base-0"),
+            SessionTurn(role="assistant", content="base-1"),
+            SessionTurn(role="user", content="base-2"),
+            SessionTurn(role="assistant", content="base-3"),
+            SessionTurn(role="user", content="base-4"),
+        ],
+    )
+    compression_calls: int = 0
+
+    def chat(*_args: object, **_kwargs: object) -> str:
+        nonlocal compression_calls
+        compression_calls += 1
+        return "reused summary"
+
+    monkeypatch.setattr(llm_client, "chat", chat)
+
+    status: MemoryUpdateStatus = memory.add_turns(
+        "compression-cas-conflict",
+        [MemoryTurn(role="assistant", content="pending")],
+    )
+    history: list[MemoryTurn] = memory.load_history("compression-cas-conflict")
+
+    assert status is MemoryUpdateStatus.COMPRESSED
+    assert compression_calls == 1
+    assert store.cas_attempts == 2
+    assert [(turn.role, turn.content) for turn in history] == [
+        ("summary", "[历史对话摘要，4 轮已压缩]\nreused summary"),
+        ("user", "base-4"),
+        ("assistant", "concurrent"),
+        ("assistant", "pending"),
+    ]
+
+
+def test_failed_async_memory_compression_returns_truncated_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.memory import (
+        MemoryConfig,
+        MemoryManager,
+        MemoryTurn,
+        MemoryUpdateStatus,
+    )
+    from src.infra.session_store import SessionStore, SessionTurn
+    from src.llm import llm_client
+
+    store: SessionStore = SessionStore(str(tmp_path / "sessions.db"))
+    memory: MemoryManager = MemoryManager(
+        str(tmp_path / "memory"),
+        config=MemoryConfig(compress_trigger_turns=5, compress_keep_recent=2),
+        store=store,
+    )
+    store.append_turns(
+        "compression-timeout",
+        [
+            SessionTurn(role="user", content="base-0"),
+            SessionTurn(role="assistant", content="base-1"),
+            SessionTurn(role="user", content="base-2"),
+            SessionTurn(role="assistant", content="base-3"),
+        ],
+    )
+
+    def chat(*_args: object, **_kwargs: object) -> str:
+        raise TimeoutError("provider timeout")
+
+    monkeypatch.setattr(llm_client, "chat", chat)
+
+    status: MemoryUpdateStatus = asyncio.run(
+        memory.add_turns_async(
+            "compression-timeout",
+            [MemoryTurn(role="user", content="pending")],
+        )
+    )
+    history: list[MemoryTurn] = memory.load_history("compression-timeout")
+    contents: list[str] = [turn.content for turn in history]
+
+    assert status is MemoryUpdateStatus.TRUNCATED
+    assert contents == ["base-1", "base-2", "base-3", "pending"]

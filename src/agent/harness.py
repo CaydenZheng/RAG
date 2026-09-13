@@ -18,7 +18,12 @@ from src.agent.hooks import (
     HookPipeline,
     create_default_pipeline,
 )
-from src.agent.memory import MemoryManager, MemoryTurn, memory_manager
+from src.agent.memory import (
+    MemoryManager,
+    MemoryTurn,
+    MemoryUpdateStatus,
+    memory_manager,
+)
 from src.agent.tools import ToolRegistry, ToolResult, tool_registry
 from src.core.agent_runtime import (
     AgentEvent,
@@ -400,7 +405,18 @@ class AgentHarness:
                     session_id, iterations, final_answer, turns
                 )
 
-            self.memory.add_turns(session_id, turns)
+            memory_started: float = time.monotonic()
+            memory_status: MemoryUpdateStatus = (
+                await self.memory.add_turns_async(
+                    session_id, turns
+                )
+            )
+            tracer.add_span(
+                None,
+                "agent_memory_persist",
+                (time.monotonic() - memory_started) * 1000,
+                memory_status=memory_status.value,
+            )
             for chunk in re.split(r"(\s+)", final_answer):
                 if chunk:
                     yield AgentEvent(

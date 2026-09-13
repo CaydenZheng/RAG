@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -412,3 +414,58 @@ def test_cancelled_agent_run_records_a_stable_outcome(
     asyncio.run(cancel_run())
     assert trace["status"] == "cancelled"
     assert trace["error_code"] == "agent_cancelled"
+
+
+def test_agent_memory_compression_keeps_event_loop_responsive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.harness import AgentHarness
+    from src.agent.memory import MemoryManager
+    from src.core.agent_runtime import AgentEvent
+    from src.llm import llm_client
+
+    runtime: tuple[AgentHarness, MemoryManager, _ToolStub] = _runtime(tmp_path)
+    harness: AgentHarness = runtime[0]
+    memory: MemoryManager = runtime[1]
+    memory.add_turn("agent-memory-heartbeat", "user", "old-one")
+    memory.add_turn("agent-memory-heartbeat", "assistant", "old-two")
+    memory.config.compress_trigger_turns = 3
+    memory.config.compress_keep_recent = 1
+    compression_started: threading.Event = threading.Event()
+    compression_release: threading.Event = threading.Event()
+    timeline: dict[str, float] = {}
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return json.dumps({"action": "final_answer", "answer": "complete"})
+
+    def chat(*_args: object, **_kwargs: object) -> str:
+        compression_started.set()
+        compression_release.wait(2)
+        timeline["compression_done"] = time.perf_counter()
+        return "summary"
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    monkeypatch.setattr(llm_client, "chat", chat)
+
+    async def collect_events() -> list[AgentEvent]:
+        return [
+            event
+            async for event in harness.events(
+                "agent-memory-heartbeat", "new-question"
+            )
+        ]
+
+    async def consume_with_heartbeat() -> None:
+        events_task: asyncio.Task[list[AgentEvent]] = asyncio.create_task(
+            collect_events()
+        )
+        started: bool = await asyncio.to_thread(compression_started.wait, 1)
+        assert started
+        await asyncio.sleep(0)
+        timeline["heartbeat"] = time.perf_counter()
+        compression_release.set()
+        await events_task
+
+    asyncio.run(consume_with_heartbeat())
+
+    assert timeline["heartbeat"] < timeline["compression_done"]
