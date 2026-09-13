@@ -401,7 +401,7 @@ class AgentHarness:
                 )
 
             self.memory.add_turns(session_id, turns)
-            for chunk in re.split(r"(s+)", final_answer):
+            for chunk in re.split(r"(\s+)", final_answer):
                 if chunk:
                     yield AgentEvent(
                         AgentEventKind.CHUNK,
@@ -564,6 +564,49 @@ class AgentHarness:
         return self._parse_plan_json(raw)
 
     @staticmethod
+    def _extract_json_object(raw: str) -> dict:
+        start: int | None = None
+        depth: int = 0
+        in_string: bool = False
+        escaped: bool = False
+        index: int
+        char: str
+
+        for index, char in enumerate(raw):
+            if start is None:
+                if char == "{":
+                    start = index
+                    depth = 1
+                continue
+
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed: object = json.loads(raw[start : index + 1])
+                    except json.JSONDecodeError:
+                        start = None
+                        continue
+                    if isinstance(parsed, dict):
+                        return parsed
+                    start = None
+
+        return {}
+
+    @staticmethod
     def _parse_plan_json(raw: str) -> dict:
         fence = chr(96) * 3
         json_fence = fence + "json"
@@ -575,17 +618,9 @@ class AgentHarness:
             parsed = json.loads(raw)
             return parsed if isinstance(parsed, dict) else {}
         except json.JSONDecodeError:
-            match = re.search(
-                r'{[^{}]*"action"s*:s*'
-                r'"(?:tool_call|final_answer)"[^{}]*}',
-                raw,
-                re.DOTALL,
-            )
-            if match:
-                try:
-                    return json.loads(match.group())
-                except json.JSONDecodeError:
-                    pass
+            parsed = AgentHarness._extract_json_object(raw)
+            if parsed:
+                return parsed
         logger.warning("Failed to parse planner JSON")
         return {}
 
