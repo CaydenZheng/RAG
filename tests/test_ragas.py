@@ -1,10 +1,11 @@
 import sys
+from importlib import import_module
 
 ok = True
 
 print("1. Testing vertexai shim...")
 try:
-    from langchain_community.chat_models.vertexai import ChatVertexAI
+    getattr(import_module("langchain_community.chat_models.vertexai"), "ChatVertexAI")
     print("   ✅ vertexai shim OK")
 except Exception as e:
     print(f"   ❌ {e}")
@@ -12,8 +13,15 @@ except Exception as e:
 
 print("2. Testing RAGAS import...")
 try:
-    from ragas import evaluate
-    from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+    getattr(import_module("ragas"), "evaluate")
+    metrics = import_module("ragas.metrics")
+    for metric_name in (
+        "faithfulness",
+        "answer_relevancy",
+        "context_precision",
+        "context_recall",
+    ):
+        getattr(metrics, metric_name)
     print("   ✅ RAGAS import OK")
 except Exception as e:
     print(f"   ❌ {e}")
@@ -21,8 +29,8 @@ except Exception as e:
 
 print("3. Testing RAGAS LLM wrapper...")
 try:
-    from ragas.llms import LangchainLLMWrapper
-    from langchain_openai import ChatOpenAI
+    getattr(import_module("ragas.llms"), "LangchainLLMWrapper")
+    getattr(import_module("langchain_openai"), "ChatOpenAI")
     print("   ✅ LLM wrapper OK")
 except Exception as e:
     print(f"   ❌ {e}")

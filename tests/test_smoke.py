@@ -1,12 +1,14 @@
 """测试 P0 骨架：配置加载、LLM 调用、Embedding、Token 计数"""
 
+import importlib
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import settings
-from src.llm import llm_client
-from src.utils.token_counter import count_tokens
+settings = importlib.import_module("config.settings").settings
+llm_client = importlib.import_module("src.llm").llm_client
+count_tokens = importlib.import_module("src.utils.token_counter").count_tokens
 
 
 def test_config():
