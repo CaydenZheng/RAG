@@ -49,7 +49,7 @@
       "reviewed_at": null,
       "notes": "AI-authored coverage candidate; factual wording and difficulty require human review."
     },
-    "dataset_version": "sha256:64383d1a6046cd828b734c0fbf37228faca59a2002a42f678d4c6fe743e1d9fd"
+    "dataset_version": "sha256:ce3ba31657a61205ae3eb4d6469200f1aca4c3d343e17e9dd5135432193083dc"
   },
   {
     "schema_version": 1,
@@ -91,7 +91,7 @@
       "reviewed_at": null,
       "notes": "AI-authored coverage candidate; factual wording and difficulty require human review."
     },
-    "dataset_version": "sha256:64383d1a6046cd828b734c0fbf37228faca59a2002a42f678d4c6fe743e1d9fd"
+    "dataset_version": "sha256:ce3ba31657a61205ae3eb4d6469200f1aca4c3d343e17e9dd5135432193083dc"
   },
   {
     "schema_version": 1,
@@ -136,6 +136,108 @@
       "reviewed_at": null,
       "notes": "AI-authored coverage candidate; factual wording and difficulty require human review."
     },
-    "dataset_version": "sha256:64383d1a6046cd828b734c0fbf37228faca59a2002a42f678d4c6fe743e1d9fd"
+    "dataset_version": "sha256:ce3ba31657a61205ae3eb4d6469200f1aca4c3d343e17e9dd5135432193083dc"
+  },
+  {
+    "schema_version": 1,
+    "id": "candidate-v1-current-weather",
+    "question": "What is the current weather in Shanghai right now?",
+    "ground_truth": null,
+    "expected_behavior": "abstain",
+    "task_types": [
+      "unanswerable"
+    ],
+    "split": "development",
+    "source_documents": [],
+    "evidence_quotes": [],
+    "provenance": {
+      "origin": "ai_generated",
+      "generator": "codex-review-preparation",
+      "model": "gpt-5",
+      "prompt_version": "abstention-calibration-v1",
+      "generated_at": "2026-09-14",
+      "source_match_method": "out_of_corpus",
+      "source_dataset": {
+        "name": "wikimedia/wikipedia",
+        "configuration": "20231101.en",
+        "split": "train",
+        "revision": "unknown"
+      }
+    },
+    "review": {
+      "status": "unverified",
+      "reviewer": null,
+      "reviewed_at": null,
+      "notes": "Dynamic current weather is outside the frozen Wikipedia corpus. Human review is required before calibration."
+    },
+    "dataset_version": "sha256:ce3ba31657a61205ae3eb4d6469200f1aca4c3d343e17e9dd5135432193083dc"
+  },
+  {
+    "schema_version": 1,
+    "id": "candidate-v1-current-bitcoin-price",
+    "question": "What is the current Bitcoin price in US dollars right now?",
+    "ground_truth": null,
+    "expected_behavior": "abstain",
+    "task_types": [
+      "unanswerable"
+    ],
+    "split": "development",
+    "source_documents": [],
+    "evidence_quotes": [],
+    "provenance": {
+      "origin": "ai_generated",
+      "generator": "codex-review-preparation",
+      "model": "gpt-5",
+      "prompt_version": "abstention-calibration-v1",
+      "generated_at": "2026-09-14",
+      "source_match_method": "out_of_corpus",
+      "source_dataset": {
+        "name": "wikimedia/wikipedia",
+        "configuration": "20231101.en",
+        "split": "train",
+        "revision": "unknown"
+      }
+    },
+    "review": {
+      "status": "unverified",
+      "reviewer": null,
+      "reviewed_at": null,
+      "notes": "Live market pricing is outside the frozen Wikipedia corpus. Human review is required before calibration."
+    },
+    "dataset_version": "sha256:ce3ba31657a61205ae3eb4d6469200f1aca4c3d343e17e9dd5135432193083dc"
+  },
+  {
+    "schema_version": 1,
+    "id": "candidate-v1-private-vacation-policy",
+    "question": "What is Example Corporation's current employee vacation policy?",
+    "ground_truth": null,
+    "expected_behavior": "abstain",
+    "task_types": [
+      "unanswerable"
+    ],
+    "split": "development",
+    "source_documents": [],
+    "evidence_quotes": [],
+    "provenance": {
+      "origin": "ai_generated",
+      "generator": "codex-review-preparation",
+      "model": "gpt-5",
+      "prompt_version": "abstention-calibration-v1",
+      "generated_at": "2026-09-14",
+      "source_match_method": "out_of_corpus",
+      "source_dataset": {
+        "name": "wikimedia/wikipedia",
+        "configuration": "20231101.en",
+        "split": "train",
+        "revision": "unknown"
+      }
+    },
+    "review": {
+      "status": "unverified",
+      "reviewer": null,
+      "reviewed_at": null,
+      "notes": "A private organization policy is absent from the public Wikipedia corpus. Human review is required before calibration."
+    },
+    "dataset_version": "sha256:ce3ba31657a61205ae3eb4d6469200f1aca4c3d343e17e9dd5135432193083dc"
   }
 ]

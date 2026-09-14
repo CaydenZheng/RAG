@@ -279,7 +279,8 @@ def test_empty_recall_is_explicit_and_skips_reranker(
 
     assert result.candidates == []
     assert result.chunks == []
-    assert result.warnings == ()
+    assert result.warnings == ("insufficient_evidence",)
+    assert result.evidence.reason == "no_retrieval_results"
 
 
 def test_all_generation_providers_failed_is_not_a_normal_answer(

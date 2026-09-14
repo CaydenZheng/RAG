@@ -466,6 +466,12 @@ async def _execute_search_kb(params: dict) -> ToolResult:
             "score": chunk.get(
                 "rerank_score", chunk.get("rrf_score", 0)
             ),
+            "scores": {
+                "dense": chunk.get("dense_score"),
+                "bm25": chunk.get("bm25_score"),
+                "rrf": chunk.get("rrf_score"),
+                "rerank": chunk.get("rerank_score"),
+            },
         }
         sources.append(source)
         snippets.append(
@@ -480,6 +486,7 @@ async def _execute_search_kb(params: dict) -> ToolResult:
             "sources": sources,
             "warnings": list(result.warnings),
             "index_version": result.index_version,
+            "evidence": result.evidence.to_dict(),
         },
     )
 

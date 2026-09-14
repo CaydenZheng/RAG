@@ -17,6 +17,7 @@ _ABSTENTION_MARKERS = (
     "unable to determine",
     "insufficient information",
     "not enough information",
+    "not enough evidence",
     "no relevant",
     "does not provide",
     "doesn't provide",
@@ -129,6 +130,16 @@ def retrieval_metrics(
 ) -> dict[str, float]:
     """Score unique expected source documents in ranked retrieval results."""
     expected_sources = _expected_sources(sample)
+    if not expected_sources:
+        metrics = {
+            f"recall@{k}": 0.0 for k in sorted(set(k_values))
+        }
+        metrics.update({
+            f"ndcg@{k}": 0.0 for k in sorted(set(k_values))
+        })
+        metrics["mrr"] = 0.0
+        return metrics
+
     ranked_sources = [
         _expected_source_index(chunk, expected_sources)
         for chunk in chunks
@@ -314,6 +325,12 @@ def summarize_results(
         if precision is not None and recall is not None and precision + recall
         else None
     )
+    false_abstentions = sum(
+        result["metrics"]["abstained"] for result in expected_answers
+    )
+    hard_answers = sum(
+        not result["metrics"]["abstained"] for result in expected_abstentions
+    )
     usage = {
         name: sum(int(result["usage"].get(name, 0)) for result in results)
         for name in ("prompt_tokens", "completion_tokens", "total_tokens")
@@ -375,6 +392,17 @@ def summarize_results(
             "abstention_precision": precision,
             "abstention_recall": recall,
             "abstention_f1": abstention_f1,
+            "correct_abstention_rate": recall,
+            "false_abstention_rate": (
+                false_abstentions / len(expected_answers)
+                if expected_answers
+                else None
+            ),
+            "hard_answer_rate": (
+                hard_answers / len(expected_abstentions)
+                if expected_abstentions
+                else None
+            ),
             "answerable_response_rate": (
                 sum(not result["metrics"]["abstained"] for result in expected_answers)
                 / len(expected_answers)
