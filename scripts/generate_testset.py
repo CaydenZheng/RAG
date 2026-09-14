@@ -59,7 +59,7 @@ def _candidate(
     relative_source = source_path.relative_to(PROJECT_ROOT).as_posix()
     task_types = ["factual"]
     if pair_index == 1:
-        task_types.append("multi_hop")
+        task_types.append("multi_fact")
     return {
         "schema_version": 1,
         "id": _sample_id(question, source_path),

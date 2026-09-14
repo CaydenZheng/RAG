@@ -266,7 +266,7 @@ Trace 记录稳定错误码、耗时、模型名、Token、缓存命中和索引
 
 ## 评测
 
-评测数据规则见 [`data/testset/README.md`](data/testset/README.md)。当前 53 条 development 样本由 AI 生成且未经人工核验；`final_v1.json` 只有人工确认后才能加入样本。
+评测数据规则见 [`data/testset/README.md`](data/testset/README.md)。当前 56 条 development 样本由 AI 生成且未经人工核验；`final_v1.json` 只有人工确认后才能加入样本。单文档组合事实使用 `multi_fact`，`multi_hop` 仅表示至少需要两个不同来源的跨文档问题。
 
 ### 数据校验
 
@@ -280,7 +280,7 @@ uv run --no-sync --offline --no-env-file python scripts/validate_eval_dataset.py
 uv run --no-sync --offline --no-env-file python scripts/run_eval.py --split development --limit 5
 ```
 
-默认只运行 `hybrid+rerank`。报告写入被忽略的 `data/eval-runs/`，保存逐样本答案、证据、引用、错误、Trace、Token 和复现信息。
+默认只运行 `hybrid+rerank`。报告写入被忽略的 `data/eval-runs/`，保存逐样本答案、证据、引用、错误、Trace、Token 和复现信息。正式报告可作为 CI artifact、Release 附件或受控附件交付，不要求提交原始报告；final 评测只允许在干净提交上运行，报告会绑定代码 SHA、数据与索引版本、模型、Prompt、完整配置和 seed。
 
 > 独立评测进程不会执行 FastAPI startup。运行前应确认 Chroma 可加载、Reranker 权重可用，并检查日志中 BM25 是否实际参与；出现降级警告时不能把结果描述为完整 hybrid+rerank。
 
@@ -298,7 +298,7 @@ uv sync --locked --no-default-groups --group eval
 uv run --no-sync --offline --no-env-file --group eval python scripts/run_eval.py --split final --with-ragas
 ```
 
-Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relevancy 只有显式启用 Ragas 才计算。报告同时给出正确拒答率、错误拒答率和应拒答样本的硬答率。开发集只能用于调试；阈值校准器拒绝非 final 报告，输出的 thresholds、calibration_id 与 models 必须一起配置，且模型必须与运行时一致。未配置阈值时，系统只对空检索结果确定性拒答，不根据任意固定分数拒答。
+Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relevancy 只有显式启用 Ragas 才计算。报告同时给出正确拒答率、错误拒答率和应拒答样本的硬答率。development 指标只能用于调试，不能作为发布门槛；对外引用指标时必须同时提供可访问的报告 artifact 或附件及其 run_id，不引用缺少复现信息的历史数值。阈值校准器拒绝非 final 报告，输出的 thresholds、calibration_id 与 models 必须一起配置，且模型必须与运行时一致。未配置阈值时，系统只对空检索结果确定性拒答，不根据任意固定分数拒答。
 
 ## 测试与 CI
 

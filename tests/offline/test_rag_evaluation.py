@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -247,6 +248,134 @@ def test_runner_calls_unified_core_and_applies_opt_in_judge(
     assert result["metrics"]["relevancy"] == 0.8
     assert result["metrics"]["task_success"]
     assert report["reproducibility"] == {"captured": True}
+
+
+def test_reproducibility_binds_material_evaluation_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    evaluation_runner_module: ModuleType,
+) -> None:
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = \"fixture\"\n",
+        encoding="utf-8",
+    )
+    dataset = EvaluationDataset(
+        path=tmp_path / "development.json",
+        records=(_sample(),),
+        version="sha256:data",
+    )
+    catalog = DatasetCatalog(
+        path=tmp_path / "manifest.json",
+        datasets=(dataset,),
+        version="sha256:catalog",
+    )
+    git_outputs = {
+        ("status", "--porcelain", "--untracked-files=all"): "",
+        ("diff", "--binary", "HEAD"): "",
+        ("rev-parse", "HEAD"): "commit-sha",
+        ("branch", "--show-current"): "eval/evidence-labels",
+    }
+    monkeypatch.setattr(
+        evaluation_runner_module,
+        "_git_output",
+        lambda project_root, *arguments: git_outputs[arguments],
+    )
+    monkeypatch.setattr(
+        evaluation_runner_module,
+        "_prompt_metadata",
+        lambda project_root: {
+            "selected_version": "v1",
+            "files": [{"path": "prompts/v1/answer.yaml", "sha256": "prompt-sha"}],
+        },
+    )
+    monkeypatch.setattr(
+        evaluation_runner_module,
+        "_index_metadata",
+        lambda: {"version_id": "index-v1", "manifest": {"chunker_version": "v1"}},
+    )
+    monkeypatch.setattr(
+        evaluation_runner_module,
+        "_package_versions",
+        lambda: {"fixture": "1.0"},
+    )
+    config = evaluation_runner_module.EvaluationConfig(
+        split="development",
+        seed=17,
+        sample_limit=1,
+    )
+
+    reproducibility = evaluation_runner_module.capture_reproducibility(
+        catalog,
+        config,
+        tmp_path,
+    )
+
+    assert reproducibility["code"] == {
+        "git_commit": "commit-sha",
+        "git_branch": "eval/evidence-labels",
+        "dirty": False,
+        "tracked_diff_sha256": hashlib.sha256(b"").hexdigest(),
+    }
+    assert reproducibility["data"]["catalog_version"] == "sha256:catalog"
+    assert reproducibility["data"]["datasets"] == [
+        {
+            "path": "development.json",
+            "dataset_version": "sha256:data",
+            "sample_count": 1,
+        }
+    ]
+    assert reproducibility["prompts"]["files"][0]["sha256"] == "prompt-sha"
+    assert set(reproducibility["models"]) == {"generation", "embedding", "reranker"}
+    assert reproducibility["index_at_start"]["version_id"] == "index-v1"
+    assert reproducibility["configuration"]["seed"] == 17
+    assert reproducibility["configuration"]["sample_limit"] == 1
+
+
+@pytest.mark.parametrize(
+    "code_metadata",
+    [
+        {"git_commit": "commit-sha", "dirty": True},
+        {"git_commit": "unavailable", "dirty": False},
+    ],
+)
+def test_final_evaluation_requires_clean_committed_code(
+    code_metadata: dict,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    evaluation_runner_module: ModuleType,
+) -> None:
+    sample = _sample()
+    sample["split"] = "final"
+    catalog = DatasetCatalog(
+        path=tmp_path / "manifest.json",
+        datasets=(
+            EvaluationDataset(
+                path=tmp_path / "final.json",
+                records=(sample,),
+                version="sha256:data",
+            ),
+        ),
+        version="sha256:catalog",
+    )
+    monkeypatch.setattr(
+        evaluation_runner_module,
+        "capture_reproducibility",
+        lambda catalog, config, project_root: {"code": code_metadata},
+    )
+    runner = evaluation_runner_module.EvaluationRunner(
+        knowledge_system=object(),
+        answer_generator=object(),
+        project_root=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="clean working tree"):
+        asyncio.run(
+            runner.run(
+                catalog,
+                evaluation_runner_module.EvaluationConfig(split="final"),
+            )
+        )
 
 
 def test_report_write_is_complete_json(
