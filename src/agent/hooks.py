@@ -11,7 +11,6 @@ Hook 事件拦截管线。
   BlacklistBlockHook — 匹配危险模式直接阻断
 """
 
-import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -21,6 +20,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
+from config.settings import settings
+from src.infra.jsonl import append_jsonl
 from src.infra.tracer import safe_attributes, tracer
 
 # ================================================================
@@ -135,7 +136,13 @@ class HookPipeline:
 # 内置 Handler
 # ================================================================
 
-def create_logging_hook(log_dir: str = "logs") -> HookHandler:
+def create_logging_hook(
+    log_dir: str = "logs",
+    *,
+    max_bytes: int | None = None,
+    backup_count: int | None = None,
+    retention_seconds: int | None = None,
+) -> HookHandler:
     """创建日志 Hook — 记录所有事件到 JSON Lines 文件"""
     log_path = Path(log_dir) / "agent_events.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,8 +156,25 @@ def create_logging_hook(log_dir: str = "logs") -> HookHandler:
             "timestamp": ctx.timestamp,
             "data": safe_attributes(ctx.data),
         }
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        append_jsonl(
+            log_path,
+            record,
+            max_bytes=(
+                settings.agent_log_max_bytes
+                if max_bytes is None
+                else max_bytes
+            ),
+            backup_count=(
+                settings.agent_log_backup_count
+                if backup_count is None
+                else backup_count
+            ),
+            retention_seconds=(
+                settings.agent_log_retention_seconds
+                if retention_seconds is None
+                else retention_seconds
+            ),
+        )
         return ctx
 
     return logging_hook
@@ -179,7 +203,13 @@ def create_rate_limit_hook(max_per_minute: int = 30) -> HookHandler:
     return rate_limit_hook
 
 
-def create_audit_hook(audit_dir: str = "logs") -> HookHandler:
+def create_audit_hook(
+    audit_dir: str = "logs",
+    *,
+    max_bytes: int | None = None,
+    backup_count: int | None = None,
+    retention_seconds: int | None = None,
+) -> HookHandler:
     """
     创建审计 Hook — 记录灰名单/黑名单工具调用。
 
@@ -200,8 +230,25 @@ def create_audit_hook(audit_dir: str = "logs") -> HookHandler:
             "parameter_names": sorted(tool_params) if isinstance(tool_params, dict) else [],
             "safety_level": ctx.data.get("safety_level", "unknown"),
         }
-        with open(audit_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        append_jsonl(
+            audit_path,
+            record,
+            max_bytes=(
+                settings.agent_log_max_bytes
+                if max_bytes is None
+                else max_bytes
+            ),
+            backup_count=(
+                settings.agent_log_backup_count
+                if backup_count is None
+                else backup_count
+            ),
+            retention_seconds=(
+                settings.agent_log_retention_seconds
+                if retention_seconds is None
+                else retention_seconds
+            ),
+        )
         return ctx
 
     return audit_hook

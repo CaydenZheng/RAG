@@ -136,13 +136,15 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 | `LOCAL_EMBEDDING_MODEL` | 本地向量模型，必须与既有索引维度和语义一致 |
 | `RERANK_MODEL`、`RERANK_TIMEOUT_SECONDS`、`STARTUP_PRELOAD_RERANKER` | 本地精排模型、单次时限及是否启动预热 |
 | `CHROMA_PERSIST_DIR` | Chroma 持久化目录 |
-| `CACHE_DB_PATH` | 精确 LLM 缓存 SQLite 文件 |
+| `CACHE_DB_PATH`、`CACHE_MAX_ENTRIES` | 精确 LLM 缓存 SQLite 文件及最大记录数 |
 | `VECTOR_TOP_K`、`BM25_TOP_K`、`RRF_K`、`RERANK_TOP_K` | 候选召回、融合和精排预算 |
 | `MAX_CONTEXT_TOKENS`、`SYSTEM_RESERVE_RATIO`、`CONTEXT_BUFFER_RATIO` | 上下文 Token 预算 |
 | `MAX_CONCURRENT_QUERIES`、`REQUEST_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES` | 请求容量、总时限和 Provider 重试 |
 | `ADMIN_API_KEY`、`ALLOW_UNAUTHENTICATED_ADMIN` | 索引管理密钥及仅限本地开发的显式免认证开关 |
 | `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算 |
 | `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算 |
+| `TOOL_DEDUP_MAX_SESSIONS` | 工具调用去重状态的最大 session 数 |
+| `AGENT_LOG_MAX_BYTES`、`AGENT_LOG_BACKUP_COUNT`、`AGENT_LOG_RETENTION_SECONDS` | Agent 事件与工具审计日志的轮转和保留边界 |
 | `PROMPT_VERSION` | 选择 `prompts/<version>/` |
 | `LANGFUSE_*` | 预留的远端观测字段；当前运行时未接入 |
 | `MAX_UPLOAD_BYTES` | 单文件上传上限 |
@@ -257,6 +259,7 @@ curl.exe -X POST http://127.0.0.1:8000/index/rebuild `
 ## 可观测性
 
 普通响应和 SSE 都返回 `X-Request-ID` 与 `X-Trace-ID`。本地 Trace 默认追加到 `logs/traces.jsonl`，覆盖查询改写、候选检索、Rerank、上下文构建、模型生成、Agent 和工具调用。
+Agent 事件与工具审计 JSONL 按配置的单文件大小轮转，并同时受备份数量和保留时长约束。
 
 Trace 记录稳定错误码、耗时、模型名、Token、缓存命中和索引版本；不记录完整查询、回答、会话身份、凭据或原始工具参数。`LANGFUSE_*` 目前只是预留配置，运行时不会向 Langfuse 发送 Trace。
 
