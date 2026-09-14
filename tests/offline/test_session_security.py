@@ -152,7 +152,8 @@ def test_rag_history_is_scoped_to_the_client_identity(
 def test_agent_history_is_scoped_to_the_client_identity(
     session_clients: SessionClients,
 ) -> None:
-    session_clients.agent_memory.update_long_term("legacy global secret")
+    legacy_path = session_clients.agent_memory.memory_dir / "long_term.md"
+    legacy_path.write_text("legacy global secret", encoding="utf-8")
     created = session_clients.client_a.post(
         "/agent/chat",
         json={"message": "client-a secret", "session_id": "shared-agent"},

@@ -11,7 +11,7 @@
 | 能力 | 当前行为 |
 |---|---|
 | RAG 查询 | 查询改写、Dense／BM25、RRF、可选 Rerank、上下文预算和引用约束 |
-| Agent | 有界迭代、结构化工具调用、会话记忆、同步结果与 SSE 共用事件模型 |
+| Agent | 有界迭代、结构化工具调用、SQLite 短期历史、同步结果与 SSE 共用事件模型 |
 | 索引 | 上传、删除、全量重建、版本化 collection、原子发布和回滚 |
 | 可靠性 | 并发上限、总时限、有限重试、稳定错误码和显式降级警告 |
 | 安全 | 客户端会话隔离、metadata filter 校验、上传校验、工具参数和输出约束 |
@@ -211,7 +211,7 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 | `POST` | `/agent/chat` | 普通 Agent 对话 |
 | `POST` | `/agent/chat/stream` | `planning → tool_call → tool_done → chunk → done` 事件流；答案完整生成后分块发送，不是 Provider 首 Token 流式 |
 | `POST` | `/agent/reset?session_id=...` | 清除当前客户端的 Agent 会话 |
-| `GET` | `/agent/memory/{session_id}` | 查看受当前客户端约束的记忆摘要 |
+| `GET` | `/agent/memory/{session_id}` | 查看受当前客户端约束的 SQLite 短期历史 |
 
 若强制最终回答生成失败，Agent 返回 `agent_final_generation_failed`，记录失败 Trace，且不写入本轮历史。
 
@@ -250,7 +250,7 @@ curl.exe -X POST http://127.0.0.1:8000/index/rebuild `
 
 - HTTP 请求先执行客户端身份、Trace 和容量／时限中间件。
 - 查询改写失败时保留原问题；BM25、向量召回或 Rerank 不可用时返回稳定警告并按可用链路降级。
-- 会话历史和 Agent 记忆按客户端身份派生内部存储 ID，接口不暴露实际路径。
+- RAG 会话历史和 Agent SQLite 短期历史按客户端身份派生内部存储 ID，接口不暴露实际路径。
 - metadata filter 只接受有限操作符、深度、分支数和标量类型。
 - 上传校验扩展名、文件名、大小和目标路径，索引发布采用原子替换。
 - 页面使用文本节点和安全 Markdown 渲染，响应设置 CSP 等安全头。
