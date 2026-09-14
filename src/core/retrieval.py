@@ -14,12 +14,19 @@ from loguru import logger
 from pocketflow import AsyncNode, Node
 
 from config.settings import settings
-from src.core.index_versions import CandidateBatch
+from src.core.index_versions import CandidateBatch, RetrievalChannelStatus
 from src.infra.index_catalog import index_catalog
 from src.infra.prompt_manager import prompt_manager
 from src.infra.tracer import tracer
 from src.llm import llm_client
 from src.utils.bm25_store import bm25_store
+
+_BM25_STATUS_PRIORITY: dict[RetrievalChannelStatus, int] = {
+    "not_requested": 0,
+    "available": 1,
+    "unavailable": 2,
+    "version_mismatch": 3,
+}
 
 # ================================================================
 # P2-4: QueryRewriterNode
@@ -129,6 +136,13 @@ class HybridRetrieverNode(Node):
         all_vector_hits: Dict[str, Tuple[int, float]] = {}
         all_bm25_hits: Dict[str, Tuple[int, float]] = {}
         chunk_map: Dict[str, dict] = {}
+        dense_status: RetrievalChannelStatus = (
+            "available"
+            if use_vector and collection is not None
+            else "unavailable" if use_vector
+            else "not_requested"
+        )
+        bm25_status: RetrievalChannelStatus = "not_requested"
 
         for qi, query in enumerate(queries):
             # --- 向量检索 ---
@@ -157,13 +171,18 @@ class HybridRetrieverNode(Node):
 
             # --- BM25 检索 ---
             if use_bm25:
-                bm25_results = bm25_store.search(
+                bm25_result = bm25_store.search_with_status(
                     query,
                     top_k=bm25_limit,
                     allowed_chunk_ids=allowed_chunk_ids,
                     version_id=active_index.version_id,
                 )
-                for rank, (cid, score) in enumerate(bm25_results):
+                if (
+                    _BM25_STATUS_PRIORITY[bm25_result.status]
+                    > _BM25_STATUS_PRIORITY[bm25_status]
+                ):
+                    bm25_status = bm25_result.status
+                for rank, (cid, score) in enumerate(bm25_result.hits):
                     if (
                         allowed_chunk_ids is not None
                         and cid not in allowed_chunk_ids
@@ -206,6 +225,8 @@ class HybridRetrieverNode(Node):
         return CandidateBatch(
             index_version=active_index.version_id,
             candidates=tuple(results),
+            dense_status=dense_status,
+            bm25_status=bm25_status,
         )
 
     def _resolve_allowed_chunk_ids(

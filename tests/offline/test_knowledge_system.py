@@ -154,6 +154,7 @@ def test_pocketflow_adapter_exposes_result_without_rebuilding_pipeline(
                 query_variants=[query, "variant"],
                 candidates=[{"chunk_id": "candidate"}],
                 chunks=[{"chunk_id": "kept"}],
+                warnings=("bm25_version_mismatch",),
             )
 
     shared = {
@@ -182,3 +183,47 @@ def test_pocketflow_adapter_exposes_result_without_rebuilding_pipeline(
     assert shared["queries"] == ["question", "variant"]
     assert shared["candidates"] == [{"chunk_id": "candidate"}]
     assert shared["retrieved_chunks"] == [{"chunk_id": "kept"}]
+    assert shared["warnings"] == ["bm25_version_mismatch"]
+
+@pytest.mark.parametrize(
+    ("mode", "bm25_status", "expected_warnings"),
+    [
+        ("hybrid", "unavailable", ("bm25_unavailable",)),
+        ("hybrid", "version_mismatch", ("bm25_version_mismatch",)),
+        ("hybrid", "available", ()),
+        ("vector_only", "unavailable", ()),
+    ],
+)
+def test_retrieval_reports_bm25_status_only_when_requested(
+    isolated_runtime: Path,
+    mode: str,
+    bm25_status: str,
+    expected_warnings: tuple[str, ...],
+) -> None:
+    from src.core.index_versions import CandidateBatch
+    from src.core.knowledge import KnowledgeSystem
+
+    class Retriever:
+        def search(
+            self,
+            queries: list[str],
+            metadata_filter: dict | None,
+            mode: str,
+            top_k: int,
+        ) -> CandidateBatch:
+            return CandidateBatch(
+                index_version="1" * 24,
+                candidates=(),
+                dense_status="available",
+                bm25_status=bm25_status,
+            )
+
+    system = KnowledgeSystem(
+        rewriter=_Rewriter([]),
+        retriever=Retriever(),
+        reranker=_Reranker([]),
+    )
+
+    result = asyncio.run(system.retrieve("question", mode=mode))
+
+    assert result.warnings == expected_warnings

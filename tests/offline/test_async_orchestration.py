@@ -66,6 +66,7 @@ def test_agent_knowledge_tool_calls_knowledge_system_directly(
                         "metadata": {"source": "guide.md"},
                     }
                 ],
+                warnings=("bm25_version_mismatch",),
                 index_version="1" * 24,
             )
 
@@ -86,6 +87,7 @@ def test_agent_knowledge_tool_calls_knowledge_system_directly(
     assert result.success
     assert result.data["context"] == "[1] guide.md\nretrieved context"
     assert result.data["index_version"] == "1" * 24
+    assert result.data["warnings"] == ["bm25_version_mismatch"]
     assert calls == [
         {
             "query": "probe",

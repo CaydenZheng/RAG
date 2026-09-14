@@ -42,7 +42,11 @@ def test_post_query_forwards_all_retrieval_parameters(
     class QueryFlow:
         async def run_async(self, shared: dict) -> None:
             calls.append(shared.copy())
-            shared.update(answer="answer", sources=[])
+            shared.update(
+                answer="answer",
+                sources=[],
+                warnings=["bm25_version_mismatch"],
+            )
 
     monkeypatch.setattr(api, "get_online_flow", QueryFlow)
     client = TestClient(api.app)
@@ -69,6 +73,7 @@ def test_post_query_forwards_all_retrieval_parameters(
         "filter": {"category": {"$eq": "public"}},
         "retrieval_mode": "bm25_only",
     }
+    assert response.json()["warnings"] == ["bm25_version_mismatch"]
 
 
 def test_stream_query_forwards_all_retrieval_parameters(

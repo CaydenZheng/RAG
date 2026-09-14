@@ -8,10 +8,16 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 LEGACY_INDEX_VERSION = "legacy"
 LEGACY_COLLECTION_NAME = "rag_collection"
+RetrievalChannelStatus = Literal[
+    "not_requested",
+    "available",
+    "unavailable",
+    "version_mismatch",
+]
 _VERSION_ID_PATTERN = re.compile(r"[0-9a-f]{24}")
 _CHECKSUM_PATTERN = re.compile(r"[0-9a-f]{64}")
 
@@ -232,6 +238,8 @@ class CandidateBatch(Sequence[dict]):
 
     index_version: str
     candidates: tuple[dict, ...]
+    dense_status: RetrievalChannelStatus = "not_requested"
+    bm25_status: RetrievalChannelStatus = "not_requested"
 
     def __getitem__(self, index):
         return self.candidates[index]
