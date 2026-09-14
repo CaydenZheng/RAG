@@ -22,7 +22,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
+from config.settings import settings
 from src.core.agent_runtime import ToolResult
+from src.infra.jsonl import append_jsonl
 from src.infra.tracer import tracer
 
 # ================================================================
@@ -79,10 +81,15 @@ class ToolRegistry:
       4. 执行 + 审计
     """
 
-    def __init__(self, dedup_window: float = 30.0):
+    def __init__(
+        self, dedup_window: float = 30.0, max_sessions: int = 10000
+    ) -> None:
+        if max_sessions < 1:
+            raise ValueError("max_sessions must be at least 1")
         self._tools: Dict[str, ToolDef] = {}
-        self._dedup_cache: Dict[str, Dict[str, float]] = {}  # {session_id: {hash: timestamp}}
+        self._dedup_cache: Dict[str, Dict[str, float]] = {}
         self._dedup_window = dedup_window
+        self._max_sessions = max_sessions
 
     # ----------------------------------------------------------------
     # 注册
@@ -354,22 +361,46 @@ class ToolRegistry:
 
     def _is_duplicate(self, session_id: str, call_hash: str) -> bool:
         """检查是否在去重窗口内重复调用"""
-        if session_id not in self._dedup_cache:
-            return False
-        last_time = self._dedup_cache[session_id].get(call_hash)
-        if last_time is None:
-            return False
-        return (time.time() - last_time) < self._dedup_window
+        now = time.time()
+        self._cleanup_dedup_cache(now)
+        last_time = self._dedup_cache.get(session_id, {}).get(call_hash)
+        return (
+            last_time is not None
+            and (now - last_time) < self._dedup_window
+        )
 
-    def _record_call(self, session_id: str, call_hash: str):
-        """记录调用时间戳"""
-        if session_id not in self._dedup_cache:
-            self._dedup_cache[session_id] = {}
-        self._dedup_cache[session_id][call_hash] = time.time()
+    def _record_call(self, session_id: str, call_hash: str) -> None:
+        """记录调用时间戳并保持 session 状态有界。"""
+        now = time.time()
+        self._cleanup_dedup_cache(now)
+        self._dedup_cache.setdefault(session_id, {})[call_hash] = now
+        self._cleanup_dedup_cache(now)
+
+    def _cleanup_dedup_cache(self, now: float) -> None:
+        """清理过期指纹与最久未使用的 session。"""
+        for session_id, calls in list(self._dedup_cache.items()):
+            active_calls = {
+                call_hash: timestamp
+                for call_hash, timestamp in calls.items()
+                if now - timestamp < self._dedup_window
+            }
+            if active_calls:
+                self._dedup_cache[session_id] = active_calls
+            else:
+                del self._dedup_cache[session_id]
+        excess = len(self._dedup_cache) - self._max_sessions
+        if excess > 0:
+            oldest_sessions = sorted(
+                self._dedup_cache,
+                key=lambda item: max(self._dedup_cache[item].values()),
+            )[:excess]
+            for session_id in oldest_sessions:
+                del self._dedup_cache[session_id]
 
     def _audit(self, tool_name: str, params: dict, result: ToolResult, session_id: str):
         """灰名单审计日志"""
         from pathlib import Path
+
         audit_path = Path("logs") / "audit.jsonl"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
         trace = tracer.current or {}
@@ -383,8 +414,13 @@ class ToolRegistry:
             "error_code": result.error_code,
             "latency_ms": round(result.latency_ms, 1),
         }
-        with open(audit_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        append_jsonl(
+            audit_path,
+            record,
+            max_bytes=settings.agent_log_max_bytes,
+            backup_count=settings.agent_log_backup_count,
+            retention_seconds=settings.agent_log_retention_seconds,
+        )
 
 
 # ================================================================
@@ -732,7 +768,10 @@ def _create_web_search_tool() -> ToolDef:
 
 def create_default_registry() -> ToolRegistry:
     """创建带默认工具的注册中心"""
-    registry = ToolRegistry(dedup_window=30.0)
+    registry = ToolRegistry(
+        dedup_window=30.0,
+        max_sessions=settings.tool_dedup_max_sessions,
+    )
 
     # 注册内置工具
     registry.register(_create_search_kb_tool())

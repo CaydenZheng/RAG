@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # 精确缓存
     # ================================================================
     cache_db_path: str = Field(default="./data/cache.db", alias="CACHE_DB_PATH")
+    cache_max_entries: int = Field(
+        default=10000, ge=1, alias="CACHE_MAX_ENTRIES"
+    )
 
     # ================================================================
     # 检索参数
@@ -143,11 +146,23 @@ class Settings(BaseSettings):
         default=1000, ge=128, le=20000, alias="AGENT_MAX_TOOL_RESULT_LENGTH"
     )
     agent_verbose: bool = Field(default=True, alias="AGENT_VERBOSE")
+    tool_dedup_max_sessions: int = Field(
+        default=10000, ge=1, alias="TOOL_DEDUP_MAX_SESSIONS"
+    )
 
     # ================================================================
     # 日志
     # ================================================================
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    agent_log_max_bytes: int = Field(
+        default=10 * 1024 * 1024, ge=1, alias="AGENT_LOG_MAX_BYTES"
+    )
+    agent_log_backup_count: int = Field(
+        default=5, ge=0, alias="AGENT_LOG_BACKUP_COUNT"
+    )
+    agent_log_retention_seconds: int = Field(
+        default=7 * 24 * 60 * 60, ge=1, alias="AGENT_LOG_RETENTION_SECONDS"
+    )
 
     # ================================================================
     # 上传限制

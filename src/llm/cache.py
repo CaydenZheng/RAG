@@ -15,8 +15,13 @@ from config.settings import settings
 class LLMCache:
     """Store exact provider responses under a complete semantic key."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_entries: int | None = None) -> None:
         self._lock = threading.Lock()
+        self._max_entries = (
+            settings.cache_max_entries if max_entries is None else max_entries
+        )
+        if self._max_entries < 1:
+            raise ValueError("max_entries must be at least 1")
         self._fingerprint = self._load_fingerprint()
         self._init_db()
 
@@ -49,6 +54,10 @@ class LLMCache:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cache_created_at "
+                "ON cache(created_at)"
             )
             conn.commit()
 
@@ -94,6 +103,7 @@ class LLMCache:
         key = self._make_key(model, messages, temperature, **dimensions)
         with self._lock:
             with sqlite3.connect(str(settings.cache_db_path_resolved)) as conn:
+                self._prune(conn)
                 row = conn.execute(
                     "SELECT response FROM cache WHERE key = ?", (key,)
                 ).fetchone()
@@ -118,6 +128,7 @@ class LLMCache:
                     "INSERT OR REPLACE INTO cache (key, response) VALUES (?, ?)",
                     (key, response),
                 )
+                self._prune(conn)
                 conn.commit()
         logger.debug("Cache SET: key={}...", key[:8])
 
@@ -127,6 +138,20 @@ class LLMCache:
                 conn.execute("DELETE FROM cache")
                 conn.commit()
         logger.info("Cache cleared")
+
+    def _prune(self, conn: sqlite3.Connection) -> None:
+        """Remove oldest records beyond the configured capacity."""
+        conn.execute(
+            """
+            DELETE FROM cache
+            WHERE key IN (
+                SELECT key FROM cache
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (self._max_entries,),
+        )
 
 
 llm_cache = LLMCache()
