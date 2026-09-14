@@ -6,9 +6,10 @@ Prompt 管理器 — YAML 加载、版本切换、模板渲染。
     rendered = prompt_manager.render("answer_generation", query="...", context="...")
 """
 
-import yaml
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
+
+import yaml
 from loguru import logger
 
 from config.settings import settings

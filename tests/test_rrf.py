@@ -5,11 +5,13 @@ RRF 融合公式单元测试 — 覆盖 5 个场景。
     python tests/test_rrf.py
 """
 
+import importlib
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.utils.rrf import compute_rrf
+compute_rrf = importlib.import_module("src.utils.rrf").compute_rrf
 
 
 def test_single_source_vector_only():
