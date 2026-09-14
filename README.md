@@ -138,6 +138,7 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 | `CHROMA_PERSIST_DIR` | Chroma 持久化目录 |
 | `CACHE_DB_PATH`、`CACHE_MAX_ENTRIES` | 精确 LLM 缓存 SQLite 文件及最大记录数 |
 | `VECTOR_TOP_K`、`BM25_TOP_K`、`RRF_K`、`RERANK_TOP_K` | 候选召回、融合和精排预算 |
+| `ABSTENTION_THRESHOLDS`、`ABSTENTION_CALIBRATION_ID`、`ABSTENTION_CALIBRATION_MODELS` | 人工核验 final 报告校准的分模式阈值、报告哈希及模型绑定 |
 | `MAX_CONTEXT_TOKENS`、`SYSTEM_RESERVE_RATIO`、`CONTEXT_BUFFER_RATIO` | 上下文 Token 预算 |
 | `MAX_CONCURRENT_QUERIES`、`REQUEST_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES` | 请求容量、总时限和 Provider 重试 |
 | `ADMIN_API_KEY`、`ALLOW_UNAUTHENTICATED_ADMIN` | 索引管理密钥及仅限本地开发的显式免认证开关 |
@@ -289,12 +290,15 @@ uv run --no-sync --offline --no-env-file python scripts/run_eval.py --split deve
 # 四模式消融；只对人工核验后的 final 数据执行
 uv run --no-sync --offline --no-env-file python scripts/run_eval.py --split final --ablation
 
+# 从同一份人工核验 final 报告生成拒答阈值建议
+uv run --no-sync --offline --no-env-file python scripts/calibrate_abstention.py data/eval-runs/<report>.json
+
 # Ragas Faithfulness / Relevancy；先安装 eval 依赖，再执行模型评判
 uv sync --locked --no-default-groups --group eval
 uv run --no-sync --offline --no-env-file --group eval python scripts/run_eval.py --split final --with-ragas
 ```
 
-Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relevancy 只有显式启用 Ragas 才计算。开发集的小样本满分只能说明来源命中和引用格式通过。
+Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relevancy 只有显式启用 Ragas 才计算。报告同时给出正确拒答率、错误拒答率和应拒答样本的硬答率。开发集只能用于调试；阈值校准器拒绝非 final 报告，输出的 thresholds、calibration_id 与 models 必须一起配置，且模型必须与运行时一致。未配置阈值时，系统只对空检索结果确定性拒答，不根据任意固定分数拒答。
 
 ## 测试与 CI
 

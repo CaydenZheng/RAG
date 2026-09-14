@@ -215,8 +215,16 @@ class HybridRetrieverNode(Node):
         results = []
         for cid, rrf_score in top_n:
             if cid in chunk_map:
+                vector_hit = all_vector_hits.get(cid)
+                bm25_hit = all_bm25_hits.get(cid)
                 results.append({
                     **chunk_map[cid],
+                    "dense_score": (
+                        round(vector_hit[1], 4) if vector_hit else None
+                    ),
+                    "bm25_score": (
+                        round(bm25_hit[1], 4) if bm25_hit else None
+                    ),
                     "rrf_score": round(rrf_score, 4),
                 })
 

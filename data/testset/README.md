@@ -5,7 +5,7 @@
 | 文件 | 样本数 | 用途 | 当前审核状态 |
 |---|---:|---|---|
 | generated_test.json | 50 | 旧数据迁移后的开发集 | unverified |
-| review_queue_v1.json | 3 | 多跳、无答案、对抗覆盖候选 | unverified |
+| review_queue_v1.json | 6 | 多跳、无答案、对抗与三类域外拒答候选 | unverified |
 | final_v1.json | 0 | 可用于最终报告和发布门槛的冻结集 | 仅允许 human_verified |
 | manifest.json | — | 语料、文件、内容版本和划分目录 | 自动校验 |
 
@@ -18,15 +18,16 @@
 - 事实、实体、数字和时间问题；
 - Ada Lovelace 与 Abraham Lincoln 出生年份的跨文档多跳问题；
 - 带错误前提、应当拒答的 Ada Lovelace 问题；
-- 查询中包含注入指令的 aardvark 对抗问题。
+- 查询中包含注入指令的 aardvark 对抗问题；
+- 实时天气、实时价格和私有公司政策三类域外拒答问题。
 
-后三条也是 AI 编写的公开语料候选，仍需人工检查措辞、答案、证据和难度。
+审核队列中的六条记录均由 AI 编写，仍需人工检查措辞、答案、证据和难度。域外拒答记录允许 source_documents 与 evidence_quotes 为空，但只有人工确认它们确实超出冻结语料后才能进入 final。
 
 ## 人工审核与 final 晋级
 
 审核者应逐条完成以下操作：
 
-1. 打开所有 source_documents，确认 SHA 未变化，问题可由指定语料回答。
+1. 打开所有 source_documents，确认 SHA 未变化，问题可由指定语料回答；对无来源拒答样本，确认答案确实不在冻结语料中。
 2. 检查 evidence_quotes 是充分证据，答案没有遗漏、歧义或语料外知识。
 3. 检查 task_types；无答案样本必须使用 expected_behavior: abstain 和 ground_truth: null。
 4. 将通过的样本复制到 final_v1.json，把 split 改为 final，并填写真实的 reviewer 与 reviewed_at，状态改为 human_verified。

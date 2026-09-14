@@ -249,6 +249,12 @@ def test_hybrid_retrieval_keeps_one_scope_across_all_paths(
         "allowed-vector",
         "allowed-bm25",
     }
+    scores = {item["chunk_id"]: item for item in results}
+    assert scores["allowed-vector"]["dense_score"] == 0.9
+    assert scores["allowed-vector"]["bm25_score"] is None
+    assert scores["allowed-bm25"]["dense_score"] is None
+    assert scores["allowed-bm25"]["bm25_score"] == 5.0
+    assert all(item["rrf_score"] > 0 for item in results)
     assert bm25_calls == [
         {
             "query": "question",

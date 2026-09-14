@@ -231,8 +231,12 @@ def _validate_record(record: Any, *, index: int, repository_root: Path) -> None:
         raise DatasetValidationError(f"{label}: final samples must be human_verified")
 
     sources = record.get("source_documents")
-    if not isinstance(sources, list) or not sources:
-        raise DatasetValidationError(f"{label}.source_documents must be non-empty")
+    if not isinstance(sources, list):
+        raise DatasetValidationError(f"{label}.source_documents must be a list")
+    if expected_behavior == "answer" and not sources:
+        raise DatasetValidationError(
+            f"{label}.source_documents must be non-empty for answer samples"
+        )
     local_texts = []
     for source_index, source in enumerate(sources):
         if not isinstance(source, dict):
@@ -246,10 +250,18 @@ def _validate_record(record: Any, *, index: int, repository_root: Path) -> None:
             local_texts.append(source_text)
 
     quotes = record.get("evidence_quotes")
-    if not isinstance(quotes, list) or not quotes or not all(
+    if not isinstance(quotes, list) or not all(
         isinstance(quote, str) and quote.strip() for quote in quotes
     ):
-        raise DatasetValidationError(f"{label}.evidence_quotes must contain text")
+        raise DatasetValidationError(f"{label}.evidence_quotes must be a text list")
+    if sources and not quotes:
+        raise DatasetValidationError(
+            f"{label}.evidence_quotes must contain text for referenced sources"
+        )
+    if not sources and quotes:
+        raise DatasetValidationError(
+            f"{label}.evidence_quotes require source_documents"
+        )
     normalized_sources = [_canonical_text(text) for text in local_texts]
     if normalized_sources and any(
         not any(_canonical_text(quote) in text for text in normalized_sources)

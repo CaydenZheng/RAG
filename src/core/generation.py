@@ -34,6 +34,9 @@ _POSITION_KEYS = (
     "start_char",
     "end_char",
 )
+INSUFFICIENT_EVIDENCE_ANSWER = (
+    "There is not enough evidence in the indexed documents to answer this question."
+)
 
 
 def sanitize_answer_citations(answer: str, valid_refs: set[int]) -> str:
@@ -128,6 +131,7 @@ class AnswerInput:
     session_id: str
     valid_citation_refs: frozenset[int]
     index_version: str = LEGACY_INDEX_VERSION
+    abstain_reason: str = ""
 
     @classmethod
     def from_shared(cls, shared: dict) -> "AnswerInput":
@@ -140,6 +144,7 @@ class AnswerInput:
                 shared.get("valid_citation_refs", set())
             ),
             index_version=shared.get("index_version", LEGACY_INDEX_VERSION),
+            abstain_reason=shared.get("abstain_reason", ""),
         )
 
 
@@ -158,7 +163,24 @@ class AnswerService:
     def _config() -> dict:
         return prompt_manager.get_prompt_config("answer_generation")
 
+    @staticmethod
+    def _must_abstain(answer_input: AnswerInput) -> bool:
+        return bool(answer_input.abstain_reason and not answer_input.history)
+
+    @staticmethod
+    def _record_abstention(answer_input: AnswerInput) -> None:
+        tracer.add_span(
+            None,
+            "answer_generation",
+            skipped=True,
+            abstain_reason=answer_input.abstain_reason,
+        )
+
     async def generate(self, answer_input: AnswerInput) -> str:
+        if self._must_abstain(answer_input):
+            self._record_abstention(answer_input)
+            return INSUFFICIENT_EVIDENCE_ANSWER
+
         from src.infra.fallback import chat_with_fallback_async
 
         config = self._config()
@@ -176,6 +198,11 @@ class AnswerService:
         )
 
     async def stream(self, answer_input: AnswerInput) -> AsyncIterator[str]:
+        if self._must_abstain(answer_input):
+            self._record_abstention(answer_input)
+            yield INSUFFICIENT_EVIDENCE_ANSWER
+            return
+
         config = self._config()
         citation_guard = CitationStreamGuard(
             set(answer_input.valid_citation_refs)
@@ -350,6 +377,12 @@ class ContextBuilderNode(Node):
                 "rerank_score",
                 chunk.get("rrf_score", 0),
             ),
+            "scores": {
+                "dense": chunk.get("dense_score"),
+                "bm25": chunk.get("bm25_score"),
+                "rrf": chunk.get("rrf_score"),
+                "rerank": chunk.get("rerank_score"),
+            },
         }
 
     @classmethod

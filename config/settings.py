@@ -6,6 +6,7 @@ Pydantic Settings — 读取 .env 的所有配置项，提供类型校验与默�
     print(settings.llm_model)  # deepseek-chat
 """
 
+import math
 from pathlib import Path
 from typing import Optional, Self
 
@@ -88,6 +89,15 @@ class Settings(BaseSettings):
     vector_top_k: int = Field(default=20, ge=1, alias="VECTOR_TOP_K")
     bm25_top_k: int = Field(default=20, ge=1, alias="BM25_TOP_K")
     rerank_top_k: int = Field(default=10, ge=1, alias="RERANK_TOP_K")
+    abstention_thresholds: dict[str, float] = Field(
+        default_factory=dict, alias="ABSTENTION_THRESHOLDS"
+    )
+    abstention_calibration_id: str = Field(
+        default="", alias="ABSTENTION_CALIBRATION_ID"
+    )
+    abstention_calibration_models: dict[str, str] = Field(
+        default_factory=dict, alias="ABSTENTION_CALIBRATION_MODELS"
+    )
 
     # ================================================================
     # Token 预算
@@ -212,6 +222,56 @@ class Settings(BaseSettings):
             raise ValueError(
                 "ADMIN_API_KEY must be set unless ALLOW_UNAUTHENTICATED_ADMIN=true"
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_abstention_calibration(self) -> Self:
+        """Only accept finite thresholds tied to a reproducible calibration."""
+        supported_modes = {
+            "vector_only",
+            "bm25_only",
+            "hybrid",
+            "hybrid+rerank",
+        }
+        unknown_modes = set(self.abstention_thresholds) - supported_modes
+        if unknown_modes:
+            raise ValueError(
+                f"ABSTENTION_THRESHOLDS contains unknown modes: {sorted(unknown_modes)}"
+            )
+        if any(
+            not math.isfinite(threshold)
+            for threshold in self.abstention_thresholds.values()
+        ):
+            raise ValueError("ABSTENTION_THRESHOLDS must contain finite numbers")
+        if self.abstention_thresholds and not self.abstention_calibration_id.strip():
+            raise ValueError(
+                "ABSTENTION_CALIBRATION_ID is required when thresholds are configured"
+            )
+        if self.abstention_calibration_id and not self.abstention_thresholds:
+            raise ValueError(
+                "ABSTENTION_THRESHOLDS are required when a calibration ID is configured"
+            )
+        if self.abstention_calibration_models and not self.abstention_thresholds:
+            raise ValueError(
+                "ABSTENTION_THRESHOLDS are required when calibration models are configured"
+            )
+        if self.abstention_thresholds:
+            expected_models = {"embedding": self.local_embedding_model}
+            if "hybrid+rerank" in self.abstention_thresholds:
+                expected_models["reranker"] = self.rerank_model
+            mismatches = {
+                name: {
+                    "expected": expected,
+                    "configured": self.abstention_calibration_models.get(name),
+                }
+                for name, expected in expected_models.items()
+                if self.abstention_calibration_models.get(name) != expected
+            }
+            if mismatches:
+                raise ValueError(
+                    "ABSTENTION_CALIBRATION_MODELS do not match runtime models: "
+                    f"{mismatches}"
+                )
         return self
 
     @model_validator(mode="after")

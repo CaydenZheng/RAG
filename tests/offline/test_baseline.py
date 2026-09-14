@@ -130,7 +130,8 @@ def test_host_configuration_cannot_override_defaults(
     assert defaults.admin_api_key.get_secret_value() == "offline-admin-key"
     for name, field in Settings.model_fields.items():
         if not field.is_required() and name != "admin_api_key":
-            assert getattr(defaults, name) == field.default, name
+            expected = field.get_default(call_default_factory=True)
+            assert getattr(defaults, name) == expected, name
     assert os.environ["OFFLINE_TEST_SYSTEM_SENTINEL"] == "preserved"
 
 

@@ -28,7 +28,10 @@ def test_catalog_separates_unverified_candidates_from_final_data() -> None:
 
     development = catalog.records_for("development")
     final = catalog.records_for("final")
-    assert len(development) == 53
+    assert len(development) == 56
+    assert sum(
+        sample["expected_behavior"] == "abstain" for sample in development
+    ) == 4
     assert final == ()
     assert {task for sample in development for task in sample["task_types"]} == set(
         ALLOWED_TASK_TYPES
@@ -83,6 +86,24 @@ def test_unanswerable_sample_requires_abstention_semantics(tmp_path: Path) -> No
     path = tmp_path / "answerable.json"
     with pytest.raises(DatasetValidationError, match="must pair unanswerable"):
         write_dataset(path, invalid, repository_root=REPOSITORY_ROOT)
+
+
+def test_out_of_corpus_abstention_may_have_no_source(tmp_path: Path) -> None:
+    source = json.loads(
+        (REPOSITORY_ROOT / "data/testset/review_queue_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    sample = next(item for item in source if item["id"] == "candidate-v1-current-weather")
+
+    dataset = write_dataset(
+        tmp_path / "unanswerable.json",
+        [sample],
+        repository_root=REPOSITORY_ROOT,
+    )
+
+    assert dataset.records[0]["source_documents"] == []
+    assert dataset.records[0]["evidence_quotes"] == []
 
 
 def test_source_hashes_are_independent_of_platform_newlines(tmp_path: Path) -> None:

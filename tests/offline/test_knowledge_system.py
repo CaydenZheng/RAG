@@ -226,4 +226,5 @@ def test_retrieval_reports_bm25_status_only_when_requested(
 
     result = asyncio.run(system.retrieve("question", mode=mode))
 
-    assert result.warnings == expected_warnings
+    assert result.warnings == (*expected_warnings, "insufficient_evidence")
+    assert result.evidence.reason == "no_retrieval_results"

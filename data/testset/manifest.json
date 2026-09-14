@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_version": "sha256:6c044779ac4947245869d3c151f5a12aaa56f1e020fbb5a4c79b790579777aa9",
+  "catalog_version": "sha256:16edb82a709c2f03ddb665ad6e7077cde83bbc9e8cab734b9c252ccd476d53b4",
   "description": "Evaluation data catalog. AI-generated samples remain development candidates until a named human reviewer verifies them.",
   "required_task_types": [
     "adversarial",
@@ -37,9 +37,9 @@
       "path": "data/testset/review_queue_v1.json",
       "split": "development",
       "review_status": "unverified",
-      "sample_count": 3,
-      "dataset_version": "sha256:64383d1a6046cd828b734c0fbf37228faca59a2002a42f678d4c6fe743e1d9fd",
-      "sha256": "92e9a122a61494a7138a8532cefdaf24975897b5fb29c030a17e16c0485d9a3e"
+      "sample_count": 6,
+      "dataset_version": "sha256:ce3ba31657a61205ae3eb4d6469200f1aca4c3d343e17e9dd5135432193083dc",
+      "sha256": "3bd982c9f23183c697cd613aad2f5f311a8807b12a148ba535a6d3a6f0ddbd02"
     },
     {
       "name": "human_verified_final_v1",

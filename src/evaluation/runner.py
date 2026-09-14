@@ -85,6 +85,7 @@ class AnswerGenerator(Protocol):
         query: str,
         chunks: list[dict[str, Any]],
         index_version: str,
+        abstain_reason: str,
     ) -> GeneratedAnswer: ...
 
 
@@ -105,6 +106,7 @@ class CoreAnswerGenerator:
         query: str,
         chunks: list[dict[str, Any]],
         index_version: str,
+        abstain_reason: str,
     ) -> GeneratedAnswer:
         prepared = self._context_builder.exec((chunks, ""))
         answer = await answer_service.generate(
@@ -115,6 +117,7 @@ class CoreAnswerGenerator:
                 session_id="",
                 valid_citation_refs=frozenset(prepared["valid_citation_refs"]),
                 index_version=index_version,
+                abstain_reason=abstain_reason,
             )
         )
         return GeneratedAnswer(
@@ -240,6 +243,11 @@ def capture_reproducibility(
             "bm25_top_k": settings.bm25_top_k,
             "rerank_top_k": settings.rerank_top_k,
             "rerank_timeout_seconds": settings.rerank_timeout_seconds,
+            "abstention_thresholds": dict(settings.abstention_thresholds),
+            "abstention_calibration_id": settings.abstention_calibration_id,
+            "abstention_calibration_models": dict(
+                settings.abstention_calibration_models
+            ),
             "max_context_tokens": settings.max_context_tokens,
         },
         "environment": {
@@ -419,6 +427,8 @@ class EvaluationRunner:
         context = ""
         sources: list[dict[str, Any]] = []
         chunks: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
+        evidence: dict[str, Any] = {}
         query_variants: list[str] = []
         warnings: list[str] = []
         index_version = "unavailable"
@@ -431,6 +441,8 @@ class EvaluationRunner:
                 mode=mode,
             )
             chunks = list(retrieval.chunks)
+            candidates = list(retrieval.candidates)
+            evidence = retrieval.evidence.to_dict()
             query_variants = list(retrieval.query_variants)
             warnings = list(retrieval.warnings)
             index_version = retrieval.index_version
@@ -438,6 +450,7 @@ class EvaluationRunner:
                 sample["question"],
                 chunks,
                 index_version,
+                "" if retrieval.evidence.sufficient else retrieval.evidence.reason,
             )
             answer = generated.answer
             context = generated.context
@@ -465,6 +478,8 @@ class EvaluationRunner:
             "context": context,
             "sources": serialized_sources,
             "retrieved_chunks": serialized_chunks,
+            "retrieval_candidates": _json_safe(candidates),
+            "evidence": _json_safe(evidence),
             "query_variants": query_variants,
             "warnings": warnings,
             "index_version": index_version,

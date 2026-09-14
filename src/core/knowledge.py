@@ -1,9 +1,11 @@
 """Unified retrieval interface for HTTP, Agent, and evaluation callers."""
 
 import asyncio
+import math
 import time
-from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol, cast
 
 from chromadb.api.types import validate_where
 from loguru import logger
@@ -26,6 +28,12 @@ RetrievalMode = Literal[
     "hybrid",
     "hybrid+rerank",
 ]
+RETRIEVAL_SCORE_FIELDS: dict[RetrievalMode, str] = {
+    "vector_only": "dense_score",
+    "bm25_only": "bm25_score",
+    "hybrid": "rrf_score",
+    "hybrid+rerank": "rerank_score",
+}
 
 RETRIEVAL_MODES = frozenset(
     {"vector_only", "bm25_only", "hybrid", "hybrid+rerank"}
@@ -97,6 +105,89 @@ class CandidateReranker(Protocol):
 
 
 @dataclass(frozen=True)
+class EvidenceDecision:
+    """Explain whether retrieved chunks may be used as answer evidence."""
+
+    sufficient: bool
+    reason: str
+    score_name: str
+    observed_score: float | None
+    threshold: float | None
+    calibration_id: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sufficient": self.sufficient,
+            "reason": self.reason,
+            "score_name": self.score_name,
+            "observed_score": self.observed_score,
+            "threshold": self.threshold,
+            "calibration_id": self.calibration_id,
+        }
+
+
+class EvidencePolicy:
+    """Apply mode-specific thresholds only after an explicit calibration."""
+
+    def __init__(
+        self,
+        thresholds: Mapping[str, float] | None = None,
+        *,
+        calibration_id: str = "",
+    ) -> None:
+        self._thresholds = dict(thresholds or {})
+        self._calibration_id = calibration_id
+
+    def evaluate(
+        self,
+        mode: RetrievalMode,
+        chunks: list[dict],
+        warnings: tuple[str, ...] | list[str],
+    ) -> EvidenceDecision:
+        score_name = RETRIEVAL_SCORE_FIELDS[mode]
+        threshold = self._thresholds.get(mode)
+        scores: list[float] = []
+        for chunk in chunks:
+            raw_score = chunk.get(score_name)
+            if isinstance(raw_score, int | float) and not isinstance(raw_score, bool):
+                score = float(raw_score)
+                if math.isfinite(score):
+                    scores.append(score)
+        observed_score = max(scores) if scores else None
+
+        if not chunks:
+            sufficient = False
+            reason = "no_retrieval_results"
+        elif threshold is None:
+            sufficient = True
+            reason = "threshold_not_calibrated"
+        elif mode == "hybrid+rerank" and any(
+            warning in {"rerank_timeout", "rerank_unavailable"}
+            for warning in warnings
+        ):
+            sufficient = True
+            reason = "rerank_degraded"
+        elif observed_score is None:
+            sufficient = True
+            reason = "score_unavailable"
+        elif observed_score < threshold:
+            sufficient = False
+            reason = "score_below_threshold"
+        else:
+            sufficient = True
+            reason = "score_at_or_above_threshold"
+
+        return EvidenceDecision(
+            sufficient=sufficient,
+            reason=reason,
+            score_name=score_name,
+            observed_score=observed_score,
+            threshold=threshold,
+            calibration_id=self._calibration_id,
+        )
+
+
+@dataclass(frozen=True)
 class RetrievalResult:
     """Observable result of one complete retrieval request."""
 
@@ -106,6 +197,16 @@ class RetrievalResult:
     chunks: list[dict]
     warnings: tuple[str, ...] = ()
     index_version: str = LEGACY_INDEX_VERSION
+    evidence: EvidenceDecision = field(
+        default_factory=lambda: EvidenceDecision(
+            sufficient=True,
+            reason="not_evaluated",
+            score_name="",
+            observed_score=None,
+            threshold=None,
+            calibration_id="",
+        )
+    )
 
 
 class KnowledgeSystem:
@@ -116,10 +217,15 @@ class KnowledgeSystem:
         rewriter: QueryRewriter | None = None,
         retriever: CandidateRetriever | None = None,
         reranker: CandidateReranker | None = None,
+        evidence_policy: EvidencePolicy | None = None,
     ) -> None:
         self._rewriter = rewriter or QueryRewriterNode()
         self._retriever = retriever or HybridRetrieverNode()
         self._reranker = reranker or RerankerNode()
+        self._evidence_policy = evidence_policy or EvidencePolicy(
+            settings.abstention_thresholds,
+            calibration_id=settings.abstention_calibration_id,
+        )
 
     async def retrieve(
         self,
@@ -244,6 +350,23 @@ class KnowledgeSystem:
             skipped=mode != "hybrid+rerank" or not candidates,
         )
 
+        evidence = self._evidence_policy.evaluate(mode, chunks, warnings)
+        if not evidence.sufficient:
+            chunks = []
+            warnings.append("insufficient_evidence")
+        elif evidence.reason == "score_unavailable":
+            warnings.append("evidence_score_unavailable")
+        tracer.add_span(
+            None,
+            "evidence_gate",
+            sufficient=evidence.sufficient,
+            reason=evidence.reason,
+            score_name=evidence.score_name,
+            observed_score=evidence.observed_score,
+            threshold=evidence.threshold,
+            calibration_id=evidence.calibration_id,
+        )
+
         return RetrievalResult(
             query=query,
             query_variants=variants,
@@ -251,6 +374,7 @@ class KnowledgeSystem:
             chunks=chunks,
             warnings=tuple(warnings),
             index_version=index_version,
+            evidence=evidence,
         )
 
     @staticmethod

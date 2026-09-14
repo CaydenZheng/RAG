@@ -150,6 +150,9 @@ def test_no_answer_and_summary_metrics_are_deterministic() -> None:
     assert summary["task_success_rate"] == 1.0
     assert summary["no_answer"]["abstention_precision"] == 1.0
     assert summary["no_answer"]["abstention_recall"] == 1.0
+    assert summary["no_answer"]["correct_abstention_rate"] == 1.0
+    assert summary["no_answer"]["false_abstention_rate"] == 0.0
+    assert summary["no_answer"]["hard_answer_rate"] == 0.0
     assert summary["latency_ms"] == {"p50": 20.0, "p95": 29.0}
     assert summary["error_rate"] == 0.0
     assert summary["usage"]["total_tokens"] == 27
@@ -180,8 +183,12 @@ def test_runner_calls_unified_core_and_applies_opt_in_judge(
             )
 
     class FakeAnswerGenerator:
-        async def generate(self, query, chunks, index_version) -> GeneratedAnswer:
-            calls.append(("generate", query, len(chunks), index_version))
+        async def generate(
+            self, query, chunks, index_version, abstain_reason
+        ) -> GeneratedAnswer:
+            calls.append(
+                ("generate", query, len(chunks), index_version, abstain_reason)
+            )
             return evaluation_runner_module.GeneratedAnswer(
                 answer="Ada Lovelace was born in 1815 [1].",
                 context="context",
@@ -253,3 +260,41 @@ def test_report_write_is_complete_json(
 
     assert json.loads(destination.read_text(encoding="utf-8")) == report
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_no_answer_summary_separates_both_error_directions() -> None:
+    def result(expected_behavior: str, abstained: bool) -> dict:
+        return {
+            "expected_behavior": expected_behavior,
+            "task_types": ["unanswerable" if expected_behavior == "abstain" else "factual"],
+            "metrics": {
+                "abstained": abstained,
+                "task_success": expected_behavior == "abstain" and abstained,
+                "mrr": 0.0,
+                "citation_validity": None,
+                "citation_correctness": None,
+                "citation_completeness": None,
+                "faithfulness": None,
+                "relevancy": None,
+                "recall@1": 0.0,
+                "ndcg@1": 0.0,
+            },
+            "latency_ms": 0,
+            "usage": {},
+            "cost_usd": None,
+            "error_code": "",
+        }
+
+    summary = summarize_results(
+        [
+            result("abstain", True),
+            result("abstain", False),
+            result("answer", True),
+            result("answer", False),
+        ],
+        k_values=(1,),
+    )
+
+    assert summary["no_answer"]["correct_abstention_rate"] == 0.5
+    assert summary["no_answer"]["false_abstention_rate"] == 0.5
+    assert summary["no_answer"]["hard_answer_rate"] == 0.5

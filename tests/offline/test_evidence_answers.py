@@ -101,6 +101,12 @@ def test_context_history_and_evidence_share_one_budget(
             "position": {"chunk_index": 4, "page": 2},
             "text": "alpha beta",
             "score": 0.9,
+            "scores": {
+                "dense": None,
+                "bm25": None,
+                "rrf": None,
+                "rerank": 0.9,
+            },
         }
     ]
     assert "[1] Source: guide.md" in result["context"]
