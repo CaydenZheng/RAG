@@ -17,7 +17,16 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 ALLOWED_TASK_TYPES = frozenset(
-    {"factual", "entity", "numeric", "temporal", "multi_hop", "unanswerable", "adversarial"}
+    {
+        "factual",
+        "entity",
+        "numeric",
+        "temporal",
+        "multi_fact",
+        "multi_hop",
+        "unanswerable",
+        "adversarial",
+    }
 )
 ALLOWED_SPLITS = frozenset({"development", "final"})
 ALLOWED_REVIEW_STATUSES = frozenset({"unverified", "ai_screened", "human_verified", "rejected"})
@@ -261,6 +270,17 @@ def _validate_record(record: Any, *, index: int, repository_root: Path) -> None:
     if not sources and quotes:
         raise DatasetValidationError(
             f"{label}.evidence_quotes require source_documents"
+        )
+    source_ids = {
+        str(source.get("path") or source.get("uri")) for source in sources
+    }
+    if "multi_fact" in task_types and len(source_ids) != 1:
+        raise DatasetValidationError(
+            f"{label}.multi_fact requires exactly one source document"
+        )
+    if "multi_hop" in task_types and len(source_ids) < 2:
+        raise DatasetValidationError(
+            f"{label}.multi_hop requires at least two distinct source documents"
         )
     normalized_sources = [_canonical_text(text) for text in local_texts]
     if normalized_sources and any(

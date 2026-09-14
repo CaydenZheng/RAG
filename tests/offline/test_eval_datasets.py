@@ -36,6 +36,16 @@ def test_catalog_separates_unverified_candidates_from_final_data() -> None:
     assert {task for sample in development for task in sample["task_types"]} == set(
         ALLOWED_TASK_TYPES
     )
+    multi_fact = [
+        sample for sample in development if "multi_fact" in sample["task_types"]
+    ]
+    multi_hop = [
+        sample for sample in development if "multi_hop" in sample["task_types"]
+    ]
+    assert len(multi_fact) == 31
+    assert all(len(sample["source_documents"]) == 1 for sample in multi_fact)
+    assert len(multi_hop) == 1
+    assert len(multi_hop[0]["source_documents"]) == 2
     assert all(sample["review"]["status"] != "human_verified" for sample in development)
 
 
@@ -51,6 +61,64 @@ def test_legacy_ai_samples_are_preserved_and_labelled_unverified() -> None:
     assert all(sample["provenance"]["origin"] == "ai_generated" for sample in dataset.records)
     assert all(sample["provenance"]["model"] == "unknown" for sample in dataset.records)
     assert all(sample["review"]["status"] == "unverified" for sample in dataset.records)
+
+
+def test_multi_hop_requires_two_distinct_source_documents(tmp_path: Path) -> None:
+    records = json.loads(
+        (REPOSITORY_ROOT / "data/testset/review_queue_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    sample = copy.deepcopy(
+        next(item for item in records if "multi_hop" in item["task_types"])
+    )
+    sample["source_documents"] = [
+        sample["source_documents"][0],
+        copy.deepcopy(sample["source_documents"][0]),
+    ]
+    sample["evidence_quotes"] = [sample["evidence_quotes"][0]]
+
+    with pytest.raises(
+        DatasetValidationError,
+        match="multi_hop requires at least two distinct source documents",
+    ):
+        write_dataset(
+            tmp_path / "invalid-multi-hop.json",
+            [sample],
+            repository_root=REPOSITORY_ROOT,
+        )
+
+
+def test_multi_fact_requires_exactly_one_source_document(tmp_path: Path) -> None:
+    generated = json.loads(
+        (REPOSITORY_ROOT / "data/testset/generated_test.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    review_queue = json.loads(
+        (REPOSITORY_ROOT / "data/testset/review_queue_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    sample = copy.deepcopy(
+        next(item for item in generated if "multi_fact" in item["task_types"])
+    )
+    cross_document = next(
+        item for item in review_queue if "multi_hop" in item["task_types"]
+    )
+    sample["source_documents"].append(
+        copy.deepcopy(cross_document["source_documents"][1])
+    )
+
+    with pytest.raises(
+        DatasetValidationError,
+        match="multi_fact requires exactly one source document",
+    ):
+        write_dataset(
+            tmp_path / "invalid-multi-fact.json",
+            [sample],
+            repository_root=REPOSITORY_ROOT,
+        )
 
 
 def test_source_hash_tampering_is_rejected(tmp_path: Path) -> None:
@@ -115,6 +183,11 @@ def test_source_hashes_are_independent_of_platform_newlines(tmp_path: Path) -> N
         (REPOSITORY_ROOT / "data/testset/review_queue_v1.json").read_text(encoding="utf-8")
     )
     sample: dict[str, Any] = copy.deepcopy(records[0])
+    sample["task_types"] = [
+        task_type
+        for task_type in sample["task_types"]
+        if task_type != "multi_hop"
+    ]
     sample["source_documents"] = [
         {
             "path": source_path.name,

@@ -200,7 +200,7 @@ def capture_reproducibility(
     """Capture every material input without serializing secrets."""
     lock_path = project_root / "uv.lock"
     pyproject_path = project_root / "pyproject.toml"
-    status = _git_output(project_root, "status", "--porcelain", "--untracked-files=no")
+    status = _git_output(project_root, "status", "--porcelain", "--untracked-files=all")
     diff = _git_output(project_root, "diff", "--binary", "HEAD")
     datasets = [
         {
@@ -349,6 +349,20 @@ class EvaluationRunner:
             rng.shuffle(records)
             records = records[: config.sample_limit]
 
+        reproducibility = capture_reproducibility(
+            catalog,
+            config,
+            self._project_root,
+        )
+        code_metadata = reproducibility.get("code") or {}
+        if config.split == "final" and (
+            code_metadata.get("git_commit") in {None, "", "unavailable"}
+            or code_metadata.get("dirty") is not False
+        ):
+            raise ValueError(
+                "final evaluation requires a clean working tree and a committed code SHA"
+            )
+
         run_id = f"eval-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         started_at = datetime.now(UTC).isoformat()
         report = {
@@ -360,11 +374,7 @@ class EvaluationRunner:
                 "name": self._judge.name if self._judge else None,
                 "status": "enabled" if self._judge else "not_run",
             },
-            "reproducibility": capture_reproducibility(
-                catalog,
-                config,
-                self._project_root,
-            ),
+            "reproducibility": reproducibility,
             "metric_definitions": {
                 "retrieval": "Unique expected source documents recovered at rank K.",
                 "citations": "Inline references that point to and cover expected source documents.",

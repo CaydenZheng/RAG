@@ -16,7 +16,8 @@
 当前开发候选覆盖：
 
 - 事实、实体、数字和时间问题；
-- Ada Lovelace 与 Abraham Lincoln 出生年份的跨文档多跳问题；
+- 31 条单文档组合事实 `multi_fact` 问题；
+- Ada Lovelace 与 Abraham Lincoln 出生年份的跨文档 `multi_hop` 问题；
 - 带错误前提、应当拒答的 Ada Lovelace 问题；
 - 查询中包含注入指令的 aardvark 对抗问题；
 - 实时天气、实时价格和私有公司政策三类域外拒答问题。
@@ -29,15 +30,15 @@
 
 1. 打开所有 source_documents，确认 SHA 未变化，问题可由指定语料回答；对无来源拒答样本，确认答案确实不在冻结语料中。
 2. 检查 evidence_quotes 是充分证据，答案没有遗漏、歧义或语料外知识。
-3. 检查 task_types；无答案样本必须使用 expected_behavior: abstain 和 ground_truth: null。
+3. 检查 task_types；`multi_fact` 必须是单文档组合事实，`multi_hop` 必须需要至少两个不同来源；无答案样本必须使用 expected_behavior: abstain 和 ground_truth: null。
 4. 将通过的样本复制到 final_v1.json，把 split 改为 final，并填写真实的 reviewer 与 reviewed_at，状态改为 human_verified。
 5. 重新计算数据和 catalog 版本并运行校验。任何未经人工确认的记录都会被 final 规则拒绝。
 
-自动检查只验证结构、哈希、证据存在性、版本和划分规则。它不会判断问题是否自然、答案是否完整，也不等同于人工审核。
+自动检查验证结构、哈希、证据存在性、版本、划分以及 `multi_fact`/`multi_hop` 的来源数量约束。它不会判断问题是否自然、是否真的需要组合事实、答案是否完整，也不等同于人工审核。
 
 离线校验命令：
 
-    uv run --no-sync python scripts/validate_eval_dataset.py
-    uv run --no-sync pytest tests/offline/test_eval_datasets.py -q
+    uv run --no-sync --offline --no-env-file python scripts/validate_eval_dataset.py
+    uv run --no-sync --offline --no-env-file pytest tests/offline/test_eval_datasets.py -q
 
 新增 AI 数据由 scripts/generate_testset.py 写入独立的 generated_candidates.json，默认固定抽样 seed，并记录模型、Prompt 版本、时间、来源和生成上下文。Natural Questions 导入脚本会跳过缺少短答案的记录，不再把问题本身错误地当作答案。
