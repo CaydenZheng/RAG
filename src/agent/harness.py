@@ -80,7 +80,7 @@ class AgentConfig:
         )
 
 
-class _AgentLimitError(RuntimeError):
+class _AgentExecutionError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
@@ -104,7 +104,7 @@ class _RunBudget:
         # a tokenizer download in the request path.
         self.tokens_used += max(len(text), 1)
         if self.tokens_used > self.token_limit:
-            raise _AgentLimitError(
+            raise _AgentExecutionError(
                 "agent_token_budget_exceeded",
                 "Agent token budget was exceeded.",
             )
@@ -112,7 +112,7 @@ class _RunBudget:
     def reserve_output(self, requested: int) -> int:
         remaining = self.tokens_remaining
         if remaining < 1:
-            raise _AgentLimitError(
+            raise _AgentExecutionError(
                 "agent_token_budget_exceeded",
                 "Agent token budget was exceeded.",
             )
@@ -122,7 +122,7 @@ class _RunBudget:
 
     def consume_tool(self) -> None:
         if self.tools_used >= self.tool_limit:
-            raise _AgentLimitError(
+            raise _AgentExecutionError(
                 "agent_tool_budget_exceeded",
                 "Agent tool-call budget was exceeded.",
             )
@@ -218,7 +218,7 @@ class AgentHarness:
 
         try:
             if not user_message.strip():
-                raise _AgentLimitError(
+                raise _AgentExecutionError(
                     "invalid_agent_message",
                     "Agent message cannot be empty.",
                 )
@@ -376,7 +376,7 @@ class AgentHarness:
                 if action == "final_answer":
                     answer = plan.get("answer")
                     if not isinstance(answer, str) or not answer.strip():
-                        raise _AgentLimitError(
+                        raise _AgentExecutionError(
                             "invalid_agent_plan",
                             "Agent planner returned an invalid answer.",
                         )
@@ -386,7 +386,7 @@ class AgentHarness:
                     )
                     break
 
-                raise _AgentLimitError(
+                raise _AgentExecutionError(
                     "invalid_agent_plan",
                     "Agent planner returned an invalid action.",
                 )
@@ -463,7 +463,7 @@ class AgentHarness:
                 error_code="agent_timeout",
                 message="Agent request timed out.",
             )
-        except _AgentLimitError as exc:
+        except _AgentExecutionError as exc:
             tracer.record_error(exc.code)
             self._fire_hook(
                 HookEvent.ON_ERROR,
@@ -654,13 +654,22 @@ class AgentHarness:
         }
         try:
             with tracer.stage("agent_final_generation"):
-                return await llm_client.chat_async(
+                answer: str = await llm_client.chat_async(
                     [*messages, prompt],
                     temperature=0.3,
                     max_tokens=max_tokens,
                 )
-        except Exception:
-            return "I was unable to complete the task within the allowed steps."
+        except Exception as exc:
+            raise _AgentExecutionError(
+                "agent_final_generation_failed",
+                "Agent final answer generation failed.",
+            ) from exc
+        if not answer.strip():
+            raise _AgentExecutionError(
+                "agent_final_generation_failed",
+                "Agent final answer generation failed.",
+            )
+        return answer
 
     def _fire_hook(
         self,

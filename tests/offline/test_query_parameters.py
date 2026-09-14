@@ -218,6 +218,45 @@ def test_knowledge_system_rejects_invalid_parameters_before_retrieval(
         asyncio.run(system.retrieve("probe", **kwargs))
 
 
+def test_agent_stream_uses_post_json_body(
+    isolated_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app as api
+    from src.core.agent_runtime import AgentEvent, AgentEventKind, AgentResponse
+
+    calls: list[tuple[str, str]] = []
+
+    class AgentRuntime:
+        async def events(
+            self, session_id: str, message: str
+        ) -> AsyncIterator[AgentEvent]:
+            calls.append((session_id, message))
+            yield AgentEvent(
+                AgentEventKind.DONE,
+                response=AgentResponse(session_id, "answer"),
+            )
+
+    monkeypatch.setattr(api, "agent_runtime", AgentRuntime())
+    client = TestClient(api.app)
+    try:
+        response = client.post(
+            "/agent/chat/stream",
+            json={"message": "probe", "session_id": "public-session"},
+        )
+        get_response = client.get(
+            "/agent/chat/stream",
+            params={"message": "probe", "session_id": "public-session"},
+        )
+    finally:
+        client.close()
+
+    assert response.status_code == 200
+    assert calls[0][1] == "probe"
+    assert "\"done\": true" in response.text
+    assert get_response.status_code == 405
+
+
 def test_sync_agent_rejects_out_of_range_top_k(
     isolated_runtime: Path,
 ) -> None:
@@ -264,7 +303,7 @@ def test_async_agent_rejects_invalid_mode(
         ("POST", "/query", "query"),
         ("GET", "/query/stream", "query"),
         ("POST", "/agent/chat", "message"),
-        ("GET", "/agent/chat/stream", "message"),
+        ("POST", "/agent/chat/stream", "message"),
     ],
 )
 def test_public_query_and_agent_inputs_reject_invalid_lengths_before_runtime(
@@ -311,7 +350,7 @@ def test_public_query_and_agent_inputs_reject_invalid_lengths_before_runtime(
         ("POST", "/query", "query"),
         ("GET", "/query/stream", "query"),
         ("POST", "/agent/chat", "message"),
-        ("GET", "/agent/chat/stream", "message"),
+        ("POST", "/agent/chat/stream", "message"),
     ],
 )
 def test_public_query_and_agent_inputs_accept_length_boundaries(

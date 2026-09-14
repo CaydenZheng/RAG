@@ -207,9 +207,11 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `POST` | `/agent/chat` | 普通 Agent 对话 |
-| `GET` | `/agent/chat/stream` | `planning → tool_call → tool_done → chunk → done` 事件流 |
+| `POST` | `/agent/chat/stream` | `planning → tool_call → tool_done → chunk → done` 事件流；答案完整生成后分块发送，不是 Provider 首 Token 流式 |
 | `POST` | `/agent/reset?session_id=...` | 清除当前客户端的 Agent 会话 |
 | `GET` | `/agent/memory/{session_id}` | 查看受当前客户端约束的记忆摘要 |
+
+若强制最终回答生成失败，Agent 返回 `agent_final_generation_failed`，记录失败 Trace，且不写入本轮历史。
 
 示例：
 
