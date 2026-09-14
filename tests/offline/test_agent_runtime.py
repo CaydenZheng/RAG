@@ -296,6 +296,61 @@ def test_iteration_budget_forces_one_terminal_answer(
     assert events[-1].response.answer == "bounded final answer"
     assert len(tools.calls) == 1
 
+@pytest.mark.parametrize("failure_mode", ["exception", "blank"])
+def test_forced_final_answer_failure_is_error_and_saves_no_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+) -> None:
+    from src.agent import harness as harness_module
+    from src.core.agent_runtime import AgentEvent, AgentEventKind
+    from src.infra.tracer import TraceLogger
+    from src.llm import llm_client
+
+    harness, memory, _ = _runtime(tmp_path, max_iterations=1)
+    provider_calls = 0
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        nonlocal provider_calls
+        provider_calls += 1
+        if provider_calls == 1:
+            return json.dumps(
+                {
+                    "action": "tool_call",
+                    "tool_name": "lookup",
+                    "tool_params": {"key": "value"},
+                }
+            )
+        if failure_mode == "blank":
+            return "   "
+        raise RuntimeError("provider-secret")
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    local = TraceLogger(tmp_path / "agent-final-failure.jsonl")
+    monkeypatch.setattr(harness_module, "tracer", local)
+    trace = local.start_trace(
+        "request-id", "/agent/chat/stream", trace_id="trace-id"
+    )
+
+    async def consume() -> list[AgentEvent]:
+        token = local.bind(trace)
+        try:
+            return [
+                event
+                async for event in harness.events("failed-final", "question")
+            ]
+        finally:
+            local.reset(token)
+
+    events = asyncio.run(consume())
+
+    assert events[-1].kind is AgentEventKind.ERROR
+    assert events[-1].error_code == "agent_final_generation_failed"
+    assert memory.load_history("failed-final") == []
+    assert trace["status"] == "error"
+    assert trace["error_code"] == "agent_final_generation_failed"
+
+
 def test_total_deadline_cancels_planning_without_saving_partial_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

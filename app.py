@@ -8,6 +8,7 @@ FastAPI 服务入口。
   POST /query           检索问答
   POST /upload          上传文档（触发增量索引）
   POST /agent/chat      Agent 对话（Plan-Execute-Observe）
+  POST /agent/chat/stream  Agent 执行事件流
   POST /agent/reset     重置 Agent 会话
   GET  /agent/memory/{id}  查看 Agent 记忆（调试）
 
@@ -20,6 +21,7 @@ import json
 import sys
 import time
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -418,19 +420,15 @@ async def agent_chat(req: AgentChatRequest, request: Request):
     payload["session_id"] = session.public_id
     return AgentChatResponse(**payload)
 
-@app.get("/agent/chat/stream")
+
+@app.post("/agent/chat/stream")
 async def agent_chat_stream(
-    request: Request,
-    message: str = Query(
-        min_length=USER_INPUT_MIN_LENGTH,
-        max_length=USER_INPUT_MAX_LENGTH,
-    ),
-    session_id: str = "",
-):
+    req: AgentChatRequest, request: Request
+) -> StreamingResponse:
     """
     Agent 流式对话端点（SSE）。
 
-    实时推送 Agent 思考过程：planning → tool_call → tool_done → chunk → done。
+    实时推送 Agent 执行事件；最终答案完整生成后按词发送 chunk。
 
     输出格式:
       data: {"step": "planning", "iteration": 1}
@@ -440,13 +438,13 @@ async def agent_chat_stream(
       data: {"done": true, ...}
     """
     session = scope_request_session(
-        request, session_id or uuid.uuid4().hex, "agent"
+        request, req.session_id or uuid.uuid4().hex, "agent"
     )
 
-    async def event_stream():
+    async def event_stream() -> AsyncIterator[str]:
         yield "retry: 3000\n\n"
         async for event in agent_runtime.events(
-            session.storage_id, message
+            session.storage_id, req.message
         ):
             payload = event.to_dict()
             if payload.get("done"):
@@ -511,5 +509,5 @@ if __name__ == "__main__":
     logger.info("  RAG Stream endpoint: GET  /query/stream")
     logger.info("  Session endpoint:    POST /session/reset  GET /session/{id}")
     logger.info("  Agent endpoint:      POST /agent/chat")
-    logger.info("  Agent Stream:        GET  /agent/chat/stream")
+    logger.info("  Agent Stream:        POST /agent/chat/stream")
     uvicorn.run(app, host="0.0.0.0", port=8000)

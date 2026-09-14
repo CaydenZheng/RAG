@@ -229,9 +229,9 @@ def test_every_http_session_entry_rejects_invalid_ids(
             "/agent/chat",
             json={"message": "probe", "session_id": invalid_id},
         ),
-        client.get(
+        client.post(
             "/agent/chat/stream",
-            params={"message": "probe", "session_id": invalid_id},
+            json={"message": "probe", "session_id": invalid_id},
         ),
         client.post("/agent/reset", params={"session_id": invalid_id}),
         client.get(f"/agent/memory/{path_id}"),
@@ -282,9 +282,9 @@ def test_agent_stream_returns_public_id_without_leaking_storage_key(
         )
 
     monkeypatch.setattr(api.agent_runtime, "events", stream)
-    response = session_clients.client_a.get(
+    response = session_clients.client_a.post(
         "/agent/chat/stream",
-        params={"message": "probe", "session_id": "public-agent"},
+        json={"message": "probe", "session_id": "public-agent"},
     )
 
     assert response.status_code == 200

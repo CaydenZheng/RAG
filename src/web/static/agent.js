@@ -11,7 +11,7 @@
   const answerEl = document.getElementById("answer");
   const answerCard = document.getElementById("answerCard");
   let sessionId = localStorage.getItem(SESSION_KEY);
-  let currentEventSource = null;
+  let activeRequestController = null;
 
   if (!sessionId) {
     sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 14);
@@ -31,9 +31,9 @@
   }
 
   function stopAgent() {
-    if (currentEventSource) {
-      currentEventSource.close();
-      currentEventSource = null;
+    if (activeRequestController) {
+      activeRequestController.abort();
+      activeRequestController = null;
     }
     sendBtn.classList.remove("hidden");
     stopBtn.classList.remove("active");
@@ -45,7 +45,7 @@
     }
   }
 
-  function send() {
+  async function send() {
     const message = messageInput.value.trim();
     if (!message) return;
 
@@ -63,10 +63,8 @@
     document.getElementById("latency").textContent = "—";
     document.getElementById("iterCount").textContent = "—";
 
-    const url = "/agent/chat/stream?message=" + encodeURIComponent(message) +
-      "&session_id=" + encodeURIComponent(sessionId);
-    const eventSource = new EventSource(url);
-    currentEventSource = eventSource;
+    const controller = new AbortController();
+    activeRequestController = controller;
 
     const typingInterval = 35;
     const chunkQueue = [];
@@ -77,12 +75,26 @@
     let firstRender = true;
     const startTime = Date.now();
     let iterationCount = 0;
+    let animationFrameId = null;
+
+    controller.signal.addEventListener(
+      "abort",
+      () => {
+        chunkQueue.length = 0;
+        if (animationFrameId !== null) {
+          cancelAnimationFrame(animationFrameId);
+          animationFrameId = null;
+        }
+        animating = false;
+      },
+      { once: true },
+    );
 
     function finishRendering() {
+      if (controller.signal.aborted || activeRequestController !== controller) return;
       answerEl.classList.remove("streaming");
       SafeRender.appendLinkifiedText(answerEl, fullAnswer);
-      eventSource.close();
-      currentEventSource = null;
+      if (activeRequestController === controller) activeRequestController = null;
       sendBtn.classList.remove("hidden");
       stopBtn.classList.remove("active");
       loading.classList.remove("active");
@@ -92,6 +104,8 @@
     }
 
     function renderFrame(timestamp) {
+      animationFrameId = null;
+      if (controller.signal.aborted || activeRequestController !== controller) return;
       if (chunkQueue.length === 0) {
         animating = false;
         if (finished) finishRendering();
@@ -103,12 +117,11 @@
         lastRenderTime = timestamp;
         firstRender = false;
       }
-      requestAnimationFrame(renderFrame);
+      animationFrameId = requestAnimationFrame(renderFrame);
     }
 
-    eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
+    function handleEvent(data) {
+      if (controller.signal.aborted || activeRequestController !== controller) return;
       if (data.error) {
         loading.classList.remove("active");
         answerEl.classList.remove("streaming");
@@ -116,8 +129,8 @@
         error.classList.add("active");
         sendBtn.classList.remove("hidden");
         stopBtn.classList.remove("active");
-        currentEventSource = null;
-        eventSource.close();
+        controller.abort();
+        if (activeRequestController === controller) activeRequestController = null;
         return;
       }
 
@@ -167,7 +180,7 @@
         chunkQueue.push(data.chunk);
         if (!animating) {
           animating = true;
-          requestAnimationFrame(renderFrame);
+          animationFrameId = requestAnimationFrame(renderFrame);
         }
         return;
       }
@@ -177,19 +190,55 @@
         if (data.iterations) iterationCount = data.iterations;
         if (!animating) finishRendering();
       }
-    };
+    }
 
-    eventSource.onerror = () => {
-      if (finished) return;
-      eventSource.close();
-      currentEventSource = null;
+    try {
+      const response = await fetch("/agent/chat/stream", {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ message, session_id: sessionId }),
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        throw new Error("Agent stream request failed");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary >= 0) {
+          const block = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const data = block
+            .split("\n")
+            .filter((line) => line.startsWith("data: "))
+            .map((line) => line.slice(6))
+            .join("\n");
+          if (data) handleEvent(JSON.parse(data));
+          boundary = buffer.indexOf("\n\n");
+        }
+        if (done) break;
+      }
+      if (!finished && !controller.signal.aborted) {
+        throw new Error("Agent stream ended without completion");
+      }
+    } catch (requestError) {
+      if (requestError.name === "AbortError" || finished) return;
+      if (activeRequestController === controller) activeRequestController = null;
       loading.classList.remove("active");
       answerEl.classList.remove("streaming");
       sendBtn.classList.remove("hidden");
       stopBtn.classList.remove("active");
       error.textContent = "⚠️ 连接中断或 Agent 处理失败，请稍后重试";
       error.classList.add("active");
-    };
+    }
   }
 
   function newSession(event) {
