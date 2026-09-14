@@ -372,6 +372,7 @@ def test_retrieval_captures_one_collection_for_the_whole_request(
 ) -> None:
     from src.core import retrieval
     from src.core.index_versions import ActiveIndex
+    from src.utils.bm25_store import BM25SearchResult
 
     client = FakeClient()
     collection = client.create_collection("rag_v_first")
@@ -390,9 +391,9 @@ def test_retrieval_captures_one_collection_for_the_whole_request(
             return ActiveIndex("1" * 24, "rag_v_first")
 
     class VersionedBM25:
-        def search(self, *args, **kwargs):
+        def search_with_status(self, *args, **kwargs) -> BM25SearchResult:
             assert kwargs["version_id"] == "1" * 24
-            return []
+            return BM25SearchResult((), "available")
 
     catalog = ChangingCatalog()
     monkeypatch.setattr(retrieval, "index_catalog", catalog)

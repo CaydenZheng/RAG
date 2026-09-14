@@ -5,6 +5,144 @@ from pathlib import Path
 import pytest
 
 
+def test_unbuilt_bm25_is_unavailable_before_version_comparison(
+    isolated_runtime: Path,
+) -> None:
+    from src.utils.bm25_store import BM25Store
+
+    result = BM25Store().search_with_status(
+        "question",
+        version_id="versioned-index",
+    )
+
+    assert result.status == "unavailable"
+
+
+def test_hybrid_retriever_reports_unavailable_bm25(
+    isolated_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.core import retrieval
+    from src.utils.bm25_store import BM25Store
+
+    class EmptyCollection:
+        def query(self, **kwargs) -> dict:
+            return {
+                "ids": [[]],
+                "documents": [[]],
+                "distances": [[]],
+                "metadatas": [[]],
+            }
+
+    class FakeClient:
+        def get_collection(self, name: str) -> EmptyCollection:
+            return EmptyCollection()
+
+    monkeypatch.setattr(
+        retrieval.chromadb,
+        "PersistentClient",
+        lambda **kwargs: FakeClient(),
+    )
+    monkeypatch.setattr(retrieval.llm_client, "embed_single", lambda query: [0.1])
+    monkeypatch.setattr(retrieval, "bm25_store", BM25Store())
+
+    result = retrieval.HybridRetrieverNode().search(
+        ["question"],
+        None,
+        "hybrid",
+    )
+
+    assert result.dense_status == "available"
+    assert result.bm25_status == "unavailable"
+
+
+
+def test_hybrid_retriever_keeps_degradation_across_query_variants(
+    isolated_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.core import retrieval
+    from src.utils.bm25_store import BM25SearchResult
+
+    class EmptyCollection:
+        pass
+
+    class FakeClient:
+        def get_collection(self, name: str) -> EmptyCollection:
+            return EmptyCollection()
+
+    class TransitioningBM25:
+        def __init__(self) -> None:
+            self.results = iter(
+                [
+                    BM25SearchResult((), "unavailable"),
+                    BM25SearchResult((), "available"),
+                ]
+            )
+
+        def search_with_status(self, *args, **kwargs) -> BM25SearchResult:
+            return next(self.results)
+
+    monkeypatch.setattr(
+        retrieval.chromadb,
+        "PersistentClient",
+        lambda **kwargs: FakeClient(),
+    )
+    monkeypatch.setattr(retrieval, "bm25_store", TransitioningBM25())
+
+    result = retrieval.HybridRetrieverNode().search(
+        ["question", "variant"],
+        None,
+        "bm25_only",
+    )
+
+    assert result.bm25_status == "unavailable"
+
+
+def test_hybrid_retriever_distinguishes_bm25_mismatch_from_zero_hits(
+    isolated_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.core import retrieval
+    from src.utils.bm25_store import BM25Store
+
+
+    class EmptyCollection:
+        pass
+
+    class FakeClient:
+        def get_collection(self, name: str) -> EmptyCollection:
+            return EmptyCollection()
+
+    store = BM25Store()
+    texts = ["unrelated alpha", "unrelated beta", "unrelated gamma"]
+    chunk_ids = ["chunk-1", "chunk-2", "chunk-3"]
+    store.build(texts, chunk_ids, version_id="different-version")
+    monkeypatch.setattr(
+        retrieval.chromadb,
+        "PersistentClient",
+        lambda **kwargs: FakeClient(),
+    )
+    monkeypatch.setattr(retrieval, "bm25_store", store)
+
+    mismatch = retrieval.HybridRetrieverNode().search(
+        ["question"],
+        None,
+        "bm25_only",
+    )
+
+    store.build(texts, chunk_ids, version_id="legacy")
+    zero_hits = retrieval.HybridRetrieverNode().search(
+        ["question"],
+        None,
+        "bm25_only",
+    )
+
+    assert mismatch.bm25_status == "version_mismatch"
+    assert zero_hits.bm25_status == "available"
+    assert list(zero_hits) == []
+
+
 def test_bm25_applies_scope_before_top_k(isolated_runtime: Path) -> None:
     from src.utils.bm25_store import BM25Store
 
@@ -31,6 +169,7 @@ def test_hybrid_retrieval_keeps_one_scope_across_all_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.core import retrieval
+    from src.utils.bm25_store import BM25SearchResult
 
     scope = {"category": "public"}
     collection_calls: list[tuple[str, dict]] = []
@@ -74,7 +213,7 @@ def test_hybrid_retrieval_keeps_one_scope_across_all_paths(
         *,
         allowed_chunk_ids: set[str] | None,
         version_id: str,
-    ) -> list[tuple[str, float]]:
+    ) -> BM25SearchResult:
         bm25_calls.append(
             {
                 "query": query,
@@ -83,7 +222,10 @@ def test_hybrid_retrieval_keeps_one_scope_across_all_paths(
                 "version_id": version_id,
             }
         )
-        return [("blocked-bm25", 9.0), ("allowed-bm25", 5.0)]
+        return BM25SearchResult(
+            (("blocked-bm25", 9.0), ("allowed-bm25", 5.0)),
+            "available",
+        )
 
     monkeypatch.setattr(
         retrieval.chromadb,
@@ -91,7 +233,11 @@ def test_hybrid_retrieval_keeps_one_scope_across_all_paths(
         lambda **kwargs: FakeClient(),
     )
     monkeypatch.setattr(retrieval.llm_client, "embed_single", lambda query: [0.1])
-    monkeypatch.setattr(retrieval.bm25_store, "search", fake_bm25_search)
+    monkeypatch.setattr(
+        retrieval.bm25_store,
+        "search_with_status",
+        fake_bm25_search,
+    )
 
     results = retrieval.HybridRetrieverNode().search(
         ["question"],

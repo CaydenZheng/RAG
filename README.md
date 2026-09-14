@@ -167,7 +167,14 @@ curl.exe -X POST http://127.0.0.1:8000/query `
 - `retrieval_mode`：`vector_only`、`bm25_only`、`hybrid` 或 `hybrid+rerank`。
 - `filter`：受限的 Chroma metadata 条件。
 
-响应包含 `query_id`、`answer`、`sources`、`warnings`、`index_version` 和 `latency_ms`。调用方必须展示 `warnings`，因为其中会说明 BM25 或 Rerank 是否降级。
+响应包含 `query_id`、`answer`、`sources`、`warnings`、`index_version` 和 `latency_ms`。调用方必须展示 `warnings`。当前稳定 warning code 为：
+
+- `bm25_unavailable`：请求了 BM25，但索引尚未就绪。
+- `bm25_version_mismatch`：BM25 索引与本次请求固定的 Dense 索引版本不一致。
+- `rerank_timeout`：Reranker 超时，结果退化为融合排序。
+- `rerank_unavailable`：Reranker 调用失败，结果退化为融合排序。
+
+BM25 正常参与但没有命中时不返回 warning；`vector_only` 模式不会返回 BM25 warning。
 
 ### 流式查询
 

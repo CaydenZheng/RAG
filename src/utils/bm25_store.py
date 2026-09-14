@@ -9,13 +9,25 @@ BM25 关键词索引封装。
 
 import threading
 from collections.abc import Collection
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import jieba
 from loguru import logger
 from rank_bm25 import BM25Okapi
 
-from src.core.index_versions import LEGACY_INDEX_VERSION
+from src.core.index_versions import (
+    LEGACY_INDEX_VERSION,
+    RetrievalChannelStatus,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BM25SearchResult:
+    """BM25 hits and the captured channel status for one search."""
+
+    hits: tuple[Tuple[str, float], ...]
+    status: RetrievalChannelStatus
 
 
 class BM25Store:
@@ -134,18 +146,31 @@ class BM25Store:
         allowed_chunk_ids: Collection[str] | None = None,
         version_id: str | None = None,
     ) -> List[Tuple[str, float]]:
-        """
-        检索并返回 [(chunk_id, score), ...]，按分数降序。
-        allowed_chunk_ids 在截取 top_k 前生效，避免无权结果挤占召回名额。
-        若索引未就绪，返回空列表（调用方自动降级为纯向量检索）。
-        """
+        """Return compatible BM25 hits without the channel status."""
+        result = self.search_with_status(
+            query,
+            top_k,
+            allowed_chunk_ids=allowed_chunk_ids,
+            version_id=version_id,
+        )
+        return list(result.hits)
+
+    def search_with_status(
+        self,
+        query: str,
+        top_k: int = 20,
+        *,
+        allowed_chunk_ids: Collection[str] | None = None,
+        version_id: str | None = None,
+    ) -> BM25SearchResult:
+        """Atomically return BM25 hits and the captured channel status."""
         with self._lock:
+            if not self._ready or self._bm25 is None:
+                return BM25SearchResult((), "unavailable")
             if version_id is not None and version_id != self._version_id:
-                return []
-            if not self.is_ready:
-                return []
+                return BM25SearchResult((), "version_mismatch")
             if allowed_chunk_ids is not None and not allowed_chunk_ids:
-                return []
+                return BM25SearchResult((), "available")
             tokens = self._tokenize(query)
             scores = self._bm25.get_scores(tokens)
             indexed = [
@@ -154,12 +179,13 @@ class BM25Store:
                 if allowed_chunk_ids is None
                 or self._chunk_ids[idx] in allowed_chunk_ids
             ]
-            indexed.sort(key=lambda x: x[1], reverse=True)
-            results = []
-            for idx, score in indexed[:top_k]:
-                if score > 0:
-                    results.append((self._chunk_ids[idx], float(score)))
-            return results
+            indexed.sort(key=lambda item: item[1], reverse=True)
+            hits = tuple(
+                (self._chunk_ids[idx], float(score))
+                for idx, score in indexed[:top_k]
+                if score > 0
+            )
+            return BM25SearchResult(hits, "available")
 
     # ----------------------------------------------------------------
     # 工具

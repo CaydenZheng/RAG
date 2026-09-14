@@ -52,6 +52,7 @@ def test_stream_emits_common_envelope_and_complete_response(
                 context="prepared context",
                 history=[],
                 sources=[{"ref": 1, "chunk_id": "chunk-1"}],
+                warnings=["bm25_version_mismatch"],
                 valid_citation_refs={1},
             )
 
@@ -80,6 +81,7 @@ def test_stream_emits_common_envelope_and_complete_response(
     assert completed["done"] is True
     assert completed["answer"] == "answer [1]"
     assert completed["sources"] == [{"ref": 1, "chunk_id": "chunk-1"}]
+    assert completed["warnings"] == ["bm25_version_mismatch"]
     assert completed["index_version"] == "legacy"
     assert completed["session_id"] == ""
     assert completed["latency_ms"] >= 0

@@ -175,6 +175,7 @@ def test_runner_calls_unified_core_and_applies_opt_in_judge(
                 query_variants=[query],
                 candidates=[chunk],
                 chunks=[chunk],
+                warnings=("bm25_version_mismatch",),
                 index_version="index-v1",
             )
 
@@ -234,6 +235,7 @@ def test_runner_calls_unified_core_and_applies_opt_in_judge(
     result = report["modes"]["hybrid+rerank"]["samples"][0]
     assert [call[0] for call in calls] == ["retrieve", "generate", "judge"]
     assert result["index_version"] == "index-v1"
+    assert result["warnings"] == ["bm25_version_mismatch"]
     assert result["metrics"]["faithfulness"] == 0.9
     assert result["metrics"]["relevancy"] == 0.8
     assert result["metrics"]["task_success"]

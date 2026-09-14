@@ -33,6 +33,10 @@ RETRIEVAL_MODES = frozenset(
 DEFAULT_RETRIEVAL_MODE: RetrievalMode = "hybrid+rerank"
 DEFAULT_RETRIEVAL_TOP_K = 5
 MAX_RETRIEVAL_TOP_K = 20
+_BM25_WARNING_BY_STATUS: dict[str, str] = {
+    "unavailable": "bm25_unavailable",
+    "version_mismatch": "bm25_version_mismatch",
+}
 
 
 def validate_retrieval_mode(mode: str) -> RetrievalMode:
@@ -175,18 +179,28 @@ class KnowledgeSystem:
         if isinstance(candidate_result, CandidateBatch):
             candidates = list(candidate_result)
             index_version = candidate_result.index_version
+            dense_status = candidate_result.dense_status
+            bm25_status = candidate_result.bm25_status
         else:
             candidates = candidate_result
             index_version = LEGACY_INDEX_VERSION
+            dense_status = "not_requested"
+            bm25_status = "not_requested"
+        warnings: list[str] = []
+        if mode in ("bm25_only", "hybrid", "hybrid+rerank"):
+            bm25_warning = _BM25_WARNING_BY_STATUS.get(bm25_status)
+            if bm25_warning is not None:
+                warnings.append(bm25_warning)
         tracer.add_span(
             None,
             "candidate_retrieval",
             (time.perf_counter() - retrieval_started) * 1000,
             candidates=len(candidates),
             retrieval_mode=mode,
+            dense_status=dense_status,
+            bm25_status=bm25_status,
         )
         tracer.set_index_version(index_version)
-        warnings: list[str] = []
         rerank_started = time.perf_counter()
         rerank_status = "ok"
         rerank_error = ""
