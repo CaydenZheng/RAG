@@ -1,7 +1,7 @@
 """
 结构化记忆管理。
 
-MEMORY.md     — 长期记忆（用户偏好、重要事实），全量注入 system prompt
+long_term.md  — 只读兼容手工维护的长期信息；占位内容不会注入 prompt
 sessions.db   — RAG／Agent 共用的有序短期历史，达到阈值时 LLM 自动压缩归档
 
 压缩策略（三级）：
@@ -12,6 +12,7 @@ sessions.db   — RAG／Agent 共用的有序短期历史，达到阈值时 LLM 
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from collections.abc import Iterable
@@ -79,7 +80,7 @@ class MemoryConfig:
 
 class MemoryManager:
     """
-    两层记忆管理器。
+    SQLite 短期历史与只读 legacy 长期信息管理器。
 
     目录结构：
       memory/
@@ -127,8 +128,17 @@ class MemoryManager:
     @staticmethod
     def _read_long_term(path: Path) -> str:
         content = path.read_text(encoding="utf-8")
-        lines = [line for line in content.split("\n") if not line.strip().startswith("<!--")]
-        return "\n".join(lines).strip()
+        without_comments = re.sub(
+            r"<!--.*?-->", "", content, flags=re.DOTALL
+        )
+        meaningful_lines = [
+            line
+            for line in without_comments.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not meaningful_lines:
+            return ""
+        return without_comments.strip()
 
     @property
     def long_term_memory(self) -> str:
@@ -144,17 +154,6 @@ class MemoryManager:
         path = self.memory_dir / "clients" / client_scope / "long_term.md"
         self._initialize_long_term_file(path)
         return self._read_long_term(path)
-
-    def update_long_term(self, content: str):
-        """覆写长期记忆"""
-        self._long_term_path.write_text(content, encoding="utf-8")
-
-    def append_long_term(self, fact: str):
-        """追加一条长期记忆（LLM 调用后自动记录）"""
-        current = self._long_term_path.read_text(encoding="utf-8")
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        new_entry = f"\n- [{timestamp}] {fact}"
-        self._long_term_path.write_text(current + new_entry, encoding="utf-8")
 
     # ================================================================
     # 会话历史
@@ -398,7 +397,7 @@ class MemoryManager:
         # System prompt：基础 prompt + 长期记忆
         full_system = system_prompt
         long_mem = self.long_term_memory_for_session(session_id)
-        if long_mem and "<!--" not in long_mem[:50]:  # 有实际内容
+        if long_mem:
             full_system += f"\n\n## User Profile (Long-term Memory)\n{long_mem}"
 
         messages = [{"role": "system", "content": full_system}]
