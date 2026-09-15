@@ -8,13 +8,13 @@ RerankerNode        → bge-reranker 精排 → Top-5
 
 from typing import Dict, List, Tuple
 
-import chromadb
 import yaml
 from loguru import logger
 from pocketflow import AsyncNode, Node
 
 from config.settings import settings
 from src.core.index_versions import CandidateBatch, RetrievalChannelStatus
+from src.infra.chroma_clients import get_chroma_client
 from src.infra.index_catalog import index_catalog
 from src.infra.prompt_manager import prompt_manager
 from src.infra.tracer import tracer
@@ -278,10 +278,7 @@ class HybridRetrieverNode(Node):
         return None
 
     def _get_collection(self, collection_name: str):
-        client = chromadb.PersistentClient(
-            path=str(settings.chroma_path.resolve()),
-            settings=chromadb.config.Settings(anonymized_telemetry=False),
-        )
+        client = get_chroma_client()
         try:
             return client.get_collection(collection_name)
         except Exception:

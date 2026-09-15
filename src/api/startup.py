@@ -5,11 +5,11 @@ from __future__ import annotations
 import threading
 from typing import Any, Literal, TypedDict
 
-import chromadb
 from loguru import logger
 
 from config.settings import settings
 from src.core.index_versions import ActiveIndex
+from src.infra.chroma_clients import get_chroma_client
 from src.infra.index_catalog import index_catalog
 
 ComponentStatus = Literal[
@@ -184,11 +184,7 @@ def _prepare_index() -> bool:
         message="waiting for the active index",
     )
     try:
-        persist_dir: str = str(settings.chroma_path.resolve())
-        client: Any = chromadb.PersistentClient(
-            path=persist_dir,
-            settings=chromadb.config.Settings(anonymized_telemetry=False),
-        )
+        client: Any = get_chroma_client()
         active_index: ActiveIndex = index_catalog.capture()
         collection: Any = client.get_collection(active_index.collection_name)
         document_count: int = collection.count()

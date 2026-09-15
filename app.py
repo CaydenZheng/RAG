@@ -72,6 +72,7 @@ from src.core.knowledge import (
     MAX_RETRIEVAL_TOP_K,
     RetrievalMode,
 )
+from src.infra.chroma_clients import close_chroma_clients
 from src.infra.index_jobs import get_index_jobs
 from src.infra.uploads import read_upload, validate_document_filename
 from src.orchestration.rag import (
@@ -100,6 +101,7 @@ app.add_middleware(RequestTracingMiddleware)
 app.add_middleware(AdminAuthMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.router.add_event_handler("startup", warm_up_runtime)
+app.router.add_event_handler("shutdown", close_chroma_clients)
 
 
 # ================================================================
