@@ -164,12 +164,16 @@ class ChunkerNode(BatchNode):
     语义分块：
     - Markdown 文件 → 按 ## 和 ### 标题切分，再用递归字符切分子段
     - 普通文本    → 递归字符切分
-    目标 ~512 tokens/chunk，overlap ~50 tokens
+    目标 512 characters/chunk，overlap 50 characters
     """
 
     # 可调参数
-    CHUNK_SIZE = 512       # 目标 token 数（近似字符数 ≈ token * 4）
-    CHUNK_OVERLAP = 50
+    CHUNK_SIZE_CHARS = 512
+    CHUNK_OVERLAP_CHARS = 50
+
+    # Backward-compatible aliases for callers using the original names.
+    CHUNK_SIZE = CHUNK_SIZE_CHARS
+    CHUNK_OVERLAP = CHUNK_OVERLAP_CHARS
 
     def prep(self, shared: dict) -> List[dict]:
         return shared.get("docs", [])
@@ -203,8 +207,8 @@ class ChunkerNode(BatchNode):
 
         # 步骤2：对每个 section（如果太长）用递归字符切分器再切
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.CHUNK_SIZE,
-            chunk_overlap=self.CHUNK_OVERLAP,
+            chunk_size=self.CHUNK_SIZE_CHARS,
+            chunk_overlap=self.CHUNK_OVERLAP_CHARS,
             separators=["\n\n", "\n", ". ", " ", ""],
         )
 
@@ -221,7 +225,7 @@ class ChunkerNode(BatchNode):
 
             full_text = header_prefix + section_text
 
-            if len(full_text) <= self.CHUNK_SIZE:
+            if len(full_text) <= self.CHUNK_SIZE_CHARS:
                 all_chunks.append(full_text.strip())
             else:
                 sub_chunks = text_splitter.split_text(full_text)
@@ -232,8 +236,8 @@ class ChunkerNode(BatchNode):
     def _chunk_generic(self, text: str, doc: dict) -> List[dict]:
         """通用递归字符切分"""
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.CHUNK_SIZE,
-            chunk_overlap=self.CHUNK_OVERLAP,
+            chunk_size=self.CHUNK_SIZE_CHARS,
+            chunk_overlap=self.CHUNK_OVERLAP_CHARS,
             separators=["\n\n", "\n", ". ", " ", ""],
         )
         chunks = text_splitter.split_text(text)
