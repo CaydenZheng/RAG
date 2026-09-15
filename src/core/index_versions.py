@@ -68,6 +68,7 @@ class BuildManifest:
     chunk_overlap: int
     embedding_model: str
     embedding_dimension: int
+    chunk_size_unit: Literal["characters"] = "characters"
 
     def __post_init__(self) -> None:
         if not self.parser or not self.chunker or not self.embedding_model:
@@ -76,6 +77,8 @@ class BuildManifest:
             raise ValueError("invalid index chunking parameters")
         if self.embedding_dimension < 1:
             raise ValueError("invalid embedding dimension")
+        if self.chunk_size_unit != "characters":
+            raise ValueError("unsupported chunk size unit")
 
 
 @dataclass(frozen=True)
@@ -189,11 +192,22 @@ class IndexVersion:
             embedding_model=embedding_model,
             embedding_dimension=resolved_embedding_dimension,
         )
+        # Keep the established identity payload stable. The unit is now
+        # explicit in persisted manifests, but existing indexes already use
+        # these values as character counts.
+        identity_build = {
+            "parser": build.parser,
+            "chunker": build.chunker,
+            "chunk_size": build.chunk_size,
+            "chunk_overlap": build.chunk_overlap,
+            "embedding_model": build.embedding_model,
+            "embedding_dimension": build.embedding_dimension,
+        }
         version_id = _sha256(
             {
                 "content_checksum": content_checksum,
                 "sources": [asdict(source) for source in sources],
-                "build": asdict(build),
+                "build": identity_build,
             }
         )[:24]
         return cls(

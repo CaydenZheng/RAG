@@ -47,3 +47,27 @@ def test_index_version_changes_with_content_and_build_manifest(
     assert first.sources[0].source == "guide.md"
     assert len(first.sources[0].checksum) == 64
 
+
+def test_manifest_declares_character_units_without_changing_index_identity(
+    isolated_runtime: Path,
+) -> None:
+    from src.core.index_versions import IndexVersion
+
+    version = IndexVersion.create(
+        _chunks("alpha"),
+        parser="parser-v1",
+        chunker="chunker-v1",
+        chunk_size=512,
+        chunk_overlap=50,
+        embedding_model="embedding-v1",
+    )
+
+    assert version.build.chunk_size_unit == "characters"
+    assert version.to_dict()["build"]["chunk_size_unit"] == "characters"
+    assert version.version_id == "986a2f223cc4fc250b224b9d"
+
+    legacy_payload = version.to_dict()
+    del legacy_payload["build"]["chunk_size_unit"]
+    restored = IndexVersion.from_dict(legacy_payload)
+
+    assert restored.build.chunk_size_unit == "characters"

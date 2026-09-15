@@ -121,8 +121,8 @@ class IndexBuilderNode(Node):
                 chunks,
                 parser=PARSER_VERSION,
                 chunker=CHUNKER_VERSION,
-                chunk_size=ChunkerNode.CHUNK_SIZE,
-                chunk_overlap=ChunkerNode.CHUNK_OVERLAP,
+                chunk_size=ChunkerNode.CHUNK_SIZE_CHARS,
+                chunk_overlap=ChunkerNode.CHUNK_OVERLAP_CHARS,
                 embedding_model=settings.local_embedding_model,
                 embedding_dimension=(
                     llm_client.embedding_dim if not chunks else None
