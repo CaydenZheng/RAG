@@ -399,9 +399,7 @@ class ToolRegistry:
 
     def _audit(self, tool_name: str, params: dict, result: ToolResult, session_id: str):
         """灰名单审计日志"""
-        from pathlib import Path
-
-        audit_path = Path("logs") / "audit.jsonl"
+        audit_path = settings.log_dir / "audit.jsonl"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
         trace = tracer.current or {}
         record = {

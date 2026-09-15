@@ -14,7 +14,8 @@ from typing import Any, Iterator
 
 from loguru import logger
 
-TRACE_FILE = Path("logs") / "traces.jsonl"
+from config.settings import settings
+
 _MAX_TEXT_LENGTH = 160
 _SECRET_VALUE = re.compile(
     r"(?i)(?:bearer\s+\S+|sk-[a-z0-9_-]{8,}|api[_-]?key\s*[:=]\s*\S+)"
@@ -93,7 +94,7 @@ class TraceLogger:
 
     @property
     def trace_file(self) -> Path:
-        return self._trace_file or TRACE_FILE
+        return self._trace_file or settings.log_dir / "traces.jsonl"
 
     def start_trace(
         self,

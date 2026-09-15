@@ -13,6 +13,16 @@ from typing import Optional, Self
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def project_path(path: str | Path) -> Path:
+    """Resolve repository-owned relative paths without rewriting absolutes."""
+    candidate = Path(path).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return (PROJECT_ROOT / candidate).resolve()
+
 
 class Settings(BaseSettings):
     # ================================================================
@@ -293,12 +303,22 @@ class Settings(BaseSettings):
     @property
     def prompt_dir(self) -> Path:
         """Prompt 模板目录"""
-        return Path("prompts") / self.prompt_version
+        return project_path("prompts") / self.prompt_version
 
     @property
     def data_dir(self) -> Path:
         """数据根目录"""
-        return Path("data")
+        return project_path("data")
+
+    @property
+    def log_dir(self) -> Path:
+        """运行日志目录"""
+        return project_path("logs")
+
+    @property
+    def memory_dir(self) -> Path:
+        """Agent legacy 记忆目录"""
+        return project_path("memory")
 
     @property
     def raw_dir(self) -> Path:
@@ -308,12 +328,12 @@ class Settings(BaseSettings):
     @property
     def chroma_path(self) -> Path:
         """ChromaDB 持久化路径（绝对路径）"""
-        return Path(self.chroma_persist_dir).resolve()
+        return project_path(self.chroma_persist_dir)
 
     @property
     def cache_db_path_resolved(self) -> Path:
         """缓存数据库绝对路径"""
-        return Path(self.cache_db_path).resolve()
+        return project_path(self.cache_db_path)
 
     # ================================================================
     # pydantic-settings 配置
