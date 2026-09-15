@@ -27,7 +27,7 @@ class LLMCache:
 
     @property
     def fingerprint_path(self) -> Path:
-        return Path(settings.chroma_persist_dir).parent / ".fingerprint"
+        return settings.chroma_path.parent / ".fingerprint"
 
     def _load_fingerprint(self) -> str:
         try:

@@ -15,7 +15,8 @@ from pathlib import Path
 from datasets import load_dataset
 from loguru import logger
 
-OUT_DIR = Path("data/raw/wiki")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OUT_DIR = PROJECT_ROOT / "data/raw/wiki"
 DATASET_NAME = "wikimedia/wikipedia"
 DATASET_CONFIGURATION = "20231101.en"
 DATASET_SPLIT = "train"

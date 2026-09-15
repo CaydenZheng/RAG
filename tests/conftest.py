@@ -65,7 +65,10 @@ def isolated_runtime(
     monkeypatch.setenv("CACHE_DB_PATH", str(tmp_path / "data/cache.db"))
     shutil.copytree(project / "prompts", tmp_path / "prompts")
 
+    import config.settings as settings_module
     from config.settings import Settings, settings
+
+    monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
 
     # Reset the existing object: modules can retain references to the singleton.
     defaults = Settings(_env_file=None)

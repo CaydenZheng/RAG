@@ -137,14 +137,16 @@ class HookPipeline:
 # ================================================================
 
 def create_logging_hook(
-    log_dir: str = "logs",
+    log_dir: str | Path | None = None,
     *,
     max_bytes: int | None = None,
     backup_count: int | None = None,
     retention_seconds: int | None = None,
 ) -> HookHandler:
     """创建日志 Hook — 记录所有事件到 JSON Lines 文件"""
-    log_path = Path(log_dir) / "agent_events.jsonl"
+    log_path = (settings.log_dir if log_dir is None else Path(log_dir)) / (
+        "agent_events.jsonl"
+    )
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def logging_hook(ctx: HookContext) -> HookContext:
@@ -204,7 +206,7 @@ def create_rate_limit_hook(max_per_minute: int = 30) -> HookHandler:
 
 
 def create_audit_hook(
-    audit_dir: str = "logs",
+    audit_dir: str | Path | None = None,
     *,
     max_bytes: int | None = None,
     backup_count: int | None = None,
@@ -215,7 +217,9 @@ def create_audit_hook(
 
     仅对 PRE_TOOL_USE 事件生效，记录工具名、参数、时间戳。
     """
-    audit_path = Path(audit_dir) / "audit.jsonl"
+    audit_path = (settings.log_dir if audit_dir is None else Path(audit_dir)) / (
+        "audit.jsonl"
+    )
     audit_path.parent.mkdir(parents=True, exist_ok=True)
 
     def audit_hook(ctx: HookContext) -> HookContext:

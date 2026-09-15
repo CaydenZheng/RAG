@@ -82,6 +82,7 @@ class DocLoaderNode(BatchNode):
         files = []
         for ext in ["*.md", "*.txt"]:
             files.extend(raw_dir.rglob(ext))
+        files.sort(key=lambda path: path.relative_to(raw_dir).as_posix())
         logger.info("Found {} files in {}", len(files), raw_dir)
         return files
 

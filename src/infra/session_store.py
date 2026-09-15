@@ -39,7 +39,7 @@ class SessionStore:
 
     def __init__(self, db_path: str | None = None) -> None:
         if db_path is None:
-            db_path = str(Path(settings.chroma_persist_dir).parent / "sessions.db")
+            db_path = str(settings.chroma_path.parent / "sessions.db")
         self._db_path = db_path
         self._session_locks = tuple(threading.RLock() for _ in range(64))
         self._init_db()

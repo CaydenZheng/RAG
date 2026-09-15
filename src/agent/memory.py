@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from config.settings import settings
 from src.infra.session_store import (
     HistorySnapshot,
     SessionStore,
@@ -93,11 +94,13 @@ class MemoryManager:
 
     def __init__(
         self,
-        memory_dir: str = "memory",
+        memory_dir: str | Path | None = None,
         config: MemoryConfig = None,
         store: SessionStore | None = None,
     ):
-        self.memory_dir = Path(memory_dir)
+        self.memory_dir = (
+            settings.memory_dir if memory_dir is None else Path(memory_dir)
+        )
         self.config = config or MemoryConfig()
         self._store = store or SessionStore(str(self.memory_dir / "sessions.db"))
 

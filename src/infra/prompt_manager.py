@@ -24,7 +24,7 @@ class PromptManager:
 
     @property
     def prompt_dir(self) -> Path:
-        return Path("prompts") / self._version
+        return settings.prompt_dir.parent / self._version
 
     def load(self, name: str) -> dict:
         """加载一个 prompt 模板（带缓存）"""
