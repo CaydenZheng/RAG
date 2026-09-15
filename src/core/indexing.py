@@ -10,6 +10,7 @@ from config.settings import settings
 from src.core.errors import IndexBuildError
 from src.core.index_versions import IndexVersion
 from src.core.ingestion import CHUNKER_VERSION, PARSER_VERSION, ChunkerNode
+from src.infra.chroma_clients import get_chroma_client
 from src.infra.index_catalog import IndexCatalog, index_catalog
 from src.llm import llm_client
 from src.utils.bm25_store import BM25Store, bm25_store
@@ -271,13 +272,7 @@ class IndexBuilderNode(Node):
 
     @staticmethod
     def _create_client() -> Any:
-        import chromadb
-        from chromadb.config import Settings as ChromaSettings
-
-        return chromadb.PersistentClient(
-            path=str(settings.chroma_path.resolve()),
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
+        return get_chroma_client()
 
     def post(self, shared: dict, prep_res, exec_res: dict) -> str:
         shared["index_info"] = exec_res

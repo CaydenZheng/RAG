@@ -38,11 +38,7 @@ def test_hybrid_retriever_reports_unavailable_bm25(
         def get_collection(self, name: str) -> EmptyCollection:
             return EmptyCollection()
 
-    monkeypatch.setattr(
-        retrieval.chromadb,
-        "PersistentClient",
-        lambda **kwargs: FakeClient(),
-    )
+    monkeypatch.setattr(retrieval, "get_chroma_client", lambda: FakeClient())
     monkeypatch.setattr(retrieval.llm_client, "embed_single", lambda query: [0.1])
     monkeypatch.setattr(retrieval, "bm25_store", BM25Store())
 
@@ -83,11 +79,7 @@ def test_hybrid_retriever_keeps_degradation_across_query_variants(
         def search_with_status(self, *args, **kwargs) -> BM25SearchResult:
             return next(self.results)
 
-    monkeypatch.setattr(
-        retrieval.chromadb,
-        "PersistentClient",
-        lambda **kwargs: FakeClient(),
-    )
+    monkeypatch.setattr(retrieval, "get_chroma_client", lambda: FakeClient())
     monkeypatch.setattr(retrieval, "bm25_store", TransitioningBM25())
 
     result = retrieval.HybridRetrieverNode().search(
@@ -118,11 +110,7 @@ def test_hybrid_retriever_distinguishes_bm25_mismatch_from_zero_hits(
     texts = ["unrelated alpha", "unrelated beta", "unrelated gamma"]
     chunk_ids = ["chunk-1", "chunk-2", "chunk-3"]
     store.build(texts, chunk_ids, version_id="different-version")
-    monkeypatch.setattr(
-        retrieval.chromadb,
-        "PersistentClient",
-        lambda **kwargs: FakeClient(),
-    )
+    monkeypatch.setattr(retrieval, "get_chroma_client", lambda: FakeClient())
     monkeypatch.setattr(retrieval, "bm25_store", store)
 
     mismatch = retrieval.HybridRetrieverNode().search(
@@ -227,11 +215,7 @@ def test_hybrid_retrieval_keeps_one_scope_across_all_paths(
             "available",
         )
 
-    monkeypatch.setattr(
-        retrieval.chromadb,
-        "PersistentClient",
-        lambda **kwargs: FakeClient(),
-    )
+    monkeypatch.setattr(retrieval, "get_chroma_client", lambda: FakeClient())
     monkeypatch.setattr(retrieval.llm_client, "embed_single", lambda query: [0.1])
     monkeypatch.setattr(
         retrieval.bm25_store,
@@ -289,16 +273,10 @@ def test_bm25_only_scope_uses_real_chroma_metadata(
     isolated_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from config.settings import settings
     from src.core import retrieval
     from src.utils.bm25_store import BM25Store
 
-    client = retrieval.chromadb.PersistentClient(
-        path=str(settings.chroma_path.resolve()),
-        settings=retrieval.chromadb.config.Settings(
-            anonymized_telemetry=False
-        ),
-    )
+    client = retrieval.get_chroma_client()
     collection = client.create_collection("rag_collection")
     collection.add(
         ids=["blocked-1", "blocked-2", "allowed"],

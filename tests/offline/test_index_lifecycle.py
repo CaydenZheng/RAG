@@ -397,11 +397,7 @@ def test_retrieval_captures_one_collection_for_the_whole_request(
 
     catalog = ChangingCatalog()
     monkeypatch.setattr(retrieval, "index_catalog", catalog)
-    monkeypatch.setattr(
-        retrieval.chromadb,
-        "PersistentClient",
-        lambda **kwargs: client,
-    )
+    monkeypatch.setattr(retrieval, "get_chroma_client", lambda: client)
     monkeypatch.setattr(retrieval, "bm25_store", VersionedBM25())
     monkeypatch.setattr(retrieval.llm_client, "embed_single", lambda query: [1.0, 0.0])
 

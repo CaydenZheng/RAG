@@ -79,7 +79,12 @@ def isolated_runtime(
 
     monkeypatch.setattr(sentence_transformers.SentenceTransformer, "__init__", no_weights)
     monkeypatch.setattr(sentence_transformers.CrossEncoder, "__init__", no_weights)
-    yield tmp_path
+    try:
+        yield tmp_path
+    finally:
+        from src.infra.chroma_clients import close_chroma_clients
+
+        close_chroma_clients()
 
 
 @pytest.fixture
