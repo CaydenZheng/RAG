@@ -259,11 +259,14 @@ def test_agent_event_and_audit_logs_are_redacted(
     monkeypatch: pytest.MonkeyPatch,
     isolated_runtime: Path,
 ) -> None:
-    from src.agent import hooks
+    from src.agent import hooks, tools
+    from src.agent.tools import SafetyLevel, ToolDef, ToolParam, ToolRegistry
+    from src.core.agent_runtime import ToolResult
     from src.infra.tracer import TraceLogger
 
     local = TraceLogger(isolated_runtime / "unused-trace.jsonl")
     monkeypatch.setattr(hooks, "tracer", local)
+    monkeypatch.setattr(tools, "tracer", local)
     trace = local.start_trace("request-id", "/agent/chat", trace_id="trace-id")
     token = local.bind(trace)
     context = hooks.HookContext(
@@ -277,11 +280,34 @@ def test_agent_event_and_audit_logs_are_redacted(
     )
 
     hooks.create_logging_hook(str(isolated_runtime))(context)
-    hooks.create_audit_hook(str(isolated_runtime))(context)
+    registry = ToolRegistry(dedup_window=0)
+    registry.register(
+        ToolDef(
+            name="search_web",
+            description="test external tool",
+            params=[
+                ToolParam("query", "str", "query"),
+                ToolParam(
+                    "max_results",
+                    "int",
+                    "maximum results",
+                    required=False,
+                ),
+            ],
+            safety_level=SafetyLevel.GRAYLIST,
+            execute_fn=lambda params: ToolResult(success=True, data=params),
+        )
+    )
+    assert registry.execute(
+        "search_web",
+        {"query": "private search", "max_results": 3},
+        "private-session",
+    ).success
     local.reset(token)
 
     event = _read_record(isolated_runtime / "agent_events.jsonl")
-    audit = _read_record(isolated_runtime / "audit.jsonl")
+    audit_path = isolated_runtime / "logs/audit.jsonl"
+    audit = _read_record(audit_path)
     assert event["request_id"] == "request-id"
     assert event["trace_id"] == "trace-id"
     assert event["data"]["user_message"] == "[REDACTED]"
@@ -292,7 +318,7 @@ def test_agent_event_and_audit_logs_are_redacted(
 
     encoded = (
         (isolated_runtime / "agent_events.jsonl").read_text(encoding="utf-8")
-        + (isolated_runtime / "audit.jsonl").read_text(encoding="utf-8")
+        + audit_path.read_text(encoding="utf-8")
     )
     for secret in ("private-session", "private question", "private search"):
         assert secret not in encoded

@@ -7,7 +7,6 @@ Hook 事件拦截管线。
 内置 Hook：
   LoggingHook   — 记录所有事件到 agent_events.jsonl
   RateLimitHook — 限制每分钟工具调用次数
-  AuditHook     — 审计灰名单/黑名单工具调用
   BlacklistBlockHook — 匹配危险模式直接阻断
 """
 
@@ -70,8 +69,6 @@ class HookPipeline:
     使用方式：
         pipeline = HookPipeline()
         pipeline.register(HookEvent.PRE_TOOL_USE, logging_hook, priority=10)
-        pipeline.register(HookEvent.PRE_TOOL_USE, audit_hook, priority=20,
-                          pattern=r"delete_.*|execute_.*")
 
         ctx = HookContext(event=HookEvent.PRE_TOOL_USE, ...)
         ctx = pipeline.fire(ctx)
@@ -205,59 +202,6 @@ def create_rate_limit_hook(max_per_minute: int = 30) -> HookHandler:
     return rate_limit_hook
 
 
-def create_audit_hook(
-    audit_dir: str | Path | None = None,
-    *,
-    max_bytes: int | None = None,
-    backup_count: int | None = None,
-    retention_seconds: int | None = None,
-) -> HookHandler:
-    """
-    创建审计 Hook — 记录灰名单/黑名单工具调用。
-
-    仅对 PRE_TOOL_USE 事件生效，记录工具名、参数、时间戳。
-    """
-    audit_path = (settings.log_dir if audit_dir is None else Path(audit_dir)) / (
-        "audit.jsonl"
-    )
-    audit_path.parent.mkdir(parents=True, exist_ok=True)
-
-    def audit_hook(ctx: HookContext) -> HookContext:
-        trace = tracer.current or {}
-        tool_params = ctx.data.get("tool_params", {})
-        record = {
-            "event": ctx.event.value,
-            "request_id": trace.get("request_id", "unavailable"),
-            "trace_id": trace.get("trace_id", "unavailable"),
-            "timestamp": ctx.timestamp,
-            "tool_name": ctx.data.get("tool_name", "unknown"),
-            "parameter_names": sorted(tool_params) if isinstance(tool_params, dict) else [],
-            "safety_level": ctx.data.get("safety_level", "unknown"),
-        }
-        append_jsonl(
-            audit_path,
-            record,
-            max_bytes=(
-                settings.agent_log_max_bytes
-                if max_bytes is None
-                else max_bytes
-            ),
-            backup_count=(
-                settings.agent_log_backup_count
-                if backup_count is None
-                else backup_count
-            ),
-            retention_seconds=(
-                settings.agent_log_retention_seconds
-                if retention_seconds is None
-                else retention_seconds
-            ),
-        )
-        return ctx
-
-    return audit_hook
-
-
 def create_blacklist_block_hook(blacklist_patterns: List[str]) -> HookHandler:
     """
     创建黑名单阻断 Hook — 匹配的工具调用直接拦截。
@@ -296,11 +240,6 @@ def create_default_pipeline() -> HookPipeline:
     # 限流：仅工具调用
     rate_hook = create_rate_limit_hook(max_per_minute=30)
     pipeline.register(HookEvent.PRE_TOOL_USE, rate_hook, priority=10)
-
-    # 审计：灰名单/黑名单工具（匹配危险操作）
-    audit_hook = create_audit_hook()
-    pipeline.register(HookEvent.PRE_TOOL_USE, audit_hook, priority=20,
-                      pattern=r"read_file|web_search|execute_")
 
     # 黑名单阻断
     blacklist = create_blacklist_block_hook([

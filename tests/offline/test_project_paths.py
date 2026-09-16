@@ -87,12 +87,10 @@ def test_runtime_default_directories_use_the_project_root(
 
     memory = MemoryManager(store=object())
     hooks.create_logging_hook()(context)
-    hooks.create_audit_hook()(context)
 
     assert memory.memory_dir == project_root / "memory"
     assert TraceLogger().trace_file == project_root / "logs/traces.jsonl"
     assert (project_root / "logs/agent_events.jsonl").is_file()
-    assert (project_root / "logs/audit.jsonl").is_file()
 
 
 def test_doc_loader_returns_files_in_stable_relative_order(

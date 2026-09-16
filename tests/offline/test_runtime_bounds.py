@@ -209,3 +209,46 @@ def test_jsonl_pruning_tolerates_backup_disappearing(
 
     assert disappeared
     assert json.loads(path.read_text(encoding="utf-8")) == {"new": True}
+
+
+def test_default_pipeline_delegates_graylist_audit_to_registry(
+    isolated_runtime: Path,
+) -> None:
+    from src.agent.hooks import (
+        HookContext,
+        HookEvent,
+        create_default_pipeline,
+    )
+    from src.agent.tools import ToolRegistry
+
+    pipeline = create_default_pipeline()
+    registry = ToolRegistry(dedup_window=0)
+    _register_gray_tool(registry)
+    context = HookContext(
+        event=HookEvent.PRE_TOOL_USE,
+        session_id="session",
+        data={"tool_name": "read_file", "tool_params": {"name": "one"}},
+    )
+
+    pipeline.fire(context)
+
+    audit_path = isolated_runtime / "logs" / "audit.jsonl"
+    assert not audit_path.exists()
+    assert registry.execute(
+        "read_file", {"name": "one"}, "session"
+    ).success
+
+    records = audit_path.read_text(encoding="utf-8").splitlines()
+    assert len(records) == 1
+    assert json.loads(records[0])["tool_name"] == "read_file"
+
+
+def test_external_tools_that_send_user_input_are_graylisted() -> None:
+    from src.agent.tools import SafetyLevel, create_default_registry
+
+    registry = create_default_registry()
+
+    for tool_name in ("get_weather", "search_web"):
+        tool = registry.get_tool(tool_name)
+        assert tool is not None
+        assert tool.safety_level == SafetyLevel.GRAYLIST
