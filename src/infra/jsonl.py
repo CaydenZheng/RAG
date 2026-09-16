@@ -47,7 +47,14 @@ def _prune_backups(
         suffix = candidate.name.removeprefix(prefix)
         if not suffix.isdigit():
             continue
-        if int(suffix) > backup_count or candidate.stat().st_mtime < cutoff:
+        if int(suffix) > backup_count:
+            candidate.unlink(missing_ok=True)
+            continue
+        try:
+            expired = candidate.stat().st_mtime < cutoff
+        except FileNotFoundError:
+            continue
+        if expired:
             candidate.unlink(missing_ok=True)
 
 

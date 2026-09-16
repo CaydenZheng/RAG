@@ -400,7 +400,6 @@ class ToolRegistry:
     def _audit(self, tool_name: str, params: dict, result: ToolResult, session_id: str):
         """灰名单审计日志"""
         audit_path = settings.log_dir / "audit.jsonl"
-        audit_path.parent.mkdir(parents=True, exist_ok=True)
         trace = tracer.current or {}
         record = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -412,13 +411,20 @@ class ToolRegistry:
             "error_code": result.error_code,
             "latency_ms": round(result.latency_ms, 1),
         }
-        append_jsonl(
-            audit_path,
-            record,
-            max_bytes=settings.agent_log_max_bytes,
-            backup_count=settings.agent_log_backup_count,
-            retention_seconds=settings.agent_log_retention_seconds,
-        )
+        try:
+            append_jsonl(
+                audit_path,
+                record,
+                max_bytes=settings.agent_log_max_bytes,
+                backup_count=settings.agent_log_backup_count,
+                retention_seconds=settings.agent_log_retention_seconds,
+            )
+        except OSError as exc:
+            logger.warning(
+                "Tool audit log write failed: tool={} type={}",
+                tool_name,
+                type(exc).__name__,
+            )
 
 
 # ================================================================
