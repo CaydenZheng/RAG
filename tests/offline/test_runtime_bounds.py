@@ -1,5 +1,6 @@
 """Behavioral coverage for bounded runtime state."""
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -126,3 +127,85 @@ def test_tool_audit_log_uses_the_same_rotation_policy(
     path = tmp_path / "logs" / "audit.jsonl"
     _assert_bounded_jsonl_files(path, backup_count=1, max_bytes=500)
     assert not (path.parent / "audit.jsonl.2").exists()
+
+
+@pytest.mark.parametrize("run_async", [False, True])
+def test_tool_audit_failure_does_not_change_success_or_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    run_async: bool,
+) -> None:
+    from src.agent import tools as tools_module
+    from src.agent.tools import ToolRegistry
+
+    registry = ToolRegistry(dedup_window=0)
+    _register_gray_tool(registry)
+    calls: list[dict] = []
+    tool = registry.get_tool("read_file")
+    assert tool is not None
+    original_execute = tool.execute_fn
+
+    def execute(params: dict):
+        calls.append(params)
+        return original_execute(params)
+
+    def fail_audit(*_args, **_kwargs) -> None:
+        raise OSError("audit unavailable")
+
+    warnings: list[tuple[str, tuple]] = []
+    tool.execute_fn = execute
+    monkeypatch.setattr(tools_module, "append_jsonl", fail_audit)
+    monkeypatch.setattr(
+        tools_module.logger,
+        "warning",
+        lambda message, *args: warnings.append((message, args)),
+    )
+
+    if run_async:
+        result = asyncio.run(
+            registry.execute_async("read_file", {"name": "one"}, "session")
+        )
+    else:
+        result = registry.execute("read_file", {"name": "one"}, "session")
+
+    assert result.success
+    assert calls == [{"name": "one"}]
+    assert warnings == [
+        (
+            "Tool audit log write failed: tool={} type={}",
+            ("read_file", "OSError"),
+        )
+    ]
+
+
+def test_jsonl_pruning_tolerates_backup_disappearing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.infra.jsonl import append_jsonl
+
+    path = tmp_path / "audit.jsonl"
+    backup = tmp_path / "audit.jsonl.1"
+    backup.write_text('{"old": true}\n', encoding="utf-8")
+    original_stat = Path.stat
+    disappeared = False
+
+    def stat_with_concurrent_delete(self: Path, *args, **kwargs):
+        nonlocal disappeared
+        if self == backup and not disappeared:
+            disappeared = True
+            backup.unlink()
+            raise FileNotFoundError(backup)
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_with_concurrent_delete)
+
+    append_jsonl(
+        path,
+        {"new": True},
+        max_bytes=1_000,
+        backup_count=1,
+        retention_seconds=60,
+    )
+
+    assert disappeared
+    assert json.loads(path.read_text(encoding="utf-8")) == {"new": True}
