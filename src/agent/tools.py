@@ -3,8 +3,8 @@
 
 安全等级：
   WHITELIST → 自动执行（纯读取、纯计算，无副作用）
-  GRAYLIST  → 审计记录后执行（可能读敏感信息，需留痕）
-  BLACKLIST → 直接阻断 + 写审计日志（危险操作）
+  GRAYLIST  → 自动执行并记录结果（向外部服务发送用户输入，需留痕）
+  BLACKLIST → 直接阻断（危险操作）
 
 内置工具：
   search_knowledge_base — 直连统一 KnowledgeSystem，检索知识库
@@ -398,7 +398,7 @@ class ToolRegistry:
                 del self._dedup_cache[session_id]
 
     def _audit(self, tool_name: str, params: dict, result: ToolResult, session_id: str):
-        """灰名单审计日志"""
+        """记录灰名单执行结果；ToolRegistry 是唯一审计入口。"""
         audit_path = settings.log_dir / "audit.jsonl"
         trace = tracer.current or {}
         record = {
@@ -611,7 +611,7 @@ def _create_weather_tool() -> ToolDef:
     """
     天气查询工具 — 调 wttr.in 免费 API，无需注册。
 
-    安全等级 WHITELIST：纯外部 HTTP GET，无副作用。
+    安全等级 GRAYLIST：城市参数会发送给外部天气服务，需审计留痕。
     """
 
     def execute(params: dict) -> ToolResult:
@@ -655,13 +655,13 @@ def _create_weather_tool() -> ToolDef:
                 max_length=100,
             ),
         ],
-        safety_level=SafetyLevel.WHITELIST,
+        safety_level=SafetyLevel.GRAYLIST,
         execute_fn=execute,
         category="external",
     )
 
 
-def _create_web_search_tool() -> ToolDef:
+def _create_search_web_tool() -> ToolDef:
     """
     网页搜索工具 — 优先用 duckduckgo_search 包，fallback 用 HTML 抓取。
 
@@ -788,7 +788,7 @@ def create_default_registry() -> ToolRegistry:
     registry.register(_create_search_kb_tool())
     registry.register(_create_calculator_tool())
     registry.register(_create_weather_tool())
-    registry.register(_create_web_search_tool())
+    registry.register(_create_search_web_tool())
 
     return registry
 
