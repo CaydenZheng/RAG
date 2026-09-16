@@ -11,6 +11,8 @@ import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
+from src.evaluation.percentiles import linear_percentile
+
 
 def _normalize_text(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text)
@@ -228,8 +230,6 @@ def benchmark_embedding(
         if len(vector) != len(first_vector):
             raise ValueError("embedding dimension changed during benchmark")
 
-    ordered_latency = sorted(warm_latency_ms)
-    percentile_index = max(0, (95 * len(ordered_latency) + 99) // 100 - 1)
     return {
         "status": "measured",
         "input": "synthetic_text",
@@ -237,7 +237,7 @@ def benchmark_embedding(
         "vector_dimension": len(first_vector),
         "cold_start_ms": round(cold_start_ms, 3),
         "warm_mean_ms": round(statistics.fmean(warm_latency_ms), 3),
-        "warm_p95_ms": round(ordered_latency[percentile_index], 3),
+        "warm_p95_ms": round(linear_percentile(warm_latency_ms, 0.95), 3),
         "monetary_cost_usd": None,
         "cost_basis": "local_compute_unpriced",
     }

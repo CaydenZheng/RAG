@@ -172,8 +172,17 @@ def test_incomplete_manifests_cannot_claim_safe_vector_reuse() -> None:
     ]
 
 
-def test_embedding_benchmark_uses_synthetic_text_and_reports_cost_basis() -> None:
-    from src.evaluation.embedding_cache_assessment import benchmark_embedding
+def test_embedding_benchmark_uses_shared_percentile_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.evaluation import embedding_cache_assessment
+
+    clock = iter([0.0, 0.01, 1.0, 1.02, 2.0, 2.04])
+    monkeypatch.setattr(
+        embedding_cache_assessment.time,
+        "perf_counter",
+        lambda: next(clock),
+    )
 
     calls: list[str] = []
 
@@ -181,11 +190,17 @@ def test_embedding_benchmark_uses_synthetic_text_and_reports_cost_basis() -> Non
         calls.append(text)
         return [0.1, 0.2, 0.3]
 
-    benchmark = benchmark_embedding(fake_embedder, warm_iterations=2)
+    benchmark = embedding_cache_assessment.benchmark_embedding(
+        fake_embedder,
+        warm_iterations=2,
+    )
 
     assert benchmark["status"] == "measured"
     assert benchmark["warm_iterations"] == 2
     assert benchmark["vector_dimension"] == 3
+    assert benchmark["cold_start_ms"] == 10.0
+    assert benchmark["warm_mean_ms"] == 30.0
+    assert benchmark["warm_p95_ms"] == 39.0
     assert benchmark["monetary_cost_usd"] is None
     assert benchmark["cost_basis"] == "local_compute_unpriced"
     assert len(calls) == 3

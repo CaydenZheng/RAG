@@ -125,19 +125,3 @@ def delete_document(filename: str, raw_dir: Path) -> bool:
     except FileNotFoundError:
         return False
     return True
-
-
-async def save_upload(file: UploadFile, raw_dir: Path, max_bytes: int) -> Path:
-    """Compatibility helper that preserves exclusive-create HTTP semantics."""
-    upload = await read_upload(file, max_bytes)
-    try:
-        write_document(upload, raw_dir, replace=False, idempotent=False)
-    except FileExistsError:
-        raise HTTPException(
-            status_code=409, detail="Document already exists"
-        ) from None
-    except OSError:
-        raise HTTPException(
-            status_code=500, detail="Unable to save document"
-        ) from None
-    return raw_dir / upload.filename

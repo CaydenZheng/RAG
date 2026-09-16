@@ -3,7 +3,7 @@ BM25 关键词索引封装。
 
 特性：
 - 运行时同步：文档增删时同步更新 BM25，保证与 ChromaDB 一致
-- 冷启动降级：启动时异步重建，重建期间自动降级为纯向量检索
+- 快照激活：完整构建候选索引后原子替换运行时状态
 - 中文分词：用 jieba 做分词后构建 BM25
 """
 
@@ -89,15 +89,6 @@ class BM25Store:
     def version_id(self) -> str:
         with self._lock:
             return self._version_id
-
-    def rebuild_async(self, texts: List[str], chunk_ids: List[str]):
-        """异步重建（冷启动用），不阻塞服务启动"""
-        self._ready = False  # 重建期间不可用，检索自动降级
-        thread = threading.Thread(
-            target=self.build, args=(texts, chunk_ids), daemon=True
-        )
-        thread.start()
-        logger.info("BM25 async rebuild started ({} docs)", len(texts))
 
     # ----------------------------------------------------------------
     # 运行时同步增删
