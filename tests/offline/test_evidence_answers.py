@@ -38,8 +38,11 @@ def test_context_history_and_evidence_share_one_budget(
     from src.core import generation
 
     history = [
-        {"role": "user", "content": f"turn {number}"}
-        for number in range(7)
+        {
+            "role": "user" if number % 2 == 0 else "assistant",
+            "content": f"turn {number}",
+        }
+        for number in range(8)
     ]
     fake_store = SimpleNamespace(
         get_recent_history=lambda session_id, limit: history[-limit:]
@@ -82,12 +85,7 @@ def test_context_history_and_evidence_share_one_budget(
     }
     assert budget["history_tokens"] + budget["evidence_tokens"] <= budget["available"]
     assert [message["content"] for message in result["history"]] == [
-        "turn 1",
-        "turn 2",
-        "turn 3",
-        "turn 4",
-        "turn 5",
-        "turn 6",
+        f"turn {number}" for number in range(2, 8)
     ]
     assert result["valid_citation_refs"] == {1}
     assert result["sources"] == [
@@ -186,3 +184,51 @@ def test_normal_and_streaming_answers_share_messages_and_filter_citations(
     assert events[-1]["sources"] == [{"ref": 1, "chunk_id": "chunk-1"}]
     assert normal_calls == stream_calls
     assert normal_calls[0][1:3] == history
+
+
+def test_context_history_does_not_keep_an_orphaned_assistant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.core import generation
+
+    monkeypatch.setattr(generation, "count_tokens", len)
+    history = [
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+    selected, token_count = generation.ContextBuilderNode._select_history(
+        history,
+        token_budget=1,
+    )
+
+    assert selected == []
+    assert token_count == 0
+
+
+def test_context_history_discards_malformed_exchanges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.core import generation
+
+    monkeypatch.setattr(generation, "count_tokens", len)
+    history = [
+        {"role": "assistant", "content": "orphan"},
+        {"role": "user", "content": "ignored before tool"},
+        {"role": "tool", "content": "tool result"},
+        {"role": "assistant", "content": "ignored after tool"},
+        {"role": "user", "content": "valid question"},
+        {"role": "assistant", "content": "valid answer"},
+        {"role": "user", "content": "unfinished"},
+    ]
+
+    selected, token_count = generation.ContextBuilderNode._select_history(
+        history,
+        token_budget=100,
+    )
+
+    assert selected == [
+        {"role": "user", "content": "valid question"},
+        {"role": "assistant", "content": "valid answer"},
+    ]
+    assert token_count == len("valid question") + len("valid answer")

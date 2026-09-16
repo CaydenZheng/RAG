@@ -338,18 +338,38 @@ class ContextBuilderNode(Node):
         history: list[dict[str, str]],
         token_budget: int,
     ) -> tuple[list[dict[str, str]], int]:
+        exchanges: list[tuple[dict[str, str], dict[str, str]]] = []
+        index = 0
+        while index + 1 < len(history):
+            user_turn = history[index]
+            assistant_turn = history[index + 1]
+            if (
+                user_turn.get("role") == "user"
+                and assistant_turn.get("role") == "assistant"
+            ):
+                exchanges.append(
+                    (
+                        {"role": "user", "content": user_turn.get("content", "")},
+                        {
+                            "role": "assistant",
+                            "content": assistant_turn.get("content", ""),
+                        },
+                    )
+                )
+                index += 2
+            else:
+                index += 1
+
         selected: list[dict[str, str]] = []
         token_count = 0
-        for turn in reversed(history):
-            content = turn.get("content", "")
-            tokens = count_tokens(content)
-            if token_count + tokens > token_budget:
+        for user_turn, assistant_turn in reversed(exchanges):
+            exchange_tokens = count_tokens(user_turn["content"]) + count_tokens(
+                assistant_turn["content"]
+            )
+            if token_count + exchange_tokens > token_budget:
                 break
-            role = turn.get("role", "user")
-            if role not in ("user", "assistant"):
-                role = "user"
-            selected.insert(0, {"role": role, "content": content})
-            token_count += tokens
+            selected[0:0] = [user_turn, assistant_turn]
+            token_count += exchange_tokens
         return selected, token_count
 
     @staticmethod
