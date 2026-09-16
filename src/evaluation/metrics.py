@@ -8,6 +8,8 @@ from collections.abc import Iterable
 from pathlib import PurePosixPath
 from typing import Any
 
+from src.evaluation.percentiles import linear_percentile
+
 _CITATION_PATTERN = re.compile(r"\[((?:\d+\s*,\s*)*\d+)\]")
 _TOKEN_PATTERN = re.compile(r"[^\W_]+", re.UNICODE)
 _ABSTENTION_MARKERS = (
@@ -107,19 +109,6 @@ def _expected_source_index(
         if result_keys & source_keys:
             return index
     return None
-
-
-def _percentile(values: list[float], quantile: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    position = (len(ordered) - 1) * quantile
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    if lower == upper:
-        return ordered[lower]
-    fraction = position - lower
-    return ordered[lower] * (1 - fraction) + ordered[upper] * fraction
 
 
 def retrieval_metrics(
@@ -411,8 +400,8 @@ def summarize_results(
             ),
         },
         "latency_ms": {
-            "p50": _percentile(latencies, 0.50),
-            "p95": _percentile(latencies, 0.95),
+            "p50": linear_percentile(latencies, 0.50) if latencies else 0.0,
+            "p95": linear_percentile(latencies, 0.95) if latencies else 0.0,
         },
         "error_rate": errors / sample_count if sample_count else 0.0,
         "usage": usage,

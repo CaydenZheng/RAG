@@ -35,45 +35,6 @@ def _chat_with_ollama(
     return response.choices[0].message.content or ""
 
 
-def chat_with_fallback(
-    messages: List[dict],
-    model: Optional[str] = None,
-    temperature: float = 0.3,
-    max_tokens: Optional[int] = None,
-    skip_cache: bool = False,
-    index_version: str | None = None,
-) -> str:
-    """Call the primary provider, then optional Ollama, or raise."""
-    model = model or settings.llm_model
-    last_error: Exception | None = None
-
-    try:
-        return llm_client.chat(
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            skip_cache=skip_cache,
-            index_version=index_version,
-        )
-    except Exception as exc:
-        last_error = exc
-        logger.warning("Primary LLM failed; trying configured fallback")
-
-    if settings.ollama_base_url:
-        try:
-            answer = _chat_with_ollama(messages, temperature)
-            logger.info("Ollama fallback succeeded")
-            return answer
-        except Exception as exc:
-            last_error = exc
-            logger.warning("Ollama fallback failed")
-
-    raise GenerationUnavailableError(
-        "all answer-generation providers failed"
-    ) from last_error
-
-
 async def chat_with_fallback_async(
     messages: List[dict],
     model: Optional[str] = None,
@@ -115,17 +76,3 @@ async def chat_with_fallback_async(
     raise GenerationUnavailableError(
         "all answer-generation providers failed"
     ) from last_error
-
-
-def retrieval_fallback_message(query: str, sources: list) -> str:
-    """
-    当 LLM 全部不可用时，返回检索原文 + 提示语。
-    这不是 mock 回答，而是给用户有用的信息。
-    """
-    if not sources:
-        return "系统暂时不可用，请稍后重试。"
-
-    parts = ["当前生成服务暂时不可用，以下是检索到的最相关内容供参考：\n"]
-    for i, src in enumerate(sources[:5], 1):
-        parts.append(f"[{i}] ({src.get('source', 'unknown')}) {src.get('text', '')[:300]}")
-    return "\n\n".join(parts)

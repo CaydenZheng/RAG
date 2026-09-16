@@ -3,34 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import statistics
 import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-
-def _percentile(values: Sequence[float], quantile: float) -> float:
-    if not values:
-        raise ValueError("latency samples cannot be empty")
-    if not 0 <= quantile <= 1:
-        raise ValueError("quantile must be between zero and one")
-    ordered = sorted(values)
-    position = (len(ordered) - 1) * quantile
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    if lower == upper:
-        return ordered[lower]
-    fraction = position - lower
-    return ordered[lower] * (1 - fraction) + ordered[upper] * fraction
+from src.evaluation.percentiles import linear_percentile
 
 
 def _latency_summary(values: Sequence[float]) -> dict[str, int | float]:
     return {
         "samples": len(values),
         "mean_ms": round(statistics.fmean(values), 3),
-        "p50_ms": round(_percentile(values, 0.50), 3),
-        "p95_ms": round(_percentile(values, 0.95), 3),
+        "p50_ms": round(linear_percentile(values, 0.50), 3),
+        "p95_ms": round(linear_percentile(values, 0.95), 3),
         "max_ms": round(max(values), 3),
     }
 

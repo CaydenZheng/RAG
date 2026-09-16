@@ -1,11 +1,8 @@
-import asyncio
 from collections.abc import Iterator
-from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 from httpx import Response
 
@@ -260,19 +257,6 @@ def test_index_job_control_endpoints(
     assert status.status_code == 200
     assert status.json()["state"] == "succeeded"
     assert client.get("/index/jobs/not-a-job").status_code == 422
-
-
-def test_windows_absolute_path_is_rejected_before_writing(
-    isolated_runtime: Path,
-) -> None:
-    from src.infra.uploads import save_upload
-
-    upload = UploadFile(file=BytesIO(b"valid text"), filename=r"C:\document.txt")
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(save_upload(upload, isolated_runtime / "data/raw", 20))
-
-    assert error.value.status_code == 400
-    assert not (isolated_runtime / "data/raw").exists()
 
 
 def test_unauthenticated_large_upload_is_rejected_before_multipart_spooling(

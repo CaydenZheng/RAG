@@ -19,6 +19,14 @@ from src.evaluation.metrics import (
     score_sample,
     summarize_results,
 )
+from src.evaluation.percentiles import linear_percentile
+
+
+def test_linear_percentile_rejects_invalid_inputs() -> None:
+    with pytest.raises(ValueError, match="cannot be empty"):
+        linear_percentile([], 0.95)
+    with pytest.raises(ValueError, match="between zero and one"):
+        linear_percentile([1.0], 1.01)
 
 
 @pytest.fixture
