@@ -8,12 +8,67 @@ Pydantic Settings — 读取 .env 的所有配置项，提供类型校验与默�
 
 import math
 from pathlib import Path
-from typing import Optional, Self
+from typing import Annotated, Literal, Optional, Self
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+class MCPServerConfigBase(BaseModel):
+    """Shared, non-secret identity for one optional MCP server."""
+
+    id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    enabled: bool = True
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
+class MCPStdioServerConfig(MCPServerConfigBase):
+    """Configuration passed to the official SDK stdio client."""
+
+    transport: Literal["stdio"]
+    command: str = Field(min_length=1)
+    args: tuple[str, ...] = ()
+    env: dict[str, SecretStr] | None = None
+    cwd: str | None = None
+
+    @field_validator("command")
+    @classmethod
+    def reject_blank_command(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("command must not be blank")
+        return value
+
+
+class MCPStreamableHTTPServerConfig(MCPServerConfigBase):
+    """Configuration passed to the official SDK Streamable HTTP client."""
+
+    transport: Literal["streamable_http"]
+    url: AnyHttpUrl
+    timeout_seconds: float = Field(default=10.0, gt=0, le=300)
+    read_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
+
+    @model_validator(mode="after")
+    def reject_url_credentials(self) -> Self:
+        if self.url.username or self.url.password:
+            raise ValueError("MCP server URL must not contain credentials")
+        return self
+
+
+MCPServerConfig = Annotated[
+    MCPStdioServerConfig | MCPStreamableHTTPServerConfig,
+    Field(discriminator="transport"),
+]
 
 
 def project_path(path: str | Path) -> Path:
@@ -171,6 +226,13 @@ class Settings(BaseSettings):
     )
 
     # ================================================================
+    # MCP（可选；空列表保持原有启动行为）
+    # ================================================================
+    mcp_servers: tuple[MCPServerConfig, ...] = Field(
+        default_factory=tuple, alias="MCP_SERVERS"
+    )
+
+    # ================================================================
     # 日志
     # ================================================================
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
@@ -292,6 +354,13 @@ class Settings(BaseSettings):
             raise ValueError("context reserve ratios must sum to less than 1")
         return self
 
+    @model_validator(mode="after")
+    def validate_unique_mcp_server_ids(self) -> Self:
+        server_ids = [server.id for server in self.mcp_servers]
+        if len(server_ids) != len(set(server_ids)):
+            raise ValueError("MCP_SERVERS must use unique server IDs")
+        return self
+
     # ================================================================
     # 派生属性
     # ================================================================
@@ -343,6 +412,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",  # 忽略 .env 中未定义的变量
         populate_by_name=True,  # 允许用字段名或 alias 访问
+        hide_input_in_errors=True,
     )
 
 
