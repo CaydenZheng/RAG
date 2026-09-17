@@ -18,11 +18,15 @@ import math
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 from loguru import logger
 
 from config.settings import settings
+from src.agent.tool_schema import (
+    ensure_safe_input_schema,
+    validate_tool_arguments,
+)
 from src.core.agent_runtime import ToolResult
 from src.infra.jsonl import append_jsonl
 from src.infra.tracer import tracer
@@ -64,6 +68,62 @@ class ToolDef:
     execute_async_fn: Callable | None = None
     category: str = "general"     # 分类
     max_retries: int = 1          # 失败重试次数
+    source: Literal["native", "mcp"] = "native"
+    provider: str | None = None
+    input_schema: dict[str, Any] | None = None
+    schema_warnings: tuple[str, ...] = ()
+    available: bool = True
+
+
+def tool_params_from_schema(
+    schema: dict[str, Any],
+) -> tuple[List[ToolParam], tuple[str, ...]]:
+    """Project a complete JSON Schema into the legacy planner's flat view."""
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return [], ("input schema has no object properties for the JSON planner",)
+    required = set(schema.get("required") or ())
+    params: list[ToolParam] = []
+    warnings: list[str] = []
+    type_map = {
+        "string": "str",
+        "integer": "int",
+        "number": "float",
+        "boolean": "bool",
+        "object": "dict",
+        "array": "list",
+    }
+    for name, definition in properties.items():
+        if not isinstance(name, str) or not isinstance(definition, dict):
+            warnings.append("a non-standard property was omitted from the planner view")
+            continue
+        schema_type = definition.get("type")
+        planner_type = type_map.get(schema_type)
+        if planner_type is None:
+            planner_type = "dict"
+            warnings.append(
+                f"parameter '{name}' uses a complex schema; planner view is approximate"
+            )
+        if any(key in definition for key in ("$ref", "oneOf", "anyOf", "allOf")):
+            warnings.append(
+                f"parameter '{name}' uses schema composition; planner view is approximate"
+            )
+        choices = definition.get("enum")
+        params.append(
+            ToolParam(
+                name=name,
+                type=planner_type,
+                description=str(definition.get("description") or name),
+                required=name in required,
+                default=definition.get("default"),
+                minimum=definition.get("minimum"),
+                maximum=definition.get("maximum"),
+                choices=tuple(choices) if isinstance(choices, list) else None,
+                min_length=definition.get("minLength"),
+                max_length=definition.get("maxLength"),
+            )
+        )
+    return params, tuple(dict.fromkeys(warnings))
 
 
 # ================================================================
@@ -95,8 +155,12 @@ class ToolRegistry:
     # 注册
     # ----------------------------------------------------------------
 
-    def register(self, tool: ToolDef):
-        """注册工具"""
+    def register(self, tool: ToolDef) -> None:
+        """Register one validated tool without silently replacing another."""
+        if tool.name in self._tools:
+            raise ValueError(f"Tool already registered: {tool.name}")
+        if tool.input_schema is not None:
+            ensure_safe_input_schema(tool.input_schema)
         self._tools[tool.name] = tool
         logger.info("Tool registered: {} (safety={}, params={})",
                      tool.name, tool.safety_level.value, len(tool.params))
@@ -120,6 +184,8 @@ class ToolRegistry:
         """生成供 LLM 理解的工具列表（JSON 格式，注入 planner prompt）"""
         tools_list = []
         for name, tool in self._tools.items():
+            if not tool.available:
+                continue
             params_desc = {
                 p.name: {
                     "type": p.type,
@@ -225,6 +291,13 @@ class ToolRegistry:
                 error_code="unknown_tool",
                 tool_name=tool_name,
             )
+        if not tool.available:
+            return ToolResult(
+                success=False,
+                error="Tool is unavailable",
+                error_code="tool_unavailable",
+                tool_name=tool_name,
+            )
         param_error = self._validate_params(tool, params)
         if param_error:
             return ToolResult(
@@ -275,6 +348,8 @@ class ToolRegistry:
 
     def _validate_params(self, tool: ToolDef, params: dict) -> Optional[str]:
         """Reject malformed and undeclared parameters before side effects."""
+        if tool.input_schema is not None:
+            return validate_tool_arguments(tool.input_schema, params)
         if not isinstance(params, dict):
             return f"Params for tool '{tool.name}' must be an object"
         allowed = {param.name for param in tool.params}

@@ -71,6 +71,42 @@ def test_browser_pages_and_assets_are_available(web_client: TestClient) -> None:
         web_client.close()
 
 
+def test_pages_expose_accessible_application_shell(web_client: TestClient) -> None:
+    page_markers = {
+        "/": ('for="queryInput"', 'id="searchForm"', 'id="warningList"'),
+        "/agent": ('for="msgInput"', 'id="agentForm"', 'id="processPanel"'),
+    }
+
+    try:
+        for page_path, markers in page_markers.items():
+            page = web_client.get(page_path)
+            assert page.status_code == 200
+            assert '<a class="skip-link" href="#mainContent">' in page.text
+            assert '<main id="mainContent"' in page.text
+            assert 'id="serviceStatus"' in page.text
+            assert 'aria-live="polite"' in page.text
+            assert 'href="/docs"' in page.text
+            assert all(marker in page.text for marker in markers)
+    finally:
+        web_client.close()
+
+
+def test_browser_scripts_use_readiness_and_real_session_resets(
+    web_client: TestClient,
+) -> None:
+    try:
+        rendering = web_client.get("/static/rendering.js")
+        search = web_client.get("/static/search.js")
+        agent = web_client.get("/static/agent.js")
+
+        assert 'fetch("/ready"' in rendering.text
+        assert '"/session/reset?session_id="' in search.text
+        assert '"/agent/reset?session_id="' in agent.text
+        assert 'aria-expanded' in agent.text
+    finally:
+        web_client.close()
+
+
 def test_pages_enforce_external_only_active_content(web_client: TestClient) -> None:
     try:
         for page_path in PAGE_ASSETS:
