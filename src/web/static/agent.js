@@ -2,66 +2,107 @@
   "use strict";
 
   const SESSION_KEY = "ragflow_agent_session";
+  const agentForm = document.getElementById("agentForm");
   const messageInput = document.getElementById("msgInput");
   const sendBtn = document.getElementById("sendBtn");
   const stopBtn = document.getElementById("stopBtn");
+  const newSessionBtn = document.getElementById("newSessionBtn");
   const loading = document.getElementById("loading");
   const error = document.getElementById("error");
+  const chatArea = document.getElementById("chatArea");
+  const processPanel = document.getElementById("processPanel");
   const thinking = document.getElementById("thinking");
   const answerEl = document.getElementById("answer");
   const answerCard = document.getElementById("answerCard");
+  const latencyEl = document.getElementById("latency");
+  const iterationEl = document.getElementById("iterCount");
   let sessionId = localStorage.getItem(SESSION_KEY);
   let activeRequestController = null;
+  let activeAnimationFrameId = null;
+  let toolDetailCounter = 0;
 
   if (!sessionId) {
     sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 14);
     localStorage.setItem(SESSION_KEY, sessionId);
   }
 
-  function createStep(icon) {
+  function setRunning(running) {
+    agentForm.setAttribute("aria-busy", String(running));
+    chatArea.setAttribute("aria-busy", String(running));
+    messageInput.readOnly = running;
+    sendBtn.classList.toggle("hidden", running);
+    stopBtn.classList.toggle("active", running);
+    loading.classList.toggle("active", running);
+  }
+
+  function showError(message) {
+    error.textContent = String(message);
+    error.classList.add("active");
+  }
+
+  function clearError() {
+    error.textContent = "";
+    error.classList.remove("active");
+  }
+
+  function createStep(state = "neutral") {
     const step = SafeRender.createElement("div", "step");
+    step.setAttribute("role", "listitem");
+    step.dataset.state = state;
+    const index = SafeRender.createElement(
+      "span",
+      "step-index",
+      String(thinking.children.length + 1).padStart(2, "0"),
+    );
+    index.setAttribute("aria-hidden", "true");
     const content = SafeRender.createElement("div", "step-content");
-    step.append(SafeRender.createElement("span", "step-icon", icon), content);
+    step.append(index, content);
     return { step, content };
   }
 
   function appendStep(step) {
+    processPanel.classList.remove("hidden");
     thinking.appendChild(step);
-    thinking.scrollTop = thinking.scrollHeight;
   }
 
-  function stopAgent() {
+  function stopAgent(showMessage = true) {
     if (activeRequestController) {
       activeRequestController.abort();
       activeRequestController = null;
     }
-    sendBtn.classList.remove("hidden");
-    stopBtn.classList.remove("active");
-    loading.classList.remove("active");
+    if (activeAnimationFrameId !== null) {
+      cancelAnimationFrame(activeAnimationFrameId);
+      activeAnimationFrameId = null;
+    }
+
+    setRunning(false);
     answerEl.classList.remove("streaming");
-    if (!answerEl.textContent) {
-      answerEl.textContent = "⏹ 已终止";
+
+    if (showMessage) {
       answerCard.classList.remove("hidden");
+      if (!answerEl.textContent) answerEl.textContent = "运行已停止。";
+      latencyEl.textContent = "—";
     }
   }
 
   async function send() {
     const message = messageInput.value.trim();
-    if (!message) return;
+    if (!message) {
+      messageInput.focus();
+      return;
+    }
 
-    stopAgent();
-    sendBtn.classList.add("hidden");
-    stopBtn.classList.add("active");
-    loading.classList.add("active");
-    error.classList.remove("active");
-    error.textContent = "";
+    stopAgent(false);
+    clearError();
+    setRunning(true);
     thinking.replaceChildren();
+    processPanel.classList.add("hidden");
     answerEl.textContent = "";
     answerEl.classList.add("streaming");
-    answerEl.classList.remove("placeholder");
     answerCard.classList.add("hidden");
-    document.getElementById("latency").textContent = "—";
-    document.getElementById("iterCount").textContent = "—";
+    latencyEl.textContent = "—";
+    iterationEl.textContent = "—";
+    toolDetailCounter = 0;
 
     const controller = new AbortController();
     activeRequestController = controller;
@@ -71,19 +112,19 @@
     let fullAnswer = "";
     let animating = false;
     let finished = false;
+    let completionData = null;
     let lastRenderTime = 0;
     let firstRender = true;
-    const startTime = Date.now();
+    const startedAt = Date.now();
     let iterationCount = 0;
-    let animationFrameId = null;
 
     controller.signal.addEventListener(
       "abort",
       () => {
         chunkQueue.length = 0;
-        if (animationFrameId !== null) {
-          cancelAnimationFrame(animationFrameId);
-          animationFrameId = null;
+        if (activeAnimationFrameId !== null) {
+          cancelAnimationFrame(activeAnimationFrameId);
+          activeAnimationFrameId = null;
         }
         animating = false;
       },
@@ -92,43 +133,49 @@
 
     function finishRendering() {
       if (controller.signal.aborted || activeRequestController !== controller) return;
+
       answerEl.classList.remove("streaming");
       SafeRender.appendLinkifiedText(answerEl, fullAnswer);
-      if (activeRequestController === controller) activeRequestController = null;
-      sendBtn.classList.remove("hidden");
-      stopBtn.classList.remove("active");
-      loading.classList.remove("active");
+      activeRequestController = null;
+      activeAnimationFrameId = null;
+      setRunning(false);
       answerCard.classList.remove("hidden");
-      document.getElementById("latency").textContent = `${Date.now() - startTime} ms`;
-      document.getElementById("iterCount").textContent = String(iterationCount);
+
+      const serverLatency = Number(completionData?.latency_ms);
+      const latency = Number.isFinite(serverLatency) ? serverLatency : Date.now() - startedAt;
+      latencyEl.textContent = Math.round(latency) + " ms";
+      iterationEl.textContent = String(iterationCount);
     }
 
     function renderFrame(timestamp) {
-      animationFrameId = null;
+      activeAnimationFrameId = null;
       if (controller.signal.aborted || activeRequestController !== controller) return;
+
       if (chunkQueue.length === 0) {
         animating = false;
         if (finished) finishRendering();
         return;
       }
+
       if (firstRender || timestamp - lastRenderTime >= typingInterval) {
         fullAnswer += chunkQueue.shift();
         answerEl.textContent = fullAnswer;
         lastRenderTime = timestamp;
         firstRender = false;
       }
-      animationFrameId = requestAnimationFrame(renderFrame);
+      activeAnimationFrameId = requestAnimationFrame(renderFrame);
     }
 
     function handleEvent(data) {
       if (controller.signal.aborted || activeRequestController !== controller) return;
+
       if (data.error) {
-        loading.classList.remove("active");
+        const errorMessage = typeof data.error === "object"
+          ? data.error.message
+          : data.error;
         answerEl.classList.remove("streaming");
-        error.textContent = "⚠️ " + data.error;
-        error.classList.add("active");
-        sendBtn.classList.remove("hidden");
-        stopBtn.classList.remove("active");
+        setRunning(false);
+        showError(errorMessage || "Agent 处理失败，请稍后重试。");
         controller.abort();
         if (activeRequestController === controller) activeRequestController = null;
         return;
@@ -137,24 +184,39 @@
       if (data.step === "planning") {
         loading.classList.remove("active");
         iterationCount = data.iteration;
-        const { step, content } = createStep("🤔");
-        content.textContent = `第 ${data.iteration} 轮规划中…`;
+        const { step, content } = createStep();
+        content.textContent = "第 " + String(data.iteration) + " 轮规划";
         appendStep(step);
         return;
       }
 
       if (data.step === "tool_call") {
-        const { step, content } = createStep("🔧");
-        const toolName = SafeRender.createElement("b", "", data.tool ?? "unknown");
+        const { step, content } = createStep();
+        const toolName = SafeRender.createElement("b", "", data.tool ?? "未知工具");
+        const detailId = "toolDetail" + String(++toolDetailCounter);
+        const toggle = SafeRender.createElement("button", "step-toggle", "查看参数");
+        toggle.type = "button";
+        toggle.setAttribute("aria-controls", detailId);
+        toggle.setAttribute("aria-expanded", "false");
+
         const detail = SafeRender.createElement(
-          "div",
-          "step-detail collapsed",
+          "pre",
+          "step-detail hidden",
           JSON.stringify(data.params ?? {}, null, 2),
         );
-        detail.addEventListener("click", () => detail.classList.toggle("collapsed"));
+        detail.id = detailId;
+
+        toggle.addEventListener("click", () => {
+          const expanded = toggle.getAttribute("aria-expanded") === "true";
+          toggle.setAttribute("aria-expanded", String(!expanded));
+          toggle.textContent = expanded ? "查看参数" : "收起参数";
+          detail.classList.toggle("hidden", expanded);
+        });
+
         content.append(
-          document.createTextNode("调用工具: "),
+          document.createTextNode("调用工具："),
           toolName,
+          toggle,
           detail,
         );
         appendStep(step);
@@ -162,31 +224,31 @@
       }
 
       if (data.step === "tool_done") {
-        const { step, content } = createStep(data.success ? "✅" : "❌");
+        const state = data.success ? "success" : "failure";
+        const { step, content } = createStep(state);
         content.append(
           document.createTextNode("工具 "),
-          SafeRender.createElement("b", "", data.tool ?? "unknown"),
-          document.createTextNode(data.success ? " 完成" : " 失败"),
+          SafeRender.createElement("b", "", data.tool ?? "未知工具"),
+          document.createTextNode(data.success ? " 已完成" : " 执行失败"),
         );
         appendStep(step);
         return;
       }
 
       if (data.chunk && data.chunk.length > 0) {
-        if (!animating) {
-          answerCard.classList.remove("hidden");
-          loading.classList.remove("active");
-        }
+        loading.classList.remove("active");
+        answerCard.classList.remove("hidden");
         chunkQueue.push(data.chunk);
         if (!animating) {
           animating = true;
-          animationFrameId = requestAnimationFrame(renderFrame);
+          activeAnimationFrameId = requestAnimationFrame(renderFrame);
         }
         return;
       }
 
       if (data.done) {
         finished = true;
+        completionData = data;
         if (data.iterations) iterationCount = data.iterations;
         if (!animating) finishRendering();
       }
@@ -209,10 +271,12 @@
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+
       while (true) {
         const { value, done } = await reader.read();
         buffer += decoder.decode(value, { stream: !done });
         let boundary = buffer.indexOf("\n\n");
+
         while (boundary >= 0) {
           const block = buffer.slice(0, boundary);
           buffer = buffer.slice(boundary + 2);
@@ -224,42 +288,66 @@
           if (data) handleEvent(JSON.parse(data));
           boundary = buffer.indexOf("\n\n");
         }
+
         if (done) break;
       }
+
       if (!finished && !controller.signal.aborted) {
         throw new Error("Agent stream ended without completion");
       }
     } catch (requestError) {
       if (requestError.name === "AbortError" || finished) return;
       if (activeRequestController === controller) activeRequestController = null;
-      loading.classList.remove("active");
+      setRunning(false);
       answerEl.classList.remove("streaming");
-      sendBtn.classList.remove("hidden");
-      stopBtn.classList.remove("active");
-      error.textContent = "⚠️ 连接中断或 Agent 处理失败，请稍后重试";
-      error.classList.add("active");
+      showError("连接中断或 Agent 处理失败，请稍后重试。");
     }
   }
 
-  function newSession(event) {
-    event.preventDefault();
-    if (confirm("开始新会话？当前对话历史将被清除。")) {
+  async function newSession() {
+    if (!confirm("新建会话会清除当前 Agent 历史，是否继续？")) return;
+
+    stopAgent(false);
+    newSessionBtn.disabled = true;
+    clearError();
+
+    try {
+      const response = await fetch(
+        "/agent/reset?session_id=" + encodeURIComponent(sessionId),
+        { method: "POST" },
+      );
+      if (!response.ok && response.status !== 404) {
+        throw new Error("Agent session reset failed");
+      }
+
       sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 14);
       localStorage.setItem(SESSION_KEY, sessionId);
       thinking.replaceChildren();
+      processPanel.classList.add("hidden");
       answerEl.textContent = "";
       answerCard.classList.add("hidden");
       messageInput.value = "";
+      latencyEl.textContent = "—";
+      iterationEl.textContent = "—";
       messageInput.focus();
-      document.getElementById("latency").textContent = "—";
-      document.getElementById("iterCount").textContent = "—";
+    } catch {
+      showError("无法清除当前会话，请稍后重试。");
+    } finally {
+      newSessionBtn.disabled = false;
     }
   }
 
-  sendBtn.addEventListener("click", send);
-  stopBtn.addEventListener("click", stopAgent);
-  document.getElementById("newSessionLink").addEventListener("click", newSession);
+  agentForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    send();
+  });
+  stopBtn.addEventListener("click", () => stopAgent(true));
+  newSessionBtn.addEventListener("click", newSession);
   messageInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") send();
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      agentForm.requestSubmit();
+    }
+    if (event.key === "Escape" && activeRequestController) stopAgent(true);
   });
 })();

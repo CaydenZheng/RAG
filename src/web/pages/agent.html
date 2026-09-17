@@ -1,37 +1,106 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RAGFlow Agent</title>
+<title>Agent · RAGFlow</title>
 <link rel="stylesheet" href="/static/common.css">
 <link rel="stylesheet" href="/static/agent.css">
 </head>
 <body>
-<div class="container">
-  <div class="header">
-    <h1>🤖 RAGFlow Agent</h1>
-    <p>Plan → Execute → Observe 循环 &middot; <a id="newSessionLink" href="#">🔄 新会话</a> &middot; <a href="/">🔍 RAG 搜索</a></p>
-  </div>
+<a class="skip-link" href="#mainContent">跳到主要内容</a>
+<div class="app-shell">
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="RAGFlow 首页">
+      <span class="brand-mark" aria-hidden="true">R</span>
+      <span class="brand-copy">
+        <strong>RAGFlow</strong>
+        <small>本地知识工作台</small>
+      </span>
+    </a>
 
-  <div class="input-box">
-    <input id="msgInput" type="text" placeholder="输入消息，例如：search knowledge base for gradient descent" autofocus>
-    <button id="sendBtn">发送</button>
-    <button id="stopBtn">⏹ 停止</button>
-  </div>
+    <nav class="primary-nav" aria-label="主要导航">
+      <a class="nav-link" href="/">知识检索</a>
+      <a class="nav-link active" href="/agent" aria-current="page">Agent</a>
+    </nav>
 
-  <div id="loading" class="loading">🤔 Agent 思考中...</div>
-  <div id="error" class="error"></div>
-
-  <div class="chat-area">
-    <div id="thinking"></div>
-    <div id="answerCard" class="answer-card hidden">
-      <h2>💬 最终答案</h2>
-      <div id="answer" class="answer-text"></div>
+    <div class="header-actions">
+      <div id="serviceStatus" class="service-status" data-state="checking" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="serviceStatusText">检查服务</span>
+      </div>
+      <button id="newSessionBtn" class="button button-ghost" type="button">新建会话</button>
     </div>
-  </div>
+  </header>
 
-  <div class="latency">⏱ 耗时 <span id="latency">—</span> &middot; 迭代 <span id="iterCount">—</span> 轮</div>
+  <main id="mainContent" class="main-content">
+    <section class="hero" aria-labelledby="pageTitle">
+      <p class="eyebrow">Agent</p>
+      <h1 id="pageTitle">让 Agent 分步完成任务</h1>
+      <p>Agent 会规划步骤、调用可用工具，并在运行过程结束后给出最终回答。</p>
+    </section>
+
+    <section class="panel composer-panel" aria-labelledby="messageLabel">
+      <form id="agentForm" class="composer-form">
+        <div class="field-group">
+          <label id="messageLabel" for="msgInput">发送任务</label>
+          <p id="messageHint" class="field-hint">Enter 发送，Shift + Enter 换行，最多 2000 个字符。</p>
+          <textarea
+            id="msgInput"
+            name="message"
+            rows="2"
+            maxlength="2000"
+            placeholder="例如：检索知识库并总结 reciprocal rank fusion 的作用"
+            aria-describedby="messageHint"
+            required
+            autofocus
+          ></textarea>
+        </div>
+        <div class="action-switch" aria-label="Agent 操作">
+          <button id="sendBtn" class="button button-primary" type="submit">开始运行</button>
+          <button id="stopBtn" class="button button-secondary stop-button" type="button">停止运行</button>
+        </div>
+      </form>
+
+      <div id="loading" class="loading" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Agent 正在思考</span>
+      </div>
+    </section>
+
+    <div id="error" class="notice notice-error error" role="alert"></div>
+
+    <div id="chatArea" class="chat-area" aria-busy="false">
+      <section id="processPanel" class="process-panel hidden" aria-labelledby="processTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">运行过程</p>
+            <h2 id="processTitle">规划与工具调用</h2>
+          </div>
+        </div>
+        <div id="thinking" class="steps" role="list" aria-live="polite"></div>
+      </section>
+
+      <section id="answerCard" class="answer-card hidden" aria-labelledby="answerTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">最终输出</p>
+            <h2 id="answerTitle">Agent 回答</h2>
+          </div>
+          <div class="result-meta" aria-label="运行元信息">
+            <span>耗时 <strong id="latency">—</strong></span>
+            <span>迭代 <strong id="iterCount">—</strong></span>
+          </div>
+        </div>
+        <div id="answer" class="answer-text"></div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <span>RAGFlow · 本地 RAG 与 Agent 工作台</span>
+    <a href="/docs">API 文档</a>
+  </footer>
 </div>
 
 <script src="/static/rendering.js" defer></script>

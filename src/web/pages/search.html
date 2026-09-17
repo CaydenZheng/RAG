@@ -1,39 +1,109 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RAGFlow</title>
+<title>知识检索 · RAGFlow</title>
 <link rel="stylesheet" href="/static/common.css">
 <link rel="stylesheet" href="/static/search.css">
 </head>
 <body>
-<div class="container">
-  <div class="header">
-    <h1>&#128269; RAGFlow</h1>
-    <p>基于 PocketFlow 的高级 RAG 系统 &middot; 混合检索 + Rerank &middot; <a id="newSessionLink" href="#">🔄 新会话</a> &middot; <a href="/agent">🤖 Agent 模式</a></p>
-  </div>
+<a class="skip-link" href="#mainContent">跳到主要内容</a>
+<div class="app-shell">
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="RAGFlow 首页">
+      <span class="brand-mark" aria-hidden="true">R</span>
+      <span class="brand-copy">
+        <strong>RAGFlow</strong>
+        <small>本地知识工作台</small>
+      </span>
+    </a>
 
-  <div class="search-box">
-    <input id="queryInput" type="text" placeholder="输入问题，例如：What is the half-life of actinium?" autofocus>
-    <button id="searchBtn">搜索</button>
-    <button id="stopBtn" class="stop">⏹ 停止</button>
-  </div>
+    <nav class="primary-nav" aria-label="主要导航">
+      <a class="nav-link active" href="/" aria-current="page">知识检索</a>
+      <a class="nav-link" href="/agent">Agent</a>
+    </nav>
 
-  <div id="loading" class="loading">&#9203; 检索中，请稍候...</div>
-  <div id="error" class="error"></div>
-
-  <div id="result" class="result">
-    <div class="answer-card">
-      <h2>&#128172; 答案</h2>
-      <div id="answer" class="answer-text"></div>
+    <div class="header-actions">
+      <div id="serviceStatus" class="service-status" data-state="checking" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="serviceStatusText">检查服务</span>
+      </div>
+      <button id="newSessionBtn" class="button button-ghost" type="button">新建会话</button>
     </div>
+  </header>
 
-    <div class="sources-title">&#128214; 引用来源（共 <span id="sourceCount">0</span> 条）</div>
-    <div id="sources"></div>
+  <main id="mainContent" class="main-content">
+    <section class="hero" aria-labelledby="pageTitle">
+      <p class="eyebrow">知识检索</p>
+      <h1 id="pageTitle">从可信来源中找到答案</h1>
+      <p>输入问题，系统会检索当前知识库、生成回答，并保留可核对的引用依据。</p>
+    </section>
 
-    <div class="latency">&#9201; 耗时 <span id="latency">0</span> ms</div>
-  </div>
+    <section class="panel search-panel" aria-labelledby="queryLabel">
+      <form id="searchForm" class="query-form">
+        <div class="field-group">
+          <label id="queryLabel" for="queryInput">向知识库提问</label>
+          <p id="queryHint" class="field-hint">支持中英文问题，最多 2000 个字符。</p>
+          <input
+            id="queryInput"
+            name="query"
+            type="text"
+            maxlength="2000"
+            placeholder="例如：什么是 reciprocal rank fusion？"
+            aria-describedby="queryHint"
+            autocomplete="off"
+            required
+            autofocus
+          >
+        </div>
+        <div class="action-switch" aria-label="检索操作">
+          <button id="searchBtn" class="button button-primary" type="submit">开始检索</button>
+          <button id="stopBtn" class="button button-secondary stop-button" type="button">停止生成</button>
+        </div>
+      </form>
+
+      <div id="loading" class="loading" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>正在检索并组织答案</span>
+      </div>
+    </section>
+
+    <div id="error" class="notice notice-error error" role="alert"></div>
+
+    <div id="result" class="result">
+      <section class="answer-card" aria-labelledby="answerTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">回答</p>
+            <h2 id="answerTitle">检索结果</h2>
+          </div>
+          <div class="result-meta" aria-label="检索元信息">
+            <span>耗时 <strong id="latency">—</strong></span>
+            <span>索引 <strong id="indexVersion">—</strong></span>
+          </div>
+        </div>
+        <div id="warningList" class="warning-list" role="status" aria-live="polite"></div>
+        <div id="answer" class="answer-text"></div>
+      </section>
+
+      <section class="sources-section" aria-labelledby="sourcesTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">证据</p>
+            <h2 id="sourcesTitle">引用来源 <span id="sourceCount" class="count-badge">0</span></h2>
+          </div>
+          <p class="section-description">核对回答所依据的知识片段。</p>
+        </div>
+        <div id="sources" class="sources-list"></div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <span>RAGFlow · 本地 RAG 与 Agent 工作台</span>
+    <a href="/docs">API 文档</a>
+  </footer>
 </div>
 
 <script src="/static/rendering.js" defer></script>
