@@ -10,6 +10,7 @@ FastAPI 服务入口。
   POST /agent/chat      Agent 对话（Plan-Execute-Observe）
   POST /agent/chat/stream  Agent 执行事件流
   POST /agent/reset     重置 Agent 会话
+  GET  /agent/tools     查看工具来源和 MCP Server 状态
   GET  /agent/memory/{id}  查看 Agent 记忆（调试）
 
 用法:
@@ -41,6 +42,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from config.settings import settings
+from src.agent import mcp_runtime as mcp_runtime_module
 from src.agent.harness import agent_harness
 from src.api.admin_auth import AdminAuthMiddleware
 from src.api.client_identity import ClientIdentityMiddleware, scope_request_session
@@ -101,6 +103,8 @@ app.add_middleware(RequestTracingMiddleware)
 app.add_middleware(AdminAuthMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.router.add_event_handler("startup", warm_up_runtime)
+app.router.add_event_handler("startup", mcp_runtime_module.start_mcp_runtime)
+app.router.add_event_handler("shutdown", mcp_runtime_module.close_mcp_runtime)
 app.router.add_event_handler("shutdown", close_chroma_clients)
 
 
@@ -129,12 +133,28 @@ def health() -> dict[str, str]:
 
 @app.get("/ready")
 def readiness(response: Response) -> dict[str, object]:
-    """Report required startup dependencies and optional degradation."""
+    """Report required dependencies and optional MCP degradation."""
     snapshot = runtime_readiness.snapshot()
+    mcp_summary = mcp_runtime_module.mcp_runtime.readiness_summary()
+    if (
+        snapshot["status"] == "ready"
+        and mcp_summary["status"] in {"starting", "degraded"}
+    ):
+        snapshot["status"] = "degraded"
+
+    payload: dict[str, object] = dict(snapshot)
+    payload["mcp"] = dict(mcp_summary)
     response.headers["Cache-Control"] = "no-store"
     if snapshot["status"] in {"starting", "unavailable"}:
         response.status_code = 503
-    return dict(snapshot)
+    return payload
+
+
+@app.get("/agent/tools")
+def agent_tools(response: Response) -> dict[str, object]:
+    """Return public tool metadata and secret-free MCP provider state."""
+    response.headers["Cache-Control"] = "no-store"
+    return dict(mcp_runtime_module.mcp_runtime.status_payload())
 
 
 @app.post("/query", response_model=QueryResponse)
