@@ -5,19 +5,25 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from mcp import Client
 from mcp.server.mcpserver import MCPServer
 
-from config.settings import MCPServerConfig, MCPStdioServerConfig
-from src.agent.mcp_client import MCPClientManager, MCPServerSnapshot
-from src.agent.tools import SafetyLevel, ToolDef, ToolRegistry
-from src.core.agent_runtime import ToolResult
+if TYPE_CHECKING:
+    from config.settings import MCPServerConfig, MCPStdioServerConfig
+    from src.agent.mcp_client import (
+        MCPClientFactory,
+        MCPClientManager,
+        MCPServerSnapshot,
+    )
+    from src.agent.tools import ToolDef, ToolRegistry
 
 
 def _server(server_id: str, *, enabled: bool = True) -> MCPStdioServerConfig:
+    from config.settings import MCPStdioServerConfig
+
     return MCPStdioServerConfig(
         id=server_id,
         enabled=enabled,
@@ -27,6 +33,9 @@ def _server(server_id: str, *, enabled: bool = True) -> MCPStdioServerConfig:
 
 
 def _mcp_tool(provider: str) -> ToolDef:
+    from src.agent.tools import SafetyLevel, ToolDef
+    from src.core.agent_runtime import ToolResult
+
     return ToolDef(
         name=f"mcp__{provider}__probe",
         description="MCP lifecycle probe",
@@ -39,17 +48,33 @@ def _mcp_tool(provider: str) -> ToolDef:
     )
 
 
+def _registry() -> ToolRegistry:
+    from src.agent.tools import ToolRegistry
+
+    return ToolRegistry()
+
+
+def _manager(
+    servers: list[MCPServerConfig],
+    *,
+    client_factory: MCPClientFactory,
+) -> MCPClientManager:
+    from src.agent.mcp_client import MCPClientManager
+
+    return MCPClientManager(servers, client_factory=client_factory)
+
+
 def test_manager_owns_official_client_lifecycle_and_can_restart() -> None:
     server = MCPServer("manager-lifecycle-test")
     configured = _server("clock")
-    registry = ToolRegistry()
+    registry = _registry()
     created: list[str] = []
 
     def create_client(config: MCPServerConfig) -> Client:
         created.append(config.id)
         return Client(server)
 
-    manager = MCPClientManager([configured], client_factory=create_client)
+    manager = _manager([configured], client_factory=create_client)
 
     async def exercise() -> tuple[tuple[MCPServerSnapshot, ...], ...]:
         await manager.start(registry)
@@ -75,10 +100,10 @@ def test_empty_manager_has_no_lifecycle_side_effects() -> None:
     def unexpected_client(config: MCPServerConfig) -> Client:
         raise AssertionError(f"empty manager reached factory: {config.id}")
 
-    manager = MCPClientManager([], client_factory=unexpected_client)
+    manager = _manager([], client_factory=unexpected_client)
 
     async def exercise() -> None:
-        await manager.start(ToolRegistry())
+        await manager.start(_registry())
         await manager.close()
 
     asyncio.run(exercise())
@@ -99,11 +124,11 @@ def test_snapshot_exposes_connecting_transition() -> None:
     async def exercise() -> tuple[str, str]:
         entered = asyncio.Event()
         release = asyncio.Event()
-        manager = MCPClientManager(
+        manager = _manager(
             [_server("slow")],
             client_factory=lambda config: client_context(entered, release),
         )
-        start_task = asyncio.create_task(manager.start(ToolRegistry()))
+        start_task = asyncio.create_task(manager.start(_registry()))
         await entered.wait()
         connecting = manager.snapshot()[0]["status"]
         release.set()
@@ -130,11 +155,11 @@ def test_cancelled_start_resets_connecting_state_and_can_restart() -> None:
                 await release.wait()
             yield cast(Client, object())
 
-        manager = MCPClientManager(
+        manager = _manager(
             [_server("cancelled")],
             client_factory=lambda config: client_context(),
         )
-        registry = ToolRegistry()
+        registry = _registry()
         start_task = asyncio.create_task(manager.start(registry))
         await entered.wait()
         start_task.cancel()
@@ -157,7 +182,7 @@ def test_cancelled_start_resets_connecting_state_and_can_restart() -> None:
 def test_all_provider_tools_are_disabled_before_first_connection_await() -> None:
     first_tool = _mcp_tool("first")
     second_tool = _mcp_tool("second")
-    registry = ToolRegistry()
+    registry = _registry()
     registry.register(first_tool)
     registry.register(second_tool)
 
@@ -172,7 +197,7 @@ def test_all_provider_tools_are_disabled_before_first_connection_await() -> None
                 await release_first.wait()
             yield cast(Client, object())
 
-        manager = MCPClientManager(
+        manager = _manager(
             [_server("first"), _server("second")],
             client_factory=client_context,
         )
@@ -194,7 +219,7 @@ def test_all_provider_tools_are_disabled_before_first_connection_await() -> None
 
 
 def test_one_connection_failure_does_not_block_other_servers() -> None:
-    registry = ToolRegistry()
+    registry = _registry()
     working_tool = _mcp_tool("working")
     broken_tool = _mcp_tool("broken")
     second_tool = _mcp_tool("second")
@@ -217,7 +242,7 @@ def test_one_connection_failure_does_not_block_other_servers() -> None:
 
         return client_context()
 
-    manager = MCPClientManager(
+    manager = _manager(
         [_server("working"), _server("broken"), _server("second")],
         client_factory=create_client,
     )
@@ -268,7 +293,7 @@ def test_one_connection_failure_does_not_block_other_servers() -> None:
 
 def test_disabled_server_is_not_connected_and_snapshot_is_isolated() -> None:
     calls: list[str] = []
-    registry = ToolRegistry()
+    registry = _registry()
     disabled_tool = _mcp_tool("disabled")
     registry.register(disabled_tool)
 
@@ -276,7 +301,7 @@ def test_disabled_server_is_not_connected_and_snapshot_is_isolated() -> None:
         calls.append(config.id)
         raise AssertionError("disabled server must not create a client")
 
-    manager = MCPClientManager(
+    manager = _manager(
         [_server("disabled", enabled=False)],
         client_factory=unexpected_client,
     )
@@ -305,7 +330,7 @@ def test_manager_rejects_duplicate_server_ids() -> None:
         raise AssertionError(f"duplicate configuration reached factory: {config.id}")
 
     with pytest.raises(ValueError, match="unique server IDs"):
-        MCPClientManager(
+        _manager(
             [_server("duplicate"), _server("duplicate")],
             client_factory=unexpected_client,
         )
@@ -328,13 +353,13 @@ def test_close_failure_is_isolated_and_redacted() -> None:
 
         return client_context()
 
-    manager = MCPClientManager(
+    manager = _manager(
         [_server("working-close"), _server("broken-close")],
         client_factory=create_client,
     )
 
     async def exercise() -> dict[str, dict[str, object]]:
-        await manager.start(ToolRegistry())
+        await manager.start(_registry())
         await manager.close()
         return {state["id"]: dict(state) for state in manager.snapshot()}
 
@@ -348,7 +373,7 @@ def test_close_failure_is_isolated_and_redacted() -> None:
 
 def test_cancelled_close_finishes_cleanup_and_can_restart() -> None:
     tool = _mcp_tool("cancel-close")
-    registry = ToolRegistry()
+    registry = _registry()
     registry.register(tool)
 
     async def exercise() -> dict[str, object]:
@@ -368,7 +393,7 @@ def test_cancelled_close_finishes_cleanup_and_can_restart() -> None:
                 await allow_close.wait()
                 closes += 1
 
-        manager = MCPClientManager(
+        manager = _manager(
             [_server("cancel-close")],
             client_factory=lambda config: client_context(),
         )
@@ -438,15 +463,15 @@ def test_started_manager_rejects_a_different_registry() -> None:
     async def client_context() -> AsyncIterator[Client]:
         yield cast(Client, object())
 
-    manager = MCPClientManager(
+    manager = _manager(
         [_server("bound")],
         client_factory=lambda config: client_context(),
     )
 
     async def exercise() -> None:
-        await manager.start(ToolRegistry())
+        await manager.start(_registry())
         with pytest.raises(RuntimeError, match="another tool registry"):
-            await manager.start(ToolRegistry())
+            await manager.start(_registry())
         await manager.close()
 
     asyncio.run(exercise())
