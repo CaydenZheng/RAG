@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import threading
-from collections.abc import Callable, Iterable, Sequence
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
 from loguru import logger
 from mcp import Client
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.types import TextContent
 from mcp.types import Tool as MCPTool
 
-from config.settings import MCPServerConfig
+from config.settings import MCPServerConfig, MCPStdioServerConfig
 from src.agent.tool_schema import InvalidToolSchema, ensure_safe_input_schema
 from src.agent.tools import (
     SafetyLevel,
@@ -53,6 +56,58 @@ MCPClientFactory = Callable[
 ]
 
 
+class _SafeStdioProtocolLogFilter(logging.Filter):
+    """Remove peer-controlled parse details before logging handlers run."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if (
+            record.name == "mcp.client.stdio"
+            and record.msg == "Failed to parse JSONRPC message from server"
+        ):
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+        return True
+
+
+_STDIO_PROTOCOL_LOG_FILTER = _SafeStdioProtocolLogFilter()
+logging.getLogger("mcp.client.stdio").addFilter(_STDIO_PROTOCOL_LOG_FILTER)
+
+
+@asynccontextmanager
+async def _stdio_client_context(
+    server: MCPStdioServerConfig,
+) -> AsyncIterator[Client]:
+    """Enter the official stdio transport without exposing peer output."""
+    environment = (
+        {
+            name: value.get_secret_value()
+            for name, value in server.env.items()
+        }
+        if server.env is not None
+        else None
+    )
+    parameters = StdioServerParameters(
+        command=server.command,
+        args=list(server.args),
+        env=environment,
+        cwd=server.cwd,
+    )
+    with open(os.devnull, "w", encoding="utf-8") as error_sink:
+        transport = stdio_client(parameters, errlog=error_sink)
+        async with Client(transport) as client:
+            yield client
+
+
+def _default_client_factory(
+    server: MCPServerConfig,
+) -> AbstractAsyncContextManager[Client]:
+    """Build an official SDK client while keeping transports behind one seam."""
+    if not isinstance(server, MCPStdioServerConfig):
+        raise ValueError("MCP transport is not implemented")
+    return _stdio_client_context(server)
+
+
 @dataclass
 class _ServerConnection:
     close_requested: asyncio.Event
@@ -68,7 +123,7 @@ class MCPClientManager:
         self,
         servers: Sequence[MCPServerConfig],
         *,
-        client_factory: MCPClientFactory,
+        client_factory: MCPClientFactory = _default_client_factory,
     ) -> None:
         self._servers: tuple[MCPServerConfig, ...] = tuple(servers)
         server_ids = [server.id for server in self._servers]
