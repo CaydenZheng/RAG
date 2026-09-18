@@ -18,7 +18,7 @@ import math
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict
 
 from loguru import logger
 
@@ -73,6 +73,17 @@ class ToolDef:
     input_schema: dict[str, Any] | None = None
     schema_warnings: tuple[str, ...] = ()
     available: bool = True
+
+
+class ToolStatusSnapshot(TypedDict):
+    """Public tool metadata safe for status responses."""
+
+    name: str
+    source: Literal["native", "mcp"]
+    provider: str | None
+    category: str
+    safety_level: str
+    available: bool
 
 
 def tool_params_from_schema(
@@ -175,6 +186,20 @@ class ToolRegistry:
 
     def get_tool(self, name: str) -> Optional[ToolDef]:
         return self._tools.get(name)
+
+    def status_snapshot(self) -> tuple[ToolStatusSnapshot, ...]:
+        """Return stable public metadata without schemas or call details."""
+        return tuple(
+            {
+                "name": tool.name,
+                "source": tool.source,
+                "provider": tool.provider,
+                "category": tool.category,
+                "safety_level": tool.safety_level.value,
+                "available": tool.available,
+            }
+            for tool in sorted(self._tools.values(), key=lambda item: item.name)
+        )
 
     # ----------------------------------------------------------------
     # LLM 可见的工具描述（用于 Agent Planner prompt）
