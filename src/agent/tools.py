@@ -46,7 +46,7 @@ class SafetyLevel(str, Enum):
 class ToolParam:
     """工具参数定义"""
     name: str
-    type: str           # "str" | "int" | "float" | "bool" | "dict"
+    type: str           # "str" | "int" | "float" | "bool" | "dict" | "list"
     description: str
     required: bool = True
     default: Any = None
@@ -221,7 +221,13 @@ class ToolRegistry:
         start = time.time()
         prepared = self._prepare(tool_name, params, session_id)
         if isinstance(prepared, ToolResult):
-            return prepared
+            return self._complete_preparation_failure(
+                tool_name,
+                params,
+                prepared,
+                session_id,
+                start,
+            )
         tool, call_hash = prepared
         for attempt in range(tool.max_retries + 1):
             try:
@@ -254,7 +260,13 @@ class ToolRegistry:
         start = time.time()
         prepared = self._prepare(tool_name, params, session_id)
         if isinstance(prepared, ToolResult):
-            return prepared
+            return self._complete_preparation_failure(
+                tool_name,
+                params,
+                prepared,
+                session_id,
+                start,
+            )
         tool, call_hash = prepared
         for attempt in range(tool.max_retries + 1):
             try:
@@ -340,6 +352,26 @@ class ToolRegistry:
         self._record_call(session_id, call_hash)
         if tool.safety_level == SafetyLevel.GRAYLIST:
             self._audit(tool.name, params, result, session_id)
+        return result
+
+    def _complete_preparation_failure(
+        self,
+        tool_name: str,
+        params: dict,
+        result: ToolResult,
+        session_id: str,
+        start: float,
+    ) -> ToolResult:
+        """Finalize rejected calls and audit graylist validation failures."""
+        result.latency_ms = (time.time() - start) * 1000
+        tool = self._tools.get(tool_name)
+        if (
+            result.error_code == "invalid_tool_parameters"
+            and tool is not None
+            and tool.safety_level == SafetyLevel.GRAYLIST
+        ):
+            safe_params = params if isinstance(params, dict) else {}
+            self._audit(tool_name, safe_params, result, session_id)
         return result
 
     # ----------------------------------------------------------------
@@ -472,7 +504,23 @@ class ToolRegistry:
             for session_id in oldest_sessions:
                 del self._dedup_cache[session_id]
 
-    def _audit(self, tool_name: str, params: dict, result: ToolResult, session_id: str):
+    @staticmethod
+    def _audit_parameter_names(params: object) -> list[str]:
+        """Return sortable, value-free names for untrusted arguments."""
+        if not isinstance(params, dict):
+            return []
+        return sorted(
+            name if isinstance(name, str) else "<non-string>"
+            for name in params
+        )
+
+    def _audit(
+        self,
+        tool_name: str,
+        params: dict,
+        result: ToolResult,
+        session_id: str,
+    ) -> None:
         """记录灰名单执行结果；ToolRegistry 是唯一审计入口。"""
         audit_path = settings.log_dir / "audit.jsonl"
         trace = tracer.current or {}
@@ -481,7 +529,7 @@ class ToolRegistry:
             "request_id": trace.get("request_id", "unavailable"),
             "trace_id": trace.get("trace_id", "unavailable"),
             "tool_name": tool_name,
-            "parameter_names": sorted(params),
+            "parameter_names": self._audit_parameter_names(params),
             "success": result.success,
             "error_code": result.error_code,
             "latency_ms": round(result.latency_ms, 1),
