@@ -2477,6 +2477,7 @@ dependencies = [
     { name = "sentence-transformers" },
     { name = "tenacity" },
     { name = "tiktoken" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2521,6 +2522,7 @@ requires-dist = [
     { name = "sentence-transformers", specifier = "==6.0.1" },
     { name = "tenacity", specifier = "==9.1.4" },
     { name = "tiktoken", specifier = "==0.14.0" },
+    { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2026.3" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.52.4" },
 ]
 
