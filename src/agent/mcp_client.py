@@ -283,7 +283,15 @@ class MCPClientManager:
                         client=client,
                     )
                 )
-            except (InvalidToolSchema, TypeError, ValueError) as error:
+            except InvalidToolSchema as error:
+                rejected_tool_count += 1
+                logger.warning(
+                    "MCP server {} tool definition was rejected: {}",
+                    server.id,
+                    str(error),
+                )
+                continue
+            except (TypeError, ValueError) as error:
                 rejected_tool_count += 1
                 logger.warning(
                     "MCP server {} tool definition was rejected: {}",
