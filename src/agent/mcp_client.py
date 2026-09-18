@@ -4,16 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from loguru import logger
 from mcp import Client
+from mcp.types import TextContent
+from mcp.types import Tool as MCPTool
 
 from config.settings import MCPServerConfig
-from src.agent.tools import ToolRegistry
+from src.agent.tool_schema import InvalidToolSchema, ensure_safe_input_schema
+from src.agent.tools import (
+    SafetyLevel,
+    ToolDef,
+    ToolRegistry,
+    tool_params_from_schema,
+)
+from src.core.agent_runtime import ToolResult
 
 MCPServerStatus = Literal[
     "disabled",
@@ -23,6 +33,8 @@ MCPServerStatus = Literal[
     "unavailable",
 ]
 MCPTransport = Literal["stdio", "streamable_http"]
+MAX_MCP_TOOL_PAGES = 100
+MAX_MCP_TOOLS_PER_SERVER = 1000
 
 
 class MCPServerSnapshot(TypedDict):
@@ -66,6 +78,7 @@ class MCPClientManager:
         self._lifecycle_lock: asyncio.Lock = asyncio.Lock()
         self._state_lock: threading.RLock = threading.RLock()
         self._connections: dict[str, _ServerConnection] = {}
+        self._discovery_registry: ToolRegistry | None = None
         self._tool_registry: ToolRegistry | None = None
         self._started: bool = False
         self._states: dict[str, MCPServerSnapshot] = {
@@ -82,6 +95,7 @@ class MCPClientManager:
                     )
                 return
 
+            self._bind_discovery_registry(tool_registry)
             self._started = True
             self._tool_registry = tool_registry
             try:
@@ -102,6 +116,9 @@ class MCPClientManager:
                     )
                     await self._connect_server(server, tool_registry)
             except BaseException as error:
+                interrupted_server_ids = self._server_ids_with_status(
+                    "connecting"
+                )
                 await self._close_connections()
                 if isinstance(error, asyncio.CancelledError):
                     error_code = "mcp_start_cancelled"
@@ -109,7 +126,8 @@ class MCPClientManager:
                 else:
                     error_code = "mcp_start_aborted"
                     message = "server connection start was aborted"
-                self._mark_connecting_unavailable(
+                self._mark_servers_unavailable(
+                    interrupted_server_ids,
                     error_code=error_code,
                     message=message,
                 )
@@ -188,17 +206,217 @@ class MCPClientManager:
             return
 
         connection.client = client
-        self._set_provider_tools_available(
+        try:
+            (
+                registered_tool_names,
+                rejected_tool_count,
+            ) = await self._discover_server_tools(
+                server,
+                client,
+                tool_registry,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            await self._close_after_discovery_failure(server.id, connection)
+            self._update_state(
+                server.id,
+                status="unavailable",
+                error_code="mcp_tool_discovery_failed",
+                message="server tool discovery failed",
+            )
+            logger.warning(
+                "MCP server {} tool discovery failed: {}",
+                server.id,
+                type(error).__name__,
+            )
+            return
+
+        self._set_tools_available(
             tool_registry,
-            server.id,
+            registered_tool_names,
             available=True,
         )
-        self._update_state(
-            server.id,
-            status="available",
-            error_code=None,
-            message="server connection is available",
+        if rejected_tool_count:
+            self._update_state(
+                server.id,
+                status="degraded",
+                error_code="mcp_tool_definition_rejected",
+                message="one or more server tool definitions were rejected",
+            )
+        else:
+            self._update_state(
+                server.id,
+                status="available",
+                error_code=None,
+                message="server connection is available",
+            )
+
+    async def _discover_server_tools(
+        self,
+        server: MCPServerConfig,
+        client: Client,
+        tool_registry: ToolRegistry,
+    ) -> tuple[set[str], int]:
+        discovered_tools = await self._list_server_tools(client)
+        self._unregister_provider_tools(tool_registry, server.id)
+
+        registered_names: set[str] = set()
+        seen_names: set[str] = set()
+        rejected_tool_count = 0
+        for mcp_tool in discovered_tools:
+            registered_name = f"mcp__{server.id}__{mcp_tool.name}"
+            if registered_name in seen_names:
+                rejected_tool_count += 1
+                logger.warning(
+                    "MCP server {} returned a duplicate tool name",
+                    server.id,
+                )
+                continue
+            seen_names.add(registered_name)
+            try:
+                tool_registry.register(
+                    self._build_tool_def(
+                        server_id=server.id,
+                        registered_name=registered_name,
+                        mcp_tool=mcp_tool,
+                        client=client,
+                    )
+                )
+            except (InvalidToolSchema, TypeError, ValueError) as error:
+                rejected_tool_count += 1
+                logger.warning(
+                    "MCP server {} tool definition was rejected: {}",
+                    server.id,
+                    type(error).__name__,
+                )
+                continue
+            registered_names.add(registered_name)
+
+        return registered_names, rejected_tool_count
+
+    @staticmethod
+    async def _list_server_tools(client: Client) -> list[MCPTool]:
+        tools: list[MCPTool] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        for _ in range(MAX_MCP_TOOL_PAGES):
+            result = await client.list_tools(
+                cursor=cursor,
+                cache_mode="refresh",
+            )
+            if len(tools) + len(result.tools) > MAX_MCP_TOOLS_PER_SERVER:
+                raise RuntimeError("MCP tool discovery exceeded the tool limit")
+            tools.extend(result.tools)
+            next_cursor = result.next_cursor
+            if next_cursor is None:
+                return tools
+            if next_cursor in seen_cursors:
+                raise RuntimeError("MCP tool discovery returned a cursor cycle")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        raise RuntimeError("MCP tool discovery exceeded the page limit")
+
+    @staticmethod
+    def _build_tool_def(
+        *,
+        server_id: str,
+        registered_name: str,
+        mcp_tool: MCPTool,
+        client: Client,
+    ) -> ToolDef:
+        # Protect Planner projection; ToolRegistry revalidates its boundary.
+        ensure_safe_input_schema(mcp_tool.input_schema)
+        input_schema = deepcopy(mcp_tool.input_schema)
+        params, warnings = tool_params_from_schema(input_schema)
+
+        def execute_sync(arguments: dict[str, Any]) -> ToolResult:
+            return ToolResult(
+                success=False,
+                error="MCP tools require asynchronous execution",
+                error_code="mcp_async_required",
+                tool_name=registered_name,
+            )
+
+        async def execute_async(arguments: dict[str, Any]) -> ToolResult:
+            try:
+                result = await client.call_tool(mcp_tool.name, arguments)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning(
+                    "MCP server {} tool call failed: {}",
+                    server_id,
+                    type(error).__name__,
+                )
+                return ToolResult(
+                    success=False,
+                    error="MCP tool call failed",
+                    error_code="mcp_call_failed",
+                    tool_name=registered_name,
+                )
+            if result.is_error:
+                return ToolResult(
+                    success=False,
+                    error="MCP tool returned an error",
+                    error_code="mcp_tool_error",
+                    tool_name=registered_name,
+                )
+            if result.structured_content is not None:
+                data = result.structured_content
+            else:
+                text = "\n".join(
+                    block.text
+                    for block in result.content
+                    if isinstance(block, TextContent)
+                )
+                data = {"text": text}
+            return ToolResult(
+                success=True,
+                data=data,
+                tool_name=registered_name,
+            )
+
+        return ToolDef(
+            name=registered_name,
+            description=mcp_tool.description or mcp_tool.title or mcp_tool.name,
+            params=params,
+            safety_level=SafetyLevel.GRAYLIST,
+            execute_fn=execute_sync,
+            execute_async_fn=execute_async,
+            category="mcp",
+            max_retries=0,
+            source="mcp",
+            provider=server_id,
+            input_schema=input_schema,
+            schema_warnings=warnings,
+            available=False,
         )
+
+    async def _close_after_discovery_failure(
+        self,
+        server_id: str,
+        connection: _ServerConnection,
+    ) -> None:
+        connection.close_requested.set()
+        try:
+            await asyncio.shield(connection.owner_task)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning(
+                "MCP server {} close after discovery failure failed: {}",
+                server_id,
+                type(error).__name__,
+            )
+        self._connections.pop(server_id, None)
+
+    def _bind_discovery_registry(self, tool_registry: ToolRegistry) -> None:
+        previous_registry = self._discovery_registry
+        if previous_registry is not None and previous_registry is not tool_registry:
+            for server in self._servers:
+                self._unregister_provider_tools(previous_registry, server.id)
+        self._discovery_registry = tool_registry
 
     @staticmethod
     async def _own_client_context(
@@ -340,23 +558,58 @@ class MCPClientManager:
             )
             self._states[server_id] = state
 
-    def _mark_connecting_unavailable(
+    def _server_ids_with_status(
         self,
+        status: MCPServerStatus,
+    ) -> tuple[str, ...]:
+        with self._state_lock:
+            return tuple(
+                server_id
+                for server_id, current in self._states.items()
+                if current["status"] == status
+            )
+
+    def _mark_servers_unavailable(
+        self,
+        server_ids: Sequence[str],
         *,
         error_code: str,
         message: str,
     ) -> None:
         with self._state_lock:
-            for server_id, current in self._states.items():
-                if current["status"] != "connecting":
-                    continue
-                state = current.copy()
+            for server_id in server_ids:
+                state = self._states[server_id].copy()
                 state.update(
                     status="unavailable",
                     error_code=error_code,
                     message=message,
                 )
                 self._states[server_id] = state
+
+    @staticmethod
+    def _unregister_provider_tools(
+        tool_registry: ToolRegistry,
+        server_id: str,
+    ) -> None:
+        names = [
+            name
+            for name, tool in tool_registry.tools.items()
+            if tool.source == "mcp" and tool.provider == server_id
+        ]
+        for name in names:
+            tool_registry.unregister(name)
+
+    @staticmethod
+    def _set_tools_available(
+        tool_registry: ToolRegistry,
+        names: Iterable[str],
+        *,
+        available: bool,
+    ) -> None:
+        for name in names:
+            tool = tool_registry.get_tool(name)
+            if tool is not None:
+                tool.available = available
 
     @staticmethod
     def _set_provider_tools_available(
