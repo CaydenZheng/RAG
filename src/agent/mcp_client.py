@@ -12,13 +12,19 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
+import httpx2
 from loguru import logger
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.types import TextContent
 from mcp.types import Tool as MCPTool
 
-from config.settings import MCPServerConfig, MCPStdioServerConfig
+from config.settings import (
+    MCPServerConfig,
+    MCPStdioServerConfig,
+    MCPStreamableHTTPServerConfig,
+)
 from src.agent.tool_schema import InvalidToolSchema, ensure_safe_input_schema
 from src.agent.tools import (
     SafetyLevel,
@@ -74,6 +80,84 @@ _STDIO_PROTOCOL_LOG_FILTER = _SafeStdioProtocolLogFilter()
 logging.getLogger("mcp.client.stdio").addFilter(_STDIO_PROTOCOL_LOG_FILTER)
 
 
+class _SafeStreamableHTTPLogFilter(logging.Filter):
+    """Keep SDK diagnostics while removing peer- and request-controlled data."""
+
+    _SAFE_MESSAGES: tuple[tuple[str, str], ...] = (
+        (
+            "Connecting to StreamableHTTP endpoint:",
+            "Connecting to StreamableHTTP endpoint",
+        ),
+        ("Received session ID:", "Received StreamableHTTP session ID"),
+        ("SSE message:", "Received StreamableHTTP SSE message"),
+        ("Unknown SSE event:", "Received unknown StreamableHTTP SSE event"),
+        ("GET stream not opened:", "StreamableHTTP GET stream was not opened"),
+        ("Sending client message:", "Sending StreamableHTTP client message"),
+        ("Unexpected content type:", "Received unexpected HTTP content type"),
+        ("Reconnection failed:", "StreamableHTTP reconnection failed"),
+        ("Session termination failed:", "StreamableHTTP session termination failed"),
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "mcp.client.streamable_http":
+            return True
+
+        message = str(record.msg)
+        for prefix, replacement in self._SAFE_MESSAGES:
+            if message.startswith(prefix):
+                record.msg = replacement
+                record.args = ()
+                break
+        else:
+            record.msg = "MCP Streamable HTTP transport event"
+            record.args = ()
+
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
+        return True
+
+
+class _SafeHTTPXRequestLogFilter(logging.Filter):
+    """Remove endpoint URLs from the HTTP client's standard request log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "httpx2" and str(record.msg).startswith("HTTP Request:"):
+            record.msg = "HTTP request completed"
+            record.args = ()
+        return True
+
+
+class _SafeHTTPCoreLogFilter(logging.Filter):
+    """Remove peer-controlled connection and response details from debug logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name.startswith("httpcore2."):
+            record.msg = "HTTP transport event"
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+        return True
+
+
+_STREAMABLE_HTTP_LOG_FILTER = _SafeStreamableHTTPLogFilter()
+logging.getLogger("mcp.client.streamable_http").addFilter(
+    _STREAMABLE_HTTP_LOG_FILTER
+)
+_HTTPX_REQUEST_LOG_FILTER = _SafeHTTPXRequestLogFilter()
+logging.getLogger("httpx2").addFilter(_HTTPX_REQUEST_LOG_FILTER)
+_HTTPCORE_LOG_FILTER = _SafeHTTPCoreLogFilter()
+for _logger_name in (
+    "httpcore2.connection",
+    "httpcore2.http11",
+    "httpcore2.http2",
+    "httpcore2.proxy",
+    "httpcore2.socks",
+):
+    logging.getLogger(_logger_name).addFilter(_HTTPCORE_LOG_FILTER)
+
+
 @asynccontextmanager
 async def _stdio_client_context(
     server: MCPStdioServerConfig,
@@ -99,13 +183,33 @@ async def _stdio_client_context(
             yield client
 
 
+@asynccontextmanager
+async def _streamable_http_client_context(
+    server: MCPStreamableHTTPServerConfig,
+) -> AsyncIterator[Client]:
+    """Enter the official Streamable HTTP transport with configured timeouts."""
+    timeout = httpx2.Timeout(
+        server.timeout_seconds,
+        read=server.read_timeout_seconds,
+    )
+    async with httpx2.AsyncClient(timeout=timeout) as http_client:
+        transport = streamable_http_client(
+            str(server.url),
+            http_client=http_client,
+        )
+        async with Client(transport) as client:
+            yield client
+
+
 def _default_client_factory(
     server: MCPServerConfig,
 ) -> AbstractAsyncContextManager[Client]:
     """Build an official SDK client while keeping transports behind one seam."""
-    if not isinstance(server, MCPStdioServerConfig):
-        raise ValueError("MCP transport is not implemented")
-    return _stdio_client_context(server)
+    if isinstance(server, MCPStdioServerConfig):
+        return _stdio_client_context(server)
+    if isinstance(server, MCPStreamableHTTPServerConfig):
+        return _streamable_http_client_context(server)
+    raise ValueError("MCP transport is not implemented")
 
 
 @dataclass
