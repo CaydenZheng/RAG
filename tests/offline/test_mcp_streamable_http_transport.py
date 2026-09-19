@@ -10,7 +10,9 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -22,6 +24,36 @@ if TYPE_CHECKING:
 _NATIVE_CONNECT = socket.socket.connect
 _NATIVE_CONNECT_EX = socket.socket.connect_ex
 _NATIVE_GETADDRINFO = socket.getaddrinfo
+
+
+def _import_app(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    import tiktoken
+
+    monkeypatch.setattr(
+        tiktoken,
+        "get_encoding",
+        lambda name: SimpleNamespace(encode=lambda text: list(text)),
+    )
+    import app
+
+    return app
+
+
+@contextmanager
+def _without_model_warm_up(api: ModuleType) -> Iterator[None]:
+    """Run the ASGI lifespan without loading unrelated local models."""
+
+    def skip_model_warm_up() -> None:
+        return None
+
+    startup_handlers = api.app.router.on_startup
+    warm_up_index = startup_handlers.index(api.warm_up_runtime)
+    original_warm_up = startup_handlers[warm_up_index]
+    startup_handlers[warm_up_index] = skip_model_warm_up
+    try:
+        yield
+    finally:
+        startup_handlers[warm_up_index] = original_warm_up
 
 
 def _registry() -> ToolRegistry:
@@ -156,6 +188,155 @@ def test_streamable_http_discovers_calls_and_closes_real_server(
     assert tool is not None
     assert tool.available is False
 
+
+def test_application_configuration_calls_real_streamable_http_server(
+    streamable_http_server: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from config.settings import MCPStreamableHTTPServerConfig
+    from src.agent import mcp_runtime as mcp_runtime_module
+    from src.agent.mcp_runtime import MCPRuntime
+
+    api = _import_app(monkeypatch)
+    registry = _registry()
+    runtime = MCPRuntime(registry)
+    configured = MCPStreamableHTTPServerConfig(
+        id="http-app",
+        transport="streamable_http",
+        url=streamable_http_server,
+        timeout_seconds=2,
+        read_timeout_seconds=5,
+        call_timeout_seconds=2,
+    )
+    monkeypatch.setattr(mcp_runtime_module, "mcp_runtime", runtime)
+    monkeypatch.setattr(
+        mcp_runtime_module.settings,
+        "mcp_servers",
+        (configured,),
+        raising=False,
+    )
+
+    async def exercise() -> tuple[ToolResult, dict[str, Any], bool]:
+        async with asyncio.timeout(10):
+            async with api.app.router.lifespan_context(api.app):
+                while True:
+                    tool = registry.get_tool("mcp__http-app__echo")
+                    if tool is not None and tool.available:
+                        break
+                    await asyncio.sleep(0.01)
+                result = await registry.execute_async(
+                    "mcp__http-app__echo",
+                    {"value": "application-round-trip"},
+                    session_id="http-application-integration",
+                )
+                payload = dict(runtime.status_payload())
+        closed_tool = registry.get_tool("mcp__http-app__echo")
+        assert closed_tool is not None
+        return result, payload, closed_tool.available
+
+    with _without_model_warm_up(api):
+        result, payload, available_after_close = asyncio.run(exercise())
+
+    assert result.success is True
+    assert result.data == {"result": "application-round-trip"}
+    assert payload["mcp_servers"] == [
+        {
+            "id": "http-app",
+            "transport": "streamable_http",
+            "status": "available",
+            "error_code": None,
+            "message": "server connection is available",
+            "tool_count": 2,
+        }
+    ]
+    assert available_after_close is False
+
+
+def test_streamable_http_initialization_failure_is_isolated(
+    streamable_http_server: str,
+) -> None:
+    from config.settings import MCPStreamableHTTPServerConfig
+    from src.agent.mcp_client import MCPClientManager
+
+    invalid_endpoint = streamable_http_server.removesuffix("/mcp") + "/missing"
+    manager = MCPClientManager(
+        [
+            MCPStreamableHTTPServerConfig(
+                id="invalid-http",
+                transport="streamable_http",
+                url=invalid_endpoint,
+                timeout_seconds=1,
+                read_timeout_seconds=1,
+            )
+        ]
+    )
+
+    async def exercise() -> dict[str, object]:
+        await manager.start(_registry())
+        snapshot = dict(manager.snapshot()[0])
+        await manager.close()
+        return snapshot
+
+    snapshot = asyncio.run(exercise())
+
+    assert snapshot["status"] == "unavailable"
+    assert snapshot["error_code"] == "mcp_connect_failed"
+
+
+def test_streamable_http_real_call_timeout_recovers_on_next_response(
+    streamable_http_server: str,
+) -> None:
+    from config.settings import MCPStreamableHTTPServerConfig
+    from src.agent.mcp_client import MCPClientManager
+
+    registry = _registry()
+    manager = MCPClientManager(
+        [
+            MCPStreamableHTTPServerConfig(
+                id="http-timeout",
+                transport="streamable_http",
+                url=streamable_http_server,
+                timeout_seconds=2,
+                read_timeout_seconds=5,
+                call_timeout_seconds=0.2,
+            )
+        ]
+    )
+
+    async def exercise() -> tuple[
+        ToolResult,
+        dict[str, object],
+        ToolResult,
+        dict[str, object],
+    ]:
+        await manager.start(registry)
+        timeout_result = await registry.execute_async(
+            "mcp__http-timeout__wait_for",
+            {"delay_seconds": 2},
+            session_id="http-real-timeout",
+        )
+        degraded = dict(manager.snapshot()[0])
+        recovered_result = await registry.execute_async(
+            "mcp__http-timeout__echo",
+            {"value": "recovered"},
+            session_id="http-timeout-recovery",
+        )
+        recovered = dict(manager.snapshot()[0])
+        await manager.close()
+        return timeout_result, degraded, recovered_result, recovered
+
+    timeout_result, degraded, recovered_result, recovered = asyncio.run(
+        exercise()
+    )
+
+    assert timeout_result.success is False
+    assert timeout_result.error_code == "mcp_call_timeout"
+    assert degraded["status"] == "degraded"
+    assert degraded["error_code"] == "mcp_call_timeout"
+    assert recovered_result.success is True
+    assert recovered_result.data == {"result": "recovered"}
+    assert recovered["status"] == "available"
+    assert recovered["error_code"] is None
 
 def test_streamable_http_unreachable_url_isolated_and_secret_free(
     monkeypatch: pytest.MonkeyPatch,

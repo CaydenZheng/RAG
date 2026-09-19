@@ -4,7 +4,7 @@
 
 当前代码面向本地开发和小规模服务部署。默认评测数据仍是未经人工核验的 AI 生成候选，不能把开发集结果当作正式质量结论。
 
-导航：[架构](#架构) · [配置](#配置) · [索引与回滚](#索引生命周期) · [测试与 CI](#测试与-ci) · [评测](#评测) · [排障](#排障) · [已知限制](#已知限制) · [ADR 0001](docs/adr/0001-core-seams.md)
+导航：[架构](#架构) · [配置](#配置) · [MCP](docs/mcp.md) · [索引与回滚](#索引生命周期) · [测试与 CI](#测试与-ci) · [评测](#评测) · [排障](#排障) · [已知限制](#已知限制) · [ADR 0001](docs/adr/0001-core-seams.md)
 
 ## 核心能力
 
@@ -12,6 +12,7 @@
 |---|---|
 | RAG 查询 | 查询改写、Dense／BM25、RRF、可选 Rerank、上下文预算和引用约束 |
 | Agent | 有界迭代、结构化工具调用、SQLite 短期历史、同步结果与 SSE 共用事件模型 |
+| MCP | 官方 SDK 的 stdio 与 Streamable HTTP、动态工具发现、统一 Schema／结果／状态链路 |
 | 索引 | 上传、删除、全量重建、版本化 collection、原子发布和回滚 |
 | 可靠性 | 并发上限、总时限、有限重试、稳定错误码和显式降级警告 |
 | 安全 | 客户端会话隔离、metadata filter 校验、上传校验、工具参数和输出约束 |
@@ -29,6 +30,8 @@ flowchart LR
     RAGFlow --> Answer[AnswerService]
     API --> Runtime[AgentRuntime]
     Runtime --> Tools[ToolRegistry]
+    MCPServers[MCP Servers] --> MCP[MCP Client Manager]
+    MCP --> Tools
     Tools --> Knowledge
     API --> Jobs[IndexJobs]
     Jobs --> Indexing[Ingestion and versioned indexing]
@@ -41,6 +44,7 @@ flowchart LR
 - `KnowledgeSystem.retrieve` 隐藏查询改写、候选召回、融合、精排和降级。
 - `AnswerService` 统一普通回答与流式回答的上下文、引用和会话落盘语义。
 - `AgentRuntime` 统一普通 Agent 响应、事件流和会话重置。
+- `MCPRuntime` 管理可选 MCP Server 的后台启动、关闭、工具注册和脱敏状态。
 - `IndexJobs` 统一索引任务提交、幂等、状态查询和后台执行。
 - `EvaluationRunner` 直接复用检索与生成接口，不另建一套评测专用 RAG。
 
@@ -56,6 +60,7 @@ ragrag/
 ├── scripts/                  # 索引、数据和评测命令
 ├── src/
 │   ├── agent/                # Agent 循环、工具、Hook 和记忆
+│   ├── mcp_servers/          # 官方 SDK 实现的本地 MCP Server
 │   ├── api/                  # HTTP schema、中间件、SSE 与启动逻辑
 │   ├── core/                 # 检索、生成、索引和 Agent 核心接口
 │   ├── evaluation/           # 数据规则、指标、Runner 和可选 Judge
@@ -145,6 +150,7 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 | `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算 |
 | `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算 |
 | `TOOL_DEDUP_MAX_SESSIONS` | 工具调用去重状态的最大 session 数 |
+| `MCP_SERVERS` | 可选 MCP Server JSON 列表；支持 stdio 与 Streamable HTTP |
 | `AGENT_LOG_MAX_BYTES`、`AGENT_LOG_BACKUP_COUNT`、`AGENT_LOG_RETENTION_SECONDS` | Agent 事件与工具审计日志的轮转和保留边界 |
 | `PROMPT_VERSION` | 选择 `prompts/<version>/` |
 | `LANGFUSE_*` | 预留的远端观测字段；当前运行时未接入 |
@@ -214,6 +220,8 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 | `POST` | `/agent/reset?session_id=...` | 清除当前客户端的 Agent 会话 |
 | `GET` | `/agent/memory/{session_id}` | 查看受当前客户端约束的 SQLite 短期历史 |
 
+配置 MCP 后，发现的工具会以 `mcp__{server_id}__{tool_name}` 注册到同一个 ToolRegistry；未配置时保持上述原生工具行为。MCP 工具来源与 Server 状态可通过 `GET /agent/tools` 查看。
+
 若强制最终回答生成失败，Agent 返回 `agent_final_generation_failed`，记录失败 Trace，且不写入本轮历史。
 
 示例：
@@ -223,6 +231,17 @@ curl.exe -X POST http://127.0.0.1:8000/agent/chat `
   -H "Content-Type: application/json" `
   -d "{\"message\":\"Search the knowledge base for Ada Lovelace and summarize the evidence.\"}"
 ```
+
+## MCP
+
+MCP 默认关闭。设置 `MCP_SERVERS` 后，应用会在后台连接启用的 Server；连接失败或握手等待不会阻塞核心 HTTP 服务。stdio 和 Streamable HTTP 共用工具注册、完整 JSON Schema 校验、结果安全、审计和状态模型，工具调用默认不自动重试。
+
+内置时间 Server 可通过 stdio 开箱演示；远程 URL 使用 Streamable HTTP。配置示例、官方 Inspector 命令、真实传输测试和明确的能力边界见 [MCP 集成](docs/mcp.md)。基础 HTTP 支持不包含 OAuth、多租户、高可用或持久化审批。
+
+可观测入口：
+
+- `GET /agent/tools`：原生与 MCP 工具来源、Provider、分类、安全等级、可用性和脱敏 Server 状态。
+- `GET /ready`：MCP 作为可选组件汇总；MCP 不可用时核心服务仍按自身状态报告 readiness。
 
 ## 索引生命周期
 
@@ -302,7 +321,7 @@ Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relev
 
 ## 测试与 CI
 
-默认测试全部离线，不调用真实模型、浏览器或 Ragas：
+默认测试全部离线，不调用真实模型、浏览器或 Ragas。MCP 测试仅使用真实本地子进程和数值型 loopback Server，不访问外部 MCP 服务：
 
 ```powershell
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
@@ -351,6 +370,7 @@ Reranker 权重未缓存、模型路径错误、资源不足或超时。准备�
 - 本地 Embedding 与 Reranker 首次加载需要模型文件、内存和启动时间。
 - Windows 下 Chroma HNSW 对 Unicode 持久化路径存在兼容问题。
 - 完整 Agent 评测和新旧实现对照仍待补充。
+- Agent 当前仍使用 JSON Planner；模型原生 Tool Calling、MCP OAuth、多租户、高可用和持久化 HITL 尚未实现。
 
 ## License
 
