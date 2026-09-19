@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 from mcp.server import MCPServer
@@ -13,6 +14,13 @@ server = MCPServer("streamable-http-transport-test")
 def echo(value: str) -> str:
     """Return the supplied value over the real MCP HTTP connection."""
     return value
+
+
+@server.tool()
+async def wait_for(delay_seconds: float) -> str:
+    """Delay a response so the real client timeout path can be exercised."""
+    await asyncio.sleep(delay_seconds)
+    return "completed"
 
 
 def main() -> None:
