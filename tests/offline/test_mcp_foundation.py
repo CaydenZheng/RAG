@@ -36,6 +36,7 @@ def test_mcp_configuration_parses_both_transports() -> None:
                 "transport": "stdio",
                 "command": "python",
                 "args": ["-m", "src.mcp.clock_server"],
+                "call_timeout_seconds": 1.5,
             },
             {
                 "id": "remote",
@@ -47,7 +48,9 @@ def test_mcp_configuration_parses_both_transports() -> None:
     )
 
     assert configured.mcp_servers[0].transport == "stdio"
+    assert configured.mcp_servers[0].call_timeout_seconds == 1.5
     assert configured.mcp_servers[1].transport == "streamable_http"
+    assert configured.mcp_servers[1].call_timeout_seconds == 30.0
 
 
 def test_mcp_configuration_parses_json_from_environment(
@@ -117,6 +120,14 @@ def test_mcp_configuration_errors_do_not_echo_stdio_secrets() -> None:
             },
         ],
         [{"id": "clock", "transport": "stdio", "command": "   "}],
+        [
+            {
+                "id": "clock",
+                "transport": "stdio",
+                "command": "python",
+                "call_timeout_seconds": 0,
+            }
+        ],
         [{"id": "bad", "transport": "websocket", "url": "https://example.com"}],
         [
             {

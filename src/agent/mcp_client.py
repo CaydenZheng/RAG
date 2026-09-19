@@ -14,11 +14,23 @@ from typing import Any, Literal, TypedDict
 
 import httpx2
 from loguru import logger
-from mcp import Client
+from mcp import Client, InputRequiredRoundsExceededError, MCPError
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.types import TextContent
+from mcp.types import (
+    CONNECTION_CLOSED,
+    REQUEST_TIMEOUT,
+    AudioContent,
+    BlobResourceContents,
+    CallToolResult,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+    TextResourceContents,
+)
 from mcp.types import Tool as MCPTool
+from pydantic import ValidationError
 
 from config.settings import (
     MCPServerConfig,
@@ -44,6 +56,15 @@ MCPServerStatus = Literal[
 MCPTransport = Literal["stdio", "streamable_http"]
 MAX_MCP_TOOL_PAGES = 100
 MAX_MCP_TOOLS_PER_SERVER = 1000
+MAX_MCP_CONTENT_METADATA_ITEMS = 100
+_MCP_TRANSIENT_CALL_ERROR_CODES = frozenset(
+    {
+        "mcp_call_timeout",
+        "mcp_protocol_error",
+        "mcp_result_schema_error",
+        "mcp_call_failed",
+    }
+)
 
 
 class MCPServerSnapshot(TypedDict):
@@ -54,6 +75,27 @@ class MCPServerSnapshot(TypedDict):
     status: MCPServerStatus
     error_code: str | None
     message: str
+
+
+class MCPContentMetadata(TypedDict, total=False):
+    """Locally generated metadata for non-text MCP result blocks."""
+
+    type: Literal["image", "audio", "resource_link", "resource"]
+    encoded_size: int
+    declared_size: int
+    resource_type: Literal["text", "blob"]
+    text_size: int
+
+
+@dataclass(frozen=True)
+class _MCPCallFailure:
+    """Stable local interpretation of an SDK call failure."""
+
+    error_code: str
+    public_message: str
+    server_message: str
+    server_status: MCPServerStatus
+    disable_provider: bool = False
 
 
 MCPClientFactory = Callable[
@@ -243,6 +285,7 @@ class MCPClientManager:
         self._states: dict[str, MCPServerSnapshot] = {
             server.id: self._initial_state(server) for server in self._servers
         }
+        self._transient_call_baselines: dict[str, MCPServerSnapshot] = {}
 
     async def start(self, tool_registry: ToolRegistry) -> None:
         """Connect every enabled server without letting one failure block others."""
@@ -437,9 +480,11 @@ class MCPClientManager:
                 tool_registry.register(
                     self._build_tool_def(
                         server_id=server.id,
+                        call_timeout_seconds=server.call_timeout_seconds,
                         registered_name=registered_name,
                         mcp_tool=mcp_tool,
                         client=client,
+                        tool_registry=tool_registry,
                     )
                 )
             except InvalidToolSchema as error:
@@ -485,17 +530,186 @@ class MCPClientManager:
         raise RuntimeError("MCP tool discovery exceeded the page limit")
 
     @staticmethod
-    def _build_tool_def(
+    def _classify_tool_call_error(
+        error: Exception,
+        *,
+        has_output_schema: bool,
+    ) -> _MCPCallFailure:
+        """Map SDK and transport failures without exposing remote details."""
+        if isinstance(error, MCPError):
+            if error.code == CONNECTION_CLOSED:
+                return _MCPCallFailure(
+                    error_code="mcp_connection_error",
+                    public_message="MCP server connection is unavailable",
+                    server_message="server connection was lost during tool call",
+                    server_status="unavailable",
+                    disable_provider=True,
+                )
+            if error.code == REQUEST_TIMEOUT:
+                return _MCPCallFailure(
+                    error_code="mcp_call_timeout",
+                    public_message="MCP tool call timed out",
+                    server_message="server tool call timed out",
+                    server_status="degraded",
+                )
+            return _MCPCallFailure(
+                error_code="mcp_protocol_error",
+                public_message="MCP protocol error",
+                server_message="server protocol error",
+                server_status="degraded",
+            )
+        if isinstance(error, (TimeoutError, httpx2.TimeoutException)):
+            return _MCPCallFailure(
+                error_code="mcp_call_timeout",
+                public_message="MCP tool call timed out",
+                server_message="server tool call timed out",
+                server_status="degraded",
+            )
+        if isinstance(
+            error,
+            (httpx2.TransportError, ConnectionError, EOFError, OSError),
+        ):
+            return _MCPCallFailure(
+                error_code="mcp_connection_error",
+                public_message="MCP server connection is unavailable",
+                server_message="server connection was lost during tool call",
+                server_status="unavailable",
+                disable_provider=True,
+            )
+        if isinstance(
+            error,
+            (ValidationError, InputRequiredRoundsExceededError),
+        ):
+            return _MCPCallFailure(
+                error_code="mcp_protocol_error",
+                public_message="MCP protocol error",
+                server_message="server protocol error",
+                server_status="degraded",
+            )
+        if has_output_schema and isinstance(error, RuntimeError):
+            # SDK 2.2 exposes outputSchema validation failures as RuntimeError.
+            return _MCPCallFailure(
+                error_code="mcp_result_schema_error",
+                public_message="MCP tool returned an invalid result",
+                server_message="server returned an invalid tool result",
+                server_status="degraded",
+            )
+        return _MCPCallFailure(
+            error_code="mcp_call_failed",
+            public_message="MCP tool call failed",
+            server_message="server tool call failed",
+            server_status="degraded",
+        )
+
+    def _complete_tool_call_failure(
+        self,
         *,
         server_id: str,
         registered_name: str,
+        tool_registry: ToolRegistry,
+        error: Exception,
+        has_output_schema: bool,
+    ) -> ToolResult:
+        failure = self._classify_tool_call_error(
+            error,
+            has_output_schema=has_output_schema,
+        )
+        if failure.disable_provider:
+            self._set_provider_tools_available(
+                tool_registry,
+                server_id,
+                available=False,
+            )
+        self._record_tool_call_failure(server_id, failure)
+        logger.warning(
+            "MCP server {} tool call failed: code={} type={}",
+            server_id,
+            failure.error_code,
+            type(error).__name__,
+        )
+        return ToolResult(
+            success=False,
+            error=failure.public_message,
+            error_code=failure.error_code,
+            tool_name=registered_name,
+        )
+
+    @staticmethod
+    def _content_metadata(block: object) -> MCPContentMetadata | None:
+        """Project non-text blocks without carrying peer-controlled strings."""
+        if isinstance(block, ImageContent):
+            return {"type": "image", "encoded_size": len(block.data)}
+        if isinstance(block, AudioContent):
+            return {"type": "audio", "encoded_size": len(block.data)}
+        if isinstance(block, ResourceLink):
+            metadata: MCPContentMetadata = {"type": "resource_link"}
+            if (
+                isinstance(block.size, int)
+                and not isinstance(block.size, bool)
+                and block.size >= 0
+            ):
+                metadata["declared_size"] = block.size
+            return metadata
+        if isinstance(block, EmbeddedResource):
+            resource = block.resource
+            if isinstance(resource, TextResourceContents):
+                return {
+                    "type": "resource",
+                    "resource_type": "text",
+                    "text_size": len(resource.text),
+                }
+            if isinstance(resource, BlobResourceContents):
+                return {
+                    "type": "resource",
+                    "resource_type": "blob",
+                    "encoded_size": len(resource.blob),
+                }
+        return None
+
+    @classmethod
+    def _result_data(cls, result: CallToolResult) -> Any:
+        """Prefer structured data and bound non-text metadata projection."""
+        if result.structured_content is not None:
+            return result.structured_content
+
+        text = "\n".join(
+            block.text
+            for block in result.content
+            if isinstance(block, TextContent)
+        )
+        metadata: list[MCPContentMetadata] = []
+        omitted_content_count = 0
+        for block in result.content:
+            content_metadata = cls._content_metadata(block)
+            if content_metadata is None:
+                continue
+            if len(metadata) < MAX_MCP_CONTENT_METADATA_ITEMS:
+                metadata.append(content_metadata)
+            else:
+                omitted_content_count += 1
+
+        data: dict[str, Any] = {"text": text}
+        if metadata:
+            data["content_metadata"] = metadata
+        if omitted_content_count:
+            data["omitted_content_count"] = omitted_content_count
+        return data
+
+    def _build_tool_def(
+        self,
+        *,
+        server_id: str,
+        call_timeout_seconds: float,
+        registered_name: str,
         mcp_tool: MCPTool,
         client: Client,
+        tool_registry: ToolRegistry,
     ) -> ToolDef:
         # Protect Planner projection; ToolRegistry revalidates its boundary.
         ensure_safe_input_schema(mcp_tool.input_schema)
         input_schema = deepcopy(mcp_tool.input_schema)
         params, warnings = tool_params_from_schema(input_schema)
+        has_output_schema = mcp_tool.output_schema is not None
 
         def execute_sync(arguments: dict[str, Any]) -> ToolResult:
             return ToolResult(
@@ -507,21 +721,22 @@ class MCPClientManager:
 
         async def execute_async(arguments: dict[str, Any]) -> ToolResult:
             try:
-                result = await client.call_tool(mcp_tool.name, arguments)
+                result = await client.call_tool(
+                    mcp_tool.name,
+                    arguments,
+                    read_timeout_seconds=call_timeout_seconds,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                logger.warning(
-                    "MCP server {} tool call failed: {}",
-                    server_id,
-                    type(error).__name__,
+                return self._complete_tool_call_failure(
+                    server_id=server_id,
+                    registered_name=registered_name,
+                    tool_registry=tool_registry,
+                    error=error,
+                    has_output_schema=has_output_schema,
                 )
-                return ToolResult(
-                    success=False,
-                    error="MCP tool call failed",
-                    error_code="mcp_call_failed",
-                    tool_name=registered_name,
-                )
+            self._recover_from_transient_call_failure(server_id)
             if result.is_error:
                 return ToolResult(
                     success=False,
@@ -529,18 +744,9 @@ class MCPClientManager:
                     error_code="mcp_tool_error",
                     tool_name=registered_name,
                 )
-            if result.structured_content is not None:
-                data = result.structured_content
-            else:
-                text = "\n".join(
-                    block.text
-                    for block in result.content
-                    if isinstance(block, TextContent)
-                )
-                data = {"text": text}
             return ToolResult(
                 success=True,
-                data=data,
+                data=self._result_data(result),
                 tool_name=registered_name,
             )
 
@@ -708,6 +914,32 @@ class MCPClientManager:
                 )
             raise cancelled_error
 
+    def _record_tool_call_failure(
+        self,
+        server_id: str,
+        failure: _MCPCallFailure,
+    ) -> None:
+        """Overlay transient failures without hiding persistent server state."""
+        with self._state_lock:
+            current = self._states[server_id]
+            if failure.disable_provider:
+                self._transient_call_baselines.pop(server_id, None)
+            elif current["error_code"] in _MCP_TRANSIENT_CALL_ERROR_CODES:
+                if server_id not in self._transient_call_baselines:
+                    return
+            elif current["status"] in {"available", "degraded"}:
+                self._transient_call_baselines[server_id] = current.copy()
+            else:
+                return
+
+            failed = current.copy()
+            failed.update(
+                status=failure.server_status,
+                error_code=failure.error_code,
+                message=failure.server_message,
+            )
+            self._states[server_id] = failed
+
     def _update_state(
         self,
         server_id: str,
@@ -717,6 +949,7 @@ class MCPClientManager:
         message: str,
     ) -> None:
         with self._state_lock:
+            self._transient_call_baselines.pop(server_id, None)
             state = self._states[server_id].copy()
             state.update(
                 status=status,
@@ -724,6 +957,17 @@ class MCPClientManager:
                 message=message,
             )
             self._states[server_id] = state
+
+    def _recover_from_transient_call_failure(self, server_id: str) -> None:
+        """Restore the persistent state after a valid MCP response."""
+        with self._state_lock:
+            state = self._states[server_id]
+            if state["error_code"] not in _MCP_TRANSIENT_CALL_ERROR_CODES:
+                return
+            baseline = self._transient_call_baselines.pop(server_id, None)
+            if baseline is None:
+                return
+            self._states[server_id] = baseline
 
     def _server_ids_with_status(
         self,
@@ -745,6 +989,7 @@ class MCPClientManager:
     ) -> None:
         with self._state_lock:
             for server_id in server_ids:
+                self._transient_call_baselines.pop(server_id, None)
                 state = self._states[server_id].copy()
                 state.update(
                     status="unavailable",
