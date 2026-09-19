@@ -29,6 +29,7 @@ class MCPServerConfigBase(BaseModel):
 
     id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     enabled: bool = True
+    call_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
