@@ -212,6 +212,9 @@ class Settings(BaseSettings):
     agent_planner_temperature: float = Field(
         default=0.1, ge=0, le=2, alias="AGENT_PLANNER_TEMPERATURE"
     )
+    agent_planner_mode: Literal["json", "native"] = Field(
+        default="json", alias="AGENT_PLANNER_MODE"
+    )
     agent_planner_max_tokens: int = Field(
         default=512, ge=64, le=4096, alias="AGENT_PLANNER_MAX_TOKENS"
     )

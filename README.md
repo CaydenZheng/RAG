@@ -11,7 +11,7 @@
 | 能力 | 当前行为 |
 |---|---|
 | RAG 查询 | 查询改写、Dense／BM25、RRF、可选 Rerank、上下文预算和引用约束 |
-| Agent | 有界迭代、结构化工具调用、SQLite 短期历史、同步结果与 SSE 共用事件模型 |
+| Agent | JSON／原生 Tool Calling 可配置、有界迭代、SQLite 短期历史、同步结果与 SSE 共用事件模型 |
 | MCP | 官方 SDK 的 stdio 与 Streamable HTTP、动态工具发现、统一 Schema／结果／状态链路 |
 | 索引 | 上传、删除、全量重建、版本化 collection、原子发布和回滚 |
 | 可靠性 | 并发上限、总时限、有限重试、稳定错误码和显式降级警告 |
@@ -148,6 +148,7 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 | `MAX_CONCURRENT_QUERIES`、`REQUEST_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES` | 请求容量、总时限和 Provider 重试 |
 | `ADMIN_API_KEY`、`ALLOW_UNAUTHENTICATED_ADMIN` | 索引管理密钥及仅限本地开发的显式免认证开关 |
 | `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算 |
+| `AGENT_PLANNER_MODE` | `json` 为兼容默认；`native` 使用 OpenAI-compatible 原生 Tool Calling |
 | `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算 |
 | `TOOL_DEDUP_MAX_SESSIONS` | 工具调用去重状态的最大 session 数 |
 | `MCP_SERVERS` | 可选 MCP Server JSON 列表；支持 stdio 与 Streamable HTTP |
@@ -211,7 +212,7 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 - `get_weather`：获取天气信息。
 - `search_web`：受控外部搜索，属于灰名单工具。
 
-工具调用会校验名称、参数、调用次数和总预算；不可信工具输出带明确边界并截断后再交给模型。普通与流式 Agent 的 `message` 长度均为 1～2000 个字符。
+工具调用会校验名称、参数、调用次数和总预算；不可信工具输出带明确边界并截断后再交给模型。`AGENT_PLANNER_MODE=json` 保持兼容的 JSON Planner；设为 `native` 时通过 OpenAI-compatible SDK 发送标准工具 Schema，并用 `assistant.tool_calls` 与 `tool_call_id` 续接同一轮调用。两种模式共用 ToolRegistry、预算、Hook、审计、参数校验和结果安全链路。普通与流式 Agent 的 `message` 长度均为 1～2000 个字符。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -370,7 +371,8 @@ Reranker 权重未缓存、模型路径错误、资源不足或超时。准备�
 - 本地 Embedding 与 Reranker 首次加载需要模型文件、内存和启动时间。
 - Windows 下 Chroma HNSW 对 Unicode 持久化路径存在兼容问题。
 - 完整 Agent 评测和新旧实现对照仍待补充。
-- Agent 当前仍使用 JSON Planner；模型原生 Tool Calling、MCP OAuth、多租户、高可用和持久化 HITL 尚未实现。
+- 原生 Tool Calling 当前每个模型响应只接受一个工具调用；多个调用会稳定拒绝。模型若不支持完整工具 Schema，应显式切回 `AGENT_PLANNER_MODE=json`；系统不会静默改写 MCP 原始 Schema。
+- MCP OAuth、多租户、高可用和持久化 HITL 尚未实现。
 
 ## License
 

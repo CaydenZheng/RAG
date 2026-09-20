@@ -16,7 +16,8 @@
 
 import asyncio
 import time
-from typing import AsyncGenerator, List, Optional
+from dataclasses import dataclass
+from typing import Any, AsyncGenerator, List, Optional
 
 from loguru import logger
 from openai import AsyncOpenAI, OpenAI, Timeout
@@ -24,6 +25,23 @@ from sentence_transformers import SentenceTransformer
 
 from config.settings import settings
 from src.infra.tracer import tracer
+
+
+@dataclass(frozen=True)
+class NativeToolCall:
+    """Provider-neutral model request to invoke one named tool."""
+
+    call_id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class NativeChatResponse:
+    """Provider-neutral native chat response consumed by AgentHarness."""
+
+    content: str
+    tool_calls: tuple[NativeToolCall, ...] = ()
 
 
 class LLMClient:
@@ -247,6 +265,72 @@ class LLMClient:
             )
 
         return content
+
+    async def chat_with_tools_async(
+        self,
+        messages: List[dict],
+        tools: list[dict[str, Any]],
+        model: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: Optional[int] = None,
+    ) -> NativeChatResponse:
+        """Call an OpenAI-compatible model and preserve native tool requests."""
+        model = model or self._chat_model
+        started_at = time.perf_counter()
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        logger.debug(
+            "LLM native chat → model={} messages={} tools={}",
+            model,
+            len(messages),
+            len(tools),
+        )
+        try:
+            response = await self._async_chat_client.chat.completions.create(
+                **kwargs
+            )
+        except Exception:
+            self._record_chat_span(
+                started_at,
+                model,
+                cache_hit=False,
+                status="error",
+                error_code="llm_call_failed",
+            )
+            raise
+
+        message = response.choices[0].message
+        content = message.content or ""
+        tool_calls = tuple(
+            NativeToolCall(
+                call_id=call.id,
+                name=call.function.name,
+                arguments=call.function.arguments,
+            )
+            for call in (message.tool_calls or ())
+        )
+        self._record_chat_span(
+            started_at,
+            model,
+            cache_hit=False,
+            response_chars=len(content),
+            usage=response.usage,
+        )
+        logger.debug(
+            "LLM native chat ← {} chars, {} tool calls",
+            len(content),
+            len(tool_calls),
+        )
+        return NativeChatResponse(content=content, tool_calls=tool_calls)
 
     # ================================================================
     # Chat Stream (Async Generator)

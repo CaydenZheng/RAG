@@ -9,7 +9,7 @@
 | stdio | 通过官方 SDK 启动本地子进程；内置时间 Server 可直接演示 |
 | Streamable HTTP | 通过官方 SDK 连接远程 URL，复用与 stdio 相同的发现、Schema、结果和状态链路 |
 | 工具注册 | 命名为 `mcp__{server_id}__{tool_name}`，来源和 Provider 可在 `/agent/tools` 查看 |
-| Schema | 保存完整 `inputSchema`，使用 JSON Schema Draft 2020-12 在调用前校验；JSON Planner 使用兼容投影 |
+| Schema | 保存完整 `inputSchema`，使用 JSON Schema Draft 2020-12 在调用前校验；原生 Tool Calling 使用完整 Schema，JSON Planner 使用兼容投影 |
 | 调用安全 | MCP 工具默认为 Graylist、`max_retries=0`；结果经过审计、不可信包装和上下文长度限制 |
 | 可用性 | MCP 在后台初始化；单个 Server 失败只降低可选 MCP 状态，不阻塞核心 HTTP 服务 |
 
@@ -79,7 +79,7 @@ uv run --no-sync --offline --no-env-file pytest tests/offline -q -k mcp
 
 ## 能力边界
 
-当前仍使用 JSON Planner。完整 MCP Schema 已保留，后续原生模型 Tool Calling 会复用同一个 `ToolRegistry`、预算、审计和结果安全链路。
+`AGENT_PLANNER_MODE` 默认为 `json`，可设为 `native` 使用 OpenAI-compatible 原生 Tool Calling。原生模式直接投影可用工具并传递完整 MCP `inputSchema`，不修改 Registry 中的原始 Schema；不符合 Provider function-name 约束的 MCP 名称只在模型边界映射为稳定别名，调用返回后会反解为 Registry 原名。两种模式复用同一个 `ToolRegistry`、MCP Adapter、预算、审计、参数校验和结果安全链路。供应商若不支持某项 Schema 特性，应显式切回 JSON 模式，当前不会静默裁剪 Schema 或自动重放请求。原生模式当前每个模型响应只接受一个工具调用。
 
 基础 Streamable HTTP 连接不代表已经具备以下能力：
 
