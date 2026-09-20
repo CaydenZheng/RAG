@@ -15,7 +15,9 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict
@@ -84,6 +86,18 @@ class ToolStatusSnapshot(TypedDict):
     category: str
     safety_level: str
     available: bool
+
+
+@dataclass(frozen=True)
+class ModelToolCatalog:
+    """One provider-safe tool projection and its reverse name mapping."""
+
+    tools: list[dict[str, Any]]
+    _registry_names: dict[str, str]
+
+    def registry_name(self, provider_name: str) -> str | None:
+        """Resolve an offered provider name back to the Registry name."""
+        return self._registry_names.get(provider_name)
 
 
 def tool_params_from_schema(
@@ -204,6 +218,113 @@ class ToolRegistry:
     # ----------------------------------------------------------------
     # LLM 可见的工具描述（用于 Agent Planner prompt）
     # ----------------------------------------------------------------
+
+    @staticmethod
+    def _model_parameter_schema(param: ToolParam) -> dict[str, Any]:
+        """Project one legacy parameter into an OpenAI function schema."""
+        type_map: dict[str, str] = {
+            "str": "string",
+            "int": "integer",
+            "float": "number",
+            "bool": "boolean",
+            "dict": "object",
+            "list": "array",
+        }
+        schema: dict[str, Any] = {
+            "type": type_map.get(param.type, "string"),
+            "description": param.description,
+        }
+        if param.default is not None:
+            schema["default"] = deepcopy(param.default)
+        if param.minimum is not None:
+            schema["minimum"] = param.minimum
+        if param.maximum is not None:
+            schema["maximum"] = param.maximum
+        if param.choices is not None:
+            schema["enum"] = list(param.choices)
+        if param.min_length is not None:
+            schema["minLength"] = param.min_length
+        if param.max_length is not None:
+            schema["maxLength"] = param.max_length
+        return schema
+
+    @staticmethod
+    def _provider_tool_name(
+        registry_name: str, occupied_names: set[str]
+    ) -> str:
+        """Build a legal deterministic alias for one incompatible name."""
+        normalized = "".join(
+            char if char.isascii() and (char.isalnum() or char in "_-") else "_"
+            for char in registry_name[:46]
+        )
+        if not normalized:
+            normalized = "tool"
+        attempt = 0
+        while True:
+            digest_input = (
+                registry_name if attempt == 0 else f"{registry_name}\0{attempt}"
+            )
+            digest = hashlib.sha256(
+                digest_input.encode("utf-8", errors="surrogatepass")
+            ).hexdigest()[:16]
+            prefix = normalized[: 64 - len(digest) - 2]
+            candidate = f"{prefix}__{digest}"
+            if candidate not in occupied_names:
+                return candidate
+            attempt += 1
+
+    def get_model_tool_catalog(self) -> ModelToolCatalog:
+        """Project available tools and retain the request name mapping."""
+        definitions: list[dict[str, Any]] = []
+        available_tools = sorted(
+            (tool for tool in self._tools.values() if tool.available),
+            key=lambda item: item.name,
+        )
+        reserved_names = {
+            tool.name
+            for tool in available_tools
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tool.name)
+        }
+        used_names: set[str] = set()
+        registry_names: dict[str, str] = {}
+        for tool in available_tools:
+            if tool.name in reserved_names:
+                provider_name = tool.name
+            else:
+                provider_name = self._provider_tool_name(
+                    tool.name, reserved_names | used_names
+                )
+            used_names.add(provider_name)
+            registry_names[provider_name] = tool.name
+            if tool.input_schema is not None:
+                parameters = deepcopy(tool.input_schema)
+            else:
+                parameters = {
+                    "type": "object",
+                    "properties": {
+                        param.name: self._model_parameter_schema(param)
+                        for param in tool.params
+                    },
+                    "required": [
+                        param.name for param in tool.params if param.required
+                    ],
+                    "additionalProperties": False,
+                }
+            definitions.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": provider_name,
+                        "description": tool.description,
+                        "parameters": parameters,
+                    },
+                }
+            )
+        return ModelToolCatalog(definitions, registry_names)
+
+    def get_model_tools(self) -> list[dict[str, Any]]:
+        """Return available tools in the OpenAI-compatible function format."""
+        return self.get_model_tool_catalog().tools
 
     def get_tool_descriptions(self) -> str:
         """生成供 LLM 理解的工具列表（JSON 格式，注入 planner prompt）"""
