@@ -209,13 +209,18 @@ def test_all_provider_tools_are_disabled_before_first_connection_await() -> None
 
     async def exercise() -> tuple[bool, bool, dict[str, object]]:
         first_entered = asyncio.Event()
+        second_entered = asyncio.Event()
         release_first = asyncio.Event()
+        release_second = asyncio.Event()
 
         @asynccontextmanager
         async def client_context(config: MCPServerConfig) -> AsyncIterator[Client]:
             if config.id == "first":
                 first_entered.set()
                 await release_first.wait()
+            else:
+                second_entered.set()
+                await release_second.wait()
             yield _empty_client()
 
         manager = _manager(
@@ -224,9 +229,11 @@ def test_all_provider_tools_are_disabled_before_first_connection_await() -> None
         )
         start_task = asyncio.create_task(manager.start(registry))
         await first_entered.wait()
+        await second_entered.wait()
         availability = (first_tool.available, second_tool.available)
         second_state = dict(manager.snapshot()[1])
         release_first.set()
+        release_second.set()
         await start_task
         await manager.close()
         return *availability, second_state
@@ -235,8 +242,54 @@ def test_all_provider_tools_are_disabled_before_first_connection_await() -> None
 
     assert first_available is False
     assert second_available is False
-    assert second_state["status"] == "unavailable"
-    assert second_state["error_code"] == "mcp_not_started"
+    assert second_state["status"] == "connecting"
+    assert second_state["error_code"] is None
+
+
+def test_pending_first_connection_does_not_block_later_provider() -> None:
+    registry = _registry()
+
+    async def exercise() -> tuple[dict[str, object], bool]:
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+
+        @asynccontextmanager
+        async def client_context(
+            config: MCPServerConfig,
+        ) -> AsyncIterator[Client]:
+            if config.id == "oauth-pending":
+                first_entered.set()
+                await release_first.wait()
+            yield _client_with_tools("probe")
+
+        manager = _manager(
+            [_server("oauth-pending"), _server("healthy")],
+            client_factory=client_context,
+        )
+        start_task = asyncio.create_task(manager.start(registry))
+        await first_entered.wait()
+        for _ in range(20):
+            healthy = manager.snapshot()[1]
+            if healthy["status"] == "available":
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("later provider did not become available")
+
+        healthy_tool = registry.get_tool("mcp__healthy__probe")
+        assert healthy_tool is not None
+        snapshot = dict(manager.snapshot()[1])
+        available = healthy_tool.available
+        release_first.set()
+        await start_task
+        await manager.close()
+        return snapshot, available
+
+    snapshot, available = asyncio.run(exercise())
+
+    assert snapshot["status"] == "available"
+    assert snapshot["error_code"] is None
+    assert available is True
 
 
 def test_one_connection_failure_does_not_block_other_servers() -> None:

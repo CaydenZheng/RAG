@@ -11,6 +11,9 @@ FastAPI 服务入口。
   POST /agent/chat/stream  Agent 执行事件流
   POST /agent/reset     重置 Agent 会话
   GET  /agent/tools     查看工具来源和 MCP Server 状态
+  GET  /agent/oauth/{id}  查看待处理的 MCP OAuth 授权
+  GET  /agent/oauth/{id}/callback  接收 MCP OAuth 回调
+  POST /agent/oauth/{id}/cancel  取消待处理的 MCP OAuth 授权
   GET  /agent/memory/{id}  查看 Agent 记忆（调试）
 
 用法:
@@ -19,6 +22,7 @@ FastAPI 服务入口。
 """
 
 import json
+import logging
 import sys
 import time
 import uuid
@@ -44,6 +48,11 @@ from loguru import logger
 from config.settings import settings
 from src.agent import mcp_runtime as mcp_runtime_module
 from src.agent.harness import agent_harness
+from src.agent.mcp_oauth import (
+    MCPOAuthCallbackNotPending,
+    MCPOAuthCallbackStateMismatch,
+    MCPOAuthNotConfigured,
+)
 from src.api.admin_auth import AdminAuthMiddleware
 from src.api.client_identity import ClientIdentityMiddleware, scope_request_session
 from src.api.observability import RequestTracingMiddleware
@@ -86,6 +95,48 @@ from src.web.pages import (
     PAGE_SECURITY_HEADERS,
     SEARCH_PAGE_HTML,
     STATIC_DIR,
+)
+
+
+class _SafeOAuthCallbackAccessLogFilter(logging.Filter):
+    """Strip OAuth callback queries from Uvicorn access records."""
+
+    _CALLBACK_PREFIX = "/agent/oauth/"
+    _CALLBACK_SUFFIX = "/callback"
+    _UVICORN_ACCESS_FORMAT = '%s - "%s %s HTTP/%s" %d'
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if (
+            record.name != "uvicorn.access"
+            or record.msg != self._UVICORN_ACCESS_FORMAT
+            or not isinstance(record.args, tuple)
+            or len(record.args) != 5
+            or record.args[1] != "GET"
+            or not isinstance(record.args[2], str)
+        ):
+            return True
+
+        target = record.args[2]
+        path, separator, _query = target.partition("?")
+        server_id = path[
+            len(self._CALLBACK_PREFIX) : -len(self._CALLBACK_SUFFIX)
+        ]
+        if (
+            separator
+            and path.startswith(self._CALLBACK_PREFIX)
+            and path.endswith(self._CALLBACK_SUFFIX)
+            and server_id
+            and "/" not in server_id
+        ):
+            safe_args = list(record.args)
+            safe_args[2] = path
+            record.args = tuple(safe_args)
+        return True
+
+
+_OAUTH_CALLBACK_ACCESS_LOG_FILTER = _SafeOAuthCallbackAccessLogFilter()
+logging.getLogger("uvicorn.access").addFilter(
+    _OAUTH_CALLBACK_ACCESS_LOG_FILTER
 )
 
 agent_runtime: AgentRuntime = agent_harness
@@ -155,6 +206,138 @@ def agent_tools(response: Response) -> dict[str, object]:
     """Return public tool metadata and secret-free MCP provider state."""
     response.headers["Cache-Control"] = "no-store"
     return dict(mcp_runtime_module.mcp_runtime.status_payload())
+
+
+@app.get("/agent/oauth/{server_id}")
+async def mcp_oauth_status(
+    server_id: str,
+    response: Response,
+) -> dict[str, object]:
+    """Return admin-only OAuth interaction state for one MCP server."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return dict(
+            await mcp_runtime_module.mcp_runtime.oauth_status(server_id)
+        )
+    except MCPOAuthNotConfigured as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=public_error("mcp_oauth_not_configured"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+
+
+def _oauth_callback_value(
+    request: Request,
+    name: str,
+    *,
+    max_length: int,
+) -> str | None:
+    values = request.query_params.getlist(name)
+    if len(values) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=public_error("mcp_oauth_callback_invalid"),
+            headers={"Cache-Control": "no-store"},
+        )
+    if not values:
+        return None
+    value = values[0]
+    if not value or len(value) > max_length:
+        raise HTTPException(
+            status_code=400,
+            detail=public_error("mcp_oauth_callback_invalid"),
+            headers={"Cache-Control": "no-store"},
+        )
+    return value
+
+
+@app.get("/agent/oauth/{server_id}/callback", status_code=202)
+async def mcp_oauth_callback(
+    server_id: str,
+    request: Request,
+    response: Response,
+) -> dict[str, str]:
+    """Receive one OAuth redirect without echoing its sensitive query values."""
+    response.headers["Cache-Control"] = "no-store"
+    state = _oauth_callback_value(request, "state", max_length=512)
+    provider_error = _oauth_callback_value(request, "error", max_length=128)
+    try:
+        if provider_error is not None:
+            if state is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=public_error("mcp_oauth_callback_invalid"),
+                    headers={"Cache-Control": "no-store"},
+                )
+            await mcp_runtime_module.mcp_runtime.cancel_oauth_authorization(
+                server_id,
+                state=state,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=public_error("mcp_oauth_authorization_cancelled"),
+                headers={"Cache-Control": "no-store"},
+            )
+        code = _oauth_callback_value(request, "code", max_length=4096)
+        if code is None:
+            raise HTTPException(
+                status_code=400,
+                detail=public_error("mcp_oauth_callback_invalid"),
+                headers={"Cache-Control": "no-store"},
+            )
+        issuer = _oauth_callback_value(request, "iss", max_length=2048)
+        await mcp_runtime_module.mcp_runtime.complete_oauth_callback(
+            server_id,
+            code=code,
+            state=state,
+            issuer=issuer,
+        )
+    except MCPOAuthNotConfigured as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=public_error("mcp_oauth_not_configured"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except MCPOAuthCallbackNotPending as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=public_error("mcp_oauth_callback_not_pending"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except MCPOAuthCallbackStateMismatch as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=public_error("mcp_oauth_callback_invalid"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    return {"status": "received"}
+
+
+@app.post("/agent/oauth/{server_id}/cancel", status_code=202)
+async def cancel_mcp_oauth_authorization(
+    server_id: str,
+    response: Response,
+) -> dict[str, str]:
+    """Cancel one pending authorization; this is not remote token revocation."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        await mcp_runtime_module.mcp_runtime.cancel_oauth_authorization(
+            server_id
+        )
+    except MCPOAuthNotConfigured as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=public_error("mcp_oauth_not_configured"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except MCPOAuthCallbackNotPending as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=public_error("mcp_oauth_callback_not_pending"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    return {"status": "cancelled"}
 
 
 @app.post("/query", response_model=QueryResponse)

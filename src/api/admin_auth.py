@@ -1,4 +1,4 @@
-"""Authenticate index mutations before request bodies are parsed."""
+"""Authenticate privileged index and MCP OAuth control operations."""
 
 from ipaddress import ip_address
 from secrets import compare_digest
@@ -24,6 +24,14 @@ _PROTECTED_INDEX_MUTATIONS: frozenset[tuple[str, str]] = frozenset(
 def _requires_admin_access(scope: Scope) -> bool:
     method: str = scope["method"]
     path: str = get_route_path(scope).rstrip("/") or "/"
+    oauth_callback = (
+        method == "GET"
+        and path.startswith("/agent/oauth/")
+        and path.endswith("/callback")
+        and len(path.split("/")) == 5
+    )
+    if path.startswith("/agent/oauth/") and not oauth_callback:
+        return True
     return (method, path) in _PROTECTED_INDEX_MUTATIONS or (
         method == "DELETE" and path.startswith("/documents/")
     )
@@ -65,7 +73,7 @@ def _has_valid_admin_key(scope: Scope, supplied: str | None) -> bool:
 
 
 class AdminAuthMiddleware:
-    """Reject index mutations before multipart or other request body parsing."""
+    """Reject privileged operations before request body parsing."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app

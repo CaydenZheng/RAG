@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import httpx2
 import pytest
 from mcp import Client, InputRequiredRoundsExceededError, MCPError
+from mcp.client.auth import OAuthFlowError, OAuthRegistrationError, OAuthTokenError
 from mcp.types import (
     CONNECTION_CLOSED,
     REQUEST_TIMEOUT,
@@ -622,6 +623,77 @@ def test_declared_output_schema_failure_has_a_distinct_stable_error() -> None:
     assert snapshot["status"] == "degraded"
     assert snapshot["error_code"] == "mcp_result_schema_error"
     assert available is True
+    assert client.call_tool.await_count == 1
+
+
+@pytest.mark.parametrize(
+    "oauth_error, expected_code, expected_message",
+    [
+        (
+            OAuthTokenError(_ERROR_SECRET),
+            "mcp_oauth_failed",
+            "MCP OAuth authorization failed",
+        ),
+        (
+            OAuthFlowError(_ERROR_SECRET),
+            "mcp_oauth_failed",
+            "MCP OAuth authorization failed",
+        ),
+        (
+            OAuthRegistrationError(_ERROR_SECRET),
+            "mcp_oauth_failed",
+            "MCP OAuth authorization failed",
+        ),
+    ],
+)
+@pytest.mark.parametrize("output_schema", [None, {"type": "object"}])
+def test_call_time_oauth_failures_disable_provider_with_stable_error(
+    oauth_error: Exception,
+    expected_code: str,
+    expected_message: str,
+    output_schema: dict[str, Any] | None,
+) -> None:
+    result, snapshot, client, available = _run_call(
+        call_error=oauth_error,
+        output_schema=output_schema,
+    )
+
+    assert result.success is False
+    assert result.error == expected_message
+    assert result.error_code == expected_code
+    assert _ERROR_SECRET not in repr(result)
+    assert snapshot["status"] == "unavailable"
+    assert snapshot["error_code"] == expected_code
+    assert available is False
+    assert client.call_tool.await_count == 1
+
+
+@pytest.mark.parametrize("output_schema", [None, {"type": "object"}])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_call_time_oauth_cancellation_is_stable(
+    output_schema: dict[str, Any] | None,
+    wrapped: bool,
+) -> None:
+    from src.agent.mcp_oauth import MCPOAuthAuthorizationCancelled
+
+    cancellation = MCPOAuthAuthorizationCancelled(_ERROR_SECRET)
+    error: Exception = (
+        ExceptionGroup("transport cleanup", [cancellation])
+        if wrapped
+        else cancellation
+    )
+    result, snapshot, client, available = _run_call(
+        call_error=error,
+        output_schema=output_schema,
+    )
+
+    assert result.success is False
+    assert result.error == "MCP OAuth authorization was cancelled"
+    assert result.error_code == "mcp_oauth_cancelled"
+    assert _ERROR_SECRET not in repr(result)
+    assert snapshot["status"] == "unavailable"
+    assert snapshot["error_code"] == "mcp_oauth_cancelled"
+    assert available is False
     assert client.call_tool.await_count == 1
 
 

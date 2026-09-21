@@ -15,6 +15,7 @@ from typing import Any, Literal, TypedDict
 import httpx2
 from loguru import logger
 from mcp import Client, InputRequiredRoundsExceededError, MCPError
+from mcp.client.auth import OAuthFlowError, OAuthRegistrationError, OAuthTokenError
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import (
@@ -36,6 +37,12 @@ from config.settings import (
     MCPServerConfig,
     MCPStdioServerConfig,
     MCPStreamableHTTPServerConfig,
+)
+from src.agent.mcp_oauth import (
+    MCPOAuthAuthorizationCancelled,
+    MCPOAuthFlowManager,
+    MCPOAuthFlowSetupError,
+    MCPOAuthStatus,
 )
 from src.agent.tool_schema import InvalidToolSchema, ensure_safe_input_schema
 from src.agent.tools import (
@@ -183,6 +190,26 @@ class _SafeHTTPCoreLogFilter(logging.Filter):
         return True
 
 
+class _SafeOAuthLogFilter(logging.Filter):
+    """Remove authorization URLs, remote bodies, and exception details."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "mcp.client.auth.oauth2":
+            return True
+        message = str(record.msg)
+        if message.startswith("Token refresh failed:"):
+            record.msg = "MCP OAuth token refresh failed"
+        elif message == "OAuth flow error":
+            record.msg = "MCP OAuth flow failed"
+        else:
+            record.msg = "MCP OAuth client event"
+        record.args = ()
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
+        return True
+
+
 _STREAMABLE_HTTP_LOG_FILTER = _SafeStreamableHTTPLogFilter()
 logging.getLogger("mcp.client.streamable_http").addFilter(
     _STREAMABLE_HTTP_LOG_FILTER
@@ -198,6 +225,8 @@ for _logger_name in (
     "httpcore2.socks",
 ):
     logging.getLogger(_logger_name).addFilter(_HTTPCORE_LOG_FILTER)
+_OAUTH_LOG_FILTER = _SafeOAuthLogFilter()
+logging.getLogger("mcp.client.auth.oauth2").addFilter(_OAUTH_LOG_FILTER)
 
 
 @asynccontextmanager
@@ -228,13 +257,19 @@ async def _stdio_client_context(
 @asynccontextmanager
 async def _streamable_http_client_context(
     server: MCPStreamableHTTPServerConfig,
+    oauth_flow_manager: MCPOAuthFlowManager | None = None,
 ) -> AsyncIterator[Client]:
     """Enter the official Streamable HTTP transport with configured timeouts."""
     timeout = httpx2.Timeout(
         server.timeout_seconds,
         read=server.read_timeout_seconds,
     )
-    async with httpx2.AsyncClient(timeout=timeout) as http_client:
+    http_client_options: dict[str, Any] = {"timeout": timeout}
+    if server.oauth is not None:
+        if oauth_flow_manager is None:
+            oauth_flow_manager = MCPOAuthFlowManager((server,))
+        http_client_options["auth"] = oauth_flow_manager.provider_for(server)
+    async with httpx2.AsyncClient(**http_client_options) as http_client:
         transport = streamable_http_client(
             str(server.url),
             http_client=http_client,
@@ -245,12 +280,13 @@ async def _streamable_http_client_context(
 
 def _default_client_factory(
     server: MCPServerConfig,
+    oauth_flow_manager: MCPOAuthFlowManager | None = None,
 ) -> AbstractAsyncContextManager[Client]:
     """Build an official SDK client while keeping transports behind one seam."""
     if isinstance(server, MCPStdioServerConfig):
         return _stdio_client_context(server)
     if isinstance(server, MCPStreamableHTTPServerConfig):
-        return _streamable_http_client_context(server)
+        return _streamable_http_client_context(server, oauth_flow_manager)
     raise ValueError("MCP transport is not implemented")
 
 
@@ -269,13 +305,22 @@ class MCPClientManager:
         self,
         servers: Sequence[MCPServerConfig],
         *,
-        client_factory: MCPClientFactory = _default_client_factory,
+        client_factory: MCPClientFactory | None = None,
+        oauth_flow_manager: MCPOAuthFlowManager | None = None,
     ) -> None:
         self._servers: tuple[MCPServerConfig, ...] = tuple(servers)
         server_ids = [server.id for server in self._servers]
         if len(server_ids) != len(set(server_ids)):
             raise ValueError("MCP client manager requires unique server IDs")
-        self._client_factory: MCPClientFactory = client_factory
+        self._oauth_flow_manager = oauth_flow_manager or MCPOAuthFlowManager(
+            self._servers
+        )
+        self._client_factory: MCPClientFactory = client_factory or (
+            lambda server: _default_client_factory(
+                server,
+                self._oauth_flow_manager,
+            )
+        )
         self._lifecycle_lock: asyncio.Lock = asyncio.Lock()
         self._state_lock: threading.RLock = threading.RLock()
         self._connections: dict[str, _ServerConnection] = {}
@@ -307,16 +352,22 @@ class MCPClientManager:
                         server.id,
                         available=False,
                     )
-                for server in self._servers:
-                    if not server.enabled:
-                        continue
+                enabled_servers = tuple(
+                    server for server in self._servers if server.enabled
+                )
+                for server in enabled_servers:
                     self._update_state(
                         server.id,
                         status="connecting",
                         error_code=None,
                         message="server connection is starting",
                     )
-                    await self._connect_server(server, tool_registry)
+                await asyncio.gather(
+                    *(
+                        self._connect_server(server, tool_registry)
+                        for server in enabled_servers
+                    )
+                )
             except BaseException as error:
                 interrupted_server_ids = self._server_ids_with_status(
                     "connecting"
@@ -351,6 +402,38 @@ class MCPClientManager:
         with self._state_lock:
             return tuple(self._states[server.id].copy() for server in self._servers)
 
+    async def oauth_status(self, server_id: str) -> MCPOAuthStatus:
+        """Return admin-only OAuth interaction state for one server."""
+        return await self._oauth_flow_manager.status(server_id)
+
+    async def complete_oauth_callback(
+        self,
+        server_id: str,
+        *,
+        code: str,
+        state: str | None,
+        issuer: str | None,
+    ) -> None:
+        """Deliver one authorization callback to the waiting SDK provider."""
+        await self._oauth_flow_manager.complete_callback(
+            server_id,
+            code=code,
+            state=state,
+            issuer=issuer,
+        )
+
+    async def cancel_oauth_authorization(
+        self,
+        server_id: str,
+        *,
+        state: str | None = None,
+    ) -> None:
+        """Cancel one pending interactive authorization without retrying it."""
+        await self._oauth_flow_manager.cancel_authorization(
+            server_id,
+            state=state,
+        )
+
     async def _connect_server(
         self,
         server: MCPServerConfig,
@@ -359,17 +442,7 @@ class MCPClientManager:
         try:
             client_context = self._client_factory(server)
         except Exception as error:
-            self._update_state(
-                server.id,
-                status="unavailable",
-                error_code="mcp_connect_failed",
-                message="server connection failed",
-            )
-            logger.warning(
-                "MCP server {} connection failed: {}",
-                server.id,
-                type(error).__name__,
-            )
+            self._record_connection_failure(server.id, error)
             return
 
         close_requested = asyncio.Event()
@@ -394,17 +467,7 @@ class MCPClientManager:
         except Exception as error:
             await owner_task
             self._connections.pop(server.id, None)
-            self._update_state(
-                server.id,
-                status="unavailable",
-                error_code="mcp_connect_failed",
-                message="server connection failed",
-            )
-            logger.warning(
-                "MCP server {} connection failed: {}",
-                server.id,
-                type(error).__name__,
-            )
+            self._record_connection_failure(server.id, error)
             return
 
         connection.client = client
@@ -453,6 +516,86 @@ class MCPClientManager:
                 error_code=None,
                 message="server connection is available",
             )
+
+    def _record_connection_failure(
+        self,
+        server_id: str,
+        error: BaseException,
+    ) -> None:
+        oauth_failure = self._classify_oauth_error(error)
+        if oauth_failure is not None:
+            error_code = oauth_failure.error_code
+            message = oauth_failure.server_message
+        else:
+            error_code = "mcp_connect_failed"
+            message = "server connection failed"
+        self._update_state(
+            server_id,
+            status="unavailable",
+            error_code=error_code,
+            message=message,
+        )
+        logger.warning(
+            "MCP server {} connection failed: {}",
+            server_id,
+            type(error).__name__,
+        )
+
+    @classmethod
+    def _classify_oauth_error(
+        cls,
+        error: BaseException,
+    ) -> _MCPCallFailure | None:
+        """Classify OAuth failures once for connect and call paths."""
+        if cls._exception_contains(error, MCPOAuthAuthorizationCancelled):
+            return _MCPCallFailure(
+                error_code="mcp_oauth_cancelled",
+                public_message="MCP OAuth authorization was cancelled",
+                server_message="OAuth authorization was cancelled",
+                server_status="unavailable",
+                disable_provider=True,
+            )
+        if cls._exception_contains(
+            error,
+            (
+                MCPOAuthFlowSetupError,
+                OAuthFlowError,
+                OAuthRegistrationError,
+                OAuthTokenError,
+            ),
+        ):
+            return _MCPCallFailure(
+                error_code="mcp_oauth_failed",
+                public_message="MCP OAuth authorization failed",
+                server_message="OAuth authorization failed",
+                server_status="unavailable",
+                disable_provider=True,
+            )
+        return None
+
+    @classmethod
+    def _exception_contains(
+        cls,
+        error: BaseException,
+        expected: type[BaseException] | tuple[type[BaseException], ...],
+    ) -> bool:
+        if isinstance(error, expected):
+            return True
+        if isinstance(error, BaseExceptionGroup):
+            return any(
+                cls._exception_contains(nested, expected)
+                for nested in error.exceptions
+            )
+        if error.__cause__ is not None and cls._exception_contains(
+            error.__cause__,
+            expected,
+        ):
+            return True
+        return (
+            error.__context__ is not None
+            and error.__context__ is not error.__cause__
+            and cls._exception_contains(error.__context__, expected)
+        )
 
     async def _discover_server_tools(
         self,
@@ -529,13 +672,17 @@ class MCPClientManager:
             cursor = next_cursor
         raise RuntimeError("MCP tool discovery exceeded the page limit")
 
-    @staticmethod
+    @classmethod
     def _classify_tool_call_error(
+        cls,
         error: Exception,
         *,
         has_output_schema: bool,
     ) -> _MCPCallFailure:
         """Map SDK and transport failures without exposing remote details."""
+        oauth_failure = cls._classify_oauth_error(error)
+        if oauth_failure is not None:
+            return oauth_failure
         if isinstance(error, MCPError):
             if error.code == CONNECTION_CLOSED:
                 return _MCPCallFailure(

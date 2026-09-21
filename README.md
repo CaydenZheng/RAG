@@ -151,7 +151,7 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 | `AGENT_PLANNER_MODE` | `json` 为兼容默认；`native` 使用 OpenAI-compatible 原生 Tool Calling |
 | `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算 |
 | `TOOL_DEDUP_MAX_SESSIONS` | 工具调用去重状态的最大 session 数 |
-| `MCP_SERVERS` | 可选 MCP Server JSON 列表；支持 stdio 与 Streamable HTTP |
+| `MCP_SERVERS` | 可选 MCP Server JSON 列表；支持 stdio、Streamable HTTP 及可选标准 OAuth |
 | `AGENT_LOG_MAX_BYTES`、`AGENT_LOG_BACKUP_COUNT`、`AGENT_LOG_RETENTION_SECONDS` | Agent 事件与工具审计日志的轮转和保留边界 |
 | `PROMPT_VERSION` | 选择 `prompts/<version>/` |
 | `LANGFUSE_*` | 预留的远端观测字段；当前运行时未接入 |
@@ -237,12 +237,13 @@ curl.exe -X POST http://127.0.0.1:8000/agent/chat `
 
 MCP 默认关闭。设置 `MCP_SERVERS` 后，应用会在后台连接启用的 Server；连接失败或握手等待不会阻塞核心 HTTP 服务。stdio 和 Streamable HTTP 共用工具注册、完整 JSON Schema 校验、结果安全、审计和状态模型，工具调用默认不自动重试。
 
-内置时间 Server 可通过 stdio 开箱演示；远程 URL 使用 Streamable HTTP。配置示例、官方 Inspector 命令、真实传输测试和明确的能力边界见 [MCP 集成](docs/mcp.md)。基础 HTTP 支持不包含 OAuth、多租户、高可用或持久化审批。
+内置时间 Server 可通过 stdio 开箱演示；远程 URL 使用 Streamable HTTP，并可选用官方 SDK 的 OAuth Authorization Code + PKCE。配置示例、授权回调流程、官方 Inspector 命令、真实传输测试和明确的能力边界见 [MCP 集成](docs/mcp.md)。
 
 可观测入口：
 
 - `GET /agent/tools`：原生与 MCP 工具来源、Provider、分类、安全等级、可用性和脱敏 Server 状态。
 - `GET /ready`：MCP 作为可选组件汇总；MCP 不可用时核心服务仍按自身状态报告 readiness。
+- `GET /agent/oauth/{server_id}`：管理员读取待处理授权 URL；回调端点公开接收 Provider 重定向，state 仍由 Host 与 SDK 双重校验。
 
 ## 索引生命周期
 
@@ -372,7 +373,7 @@ Reranker 权重未缓存、模型路径错误、资源不足或超时。准备�
 - Windows 下 Chroma HNSW 对 Unicode 持久化路径存在兼容问题。
 - 完整 Agent 评测和新旧实现对照仍待补充。
 - 原生 Tool Calling 当前每个模型响应只接受一个工具调用；多个调用会稳定拒绝。模型若不支持完整工具 Schema，应显式切回 `AGENT_PLANNER_MODE=json`；系统不会静默改写 MCP 原始 Schema。
-- MCP OAuth、多租户、高可用和持久化 HITL 尚未实现。
+- MCP OAuth Token 默认只保存在当前进程内存；尚未接入企业 Secret Store、企业 SSO、远端 Token Revocation、多租户、高可用或持久化 HITL。
 
 ## License
 
