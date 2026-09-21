@@ -7,6 +7,7 @@ Pydantic Settings — 读取 .env 的所有配置项，提供类型校验与默�
 """
 
 import math
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Annotated, Literal, Optional, Self
 
@@ -51,6 +52,68 @@ class MCPStdioServerConfig(MCPServerConfigBase):
         return value
 
 
+class MCPOAuthConfig(BaseModel):
+    """Interactive OAuth settings consumed by the official MCP SDK."""
+
+    redirect_uri: AnyHttpUrl
+    client_name: str = Field(
+        default="ragrag MCP client", min_length=1, max_length=128
+    )
+    scope: str | None = Field(default=None, min_length=1, max_length=2048)
+    application_type: Literal["native", "web"] = "native"
+    client_metadata_url: AnyHttpUrl | None = None
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    @field_validator("client_name", "scope")
+    @classmethod
+    def reject_blank_oauth_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("OAuth text values must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_oauth_urls(self) -> Self:
+        if self.redirect_uri.username or self.redirect_uri.password:
+            raise ValueError("OAuth redirect URI must not contain credentials")
+        if self.redirect_uri.fragment:
+            raise ValueError("OAuth redirect URI must not contain a fragment")
+        if self.redirect_uri.scheme == "http":
+            if self.application_type != "native":
+                raise ValueError(
+                    "OAuth web redirect URI must use HTTPS"
+                )
+            host = self.redirect_uri.host.strip("[]")
+            try:
+                is_loopback = ip_address(host).is_loopback
+            except ValueError:
+                is_loopback = False
+            if not is_loopback:
+                raise ValueError(
+                    "OAuth native HTTP redirect URI must use a loopback IP"
+                )
+        elif self.redirect_uri.scheme != "https":
+            raise ValueError("OAuth redirect URI must use HTTPS")
+        if self.client_metadata_url is not None:
+            if self.client_metadata_url.scheme != "https":
+                raise ValueError("OAuth client metadata URL must use HTTPS")
+            if (
+                self.client_metadata_url.username
+                or self.client_metadata_url.password
+            ):
+                raise ValueError(
+                    "OAuth client metadata URL must not contain credentials"
+                )
+            if self.client_metadata_url.path in {"", "/"}:
+                raise ValueError(
+                    "OAuth client metadata URL must use a non-root path"
+                )
+        return self
+
+
 class MCPStreamableHTTPServerConfig(MCPServerConfigBase):
     """Configuration passed to the official SDK Streamable HTTP client."""
 
@@ -58,6 +121,7 @@ class MCPStreamableHTTPServerConfig(MCPServerConfigBase):
     url: AnyHttpUrl
     timeout_seconds: float = Field(default=10.0, gt=0, le=300)
     read_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
+    oauth: MCPOAuthConfig | None = None
 
     @model_validator(mode="after")
     def reject_url_credentials(self) -> Self:

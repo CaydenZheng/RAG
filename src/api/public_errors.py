@@ -2,6 +2,10 @@
 
 PUBLIC_ERRORS = {
     "admin_auth_required": "需要有效的管理员凭据",
+    "mcp_oauth_not_configured": "该 MCP Server 未配置 OAuth",
+    "mcp_oauth_callback_not_pending": "当前没有待处理的 OAuth 授权",
+    "mcp_oauth_callback_invalid": "OAuth 回调无效",
+    "mcp_oauth_authorization_cancelled": "OAuth 授权已取消",
     "query_capacity_exceeded": "服务繁忙，请稍后重试",
     "request_timeout": "请求处理超时，请稍后重试",
     "query_failed": "查询处理失败，请稍后重试",

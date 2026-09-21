@@ -10,7 +10,11 @@ from typing import Literal, TypedDict
 from loguru import logger
 
 from config.settings import MCPServerConfig, settings
-from src.agent.mcp_client import MCPClientManager, MCPServerSnapshot
+from src.agent.mcp_client import (
+    MCPClientManager,
+    MCPServerSnapshot,
+)
+from src.agent.mcp_oauth import MCPOAuthNotConfigured, MCPOAuthStatus
 from src.agent.tools import ToolRegistry, ToolStatusSnapshot, tool_registry
 
 MCPReadinessStatus = Literal["disabled", "starting", "ready", "degraded"]
@@ -203,6 +207,45 @@ class MCPRuntime:
             for state in self.server_snapshot()
         ]
         return {"tools": tools, "mcp_servers": servers}
+
+    async def oauth_status(self, server_id: str) -> MCPOAuthStatus:
+        """Return admin-only OAuth state from the active manager."""
+        manager = self._active_manager()
+        return await manager.oauth_status(server_id)
+
+    async def complete_oauth_callback(
+        self,
+        server_id: str,
+        *,
+        code: str,
+        state: str | None,
+        issuer: str | None,
+    ) -> None:
+        """Deliver an OAuth callback to the active manager."""
+        manager = self._active_manager()
+        await manager.complete_oauth_callback(
+            server_id,
+            code=code,
+            state=state,
+            issuer=issuer,
+        )
+
+    async def cancel_oauth_authorization(
+        self,
+        server_id: str,
+        *,
+        state: str | None = None,
+    ) -> None:
+        """Cancel a pending OAuth authorization on the active manager."""
+        manager = self._active_manager()
+        await manager.cancel_oauth_authorization(server_id, state=state)
+
+    def _active_manager(self) -> MCPClientManager:
+        with self._state_lock:
+            manager = self._manager
+        if manager is None:
+            raise MCPOAuthNotConfigured()
+        return manager
 
 
 mcp_runtime = MCPRuntime(tool_registry)

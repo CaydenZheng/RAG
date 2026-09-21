@@ -8,10 +8,11 @@
 |---|---|
 | stdio | 通过官方 SDK 启动本地子进程；内置时间 Server 可直接演示 |
 | Streamable HTTP | 通过官方 SDK 连接远程 URL，复用与 stdio 相同的发现、Schema、结果和状态链路 |
+| OAuth | 可选使用官方 SDK Authorization Code + PKCE、动态客户端注册/CIMD 与自动刷新；Host 提供回调和取消协调 |
 | 工具注册 | 命名为 `mcp__{server_id}__{tool_name}`，来源和 Provider 可在 `/agent/tools` 查看 |
 | Schema | 保存完整 `inputSchema`，使用 JSON Schema Draft 2020-12 在调用前校验；原生 Tool Calling 使用完整 Schema，JSON Planner 使用兼容投影 |
 | 调用安全 | MCP 工具默认为 Graylist、`max_retries=0`；结果经过审计、不可信包装和上下文长度限制 |
-| 可用性 | MCP 在后台初始化；单个 Server 失败只降低可选 MCP 状态，不阻塞核心 HTTP 服务 |
+| 可用性 | MCP 在后台并发初始化；单个 Server 等待授权或失败不阻塞核心 HTTP 服务及其他 Provider |
 
 ## 配置
 
@@ -29,11 +30,24 @@ Streamable HTTP：
 MCP_SERVERS=[{"id":"remote","transport":"streamable_http","url":"https://mcp.example.com/mcp","timeout_seconds":10,"read_timeout_seconds":300,"call_timeout_seconds":30}]
 ```
 
+带标准 OAuth 的 Streamable HTTP：
+
+```dotenv
+MCP_SERVERS=[{"id":"remote","transport":"streamable_http","url":"https://mcp.example.com/mcp","oauth":{"redirect_uri":"http://127.0.0.1:8000/agent/oauth/remote/callback","client_name":"ragrag local client","scope":"mcp:tools offline_access"}}]
+```
+
 - `timeout_seconds` 控制 HTTP 建连、写入和连接池等待。
 - `read_timeout_seconds` 控制 HTTP 长连接读取。
 - `call_timeout_seconds` 控制单次工具调用，取值必须大于 0 且不超过 300 秒。
 - stdio 的 `env` 值按秘密处理，只在建立官方 SDK 传输时解封；公共状态和错误不会返回命令、URL、Token 或远端正文。
 - 工具调用不会因连接错误自动重放。对可能产生副作用的调用，由上层调用方决定是否重新执行。
+- OAuth `redirect_uri` 对 `native` 客户端允许 HTTPS 或 loopback IP（`127.0.0.0/8`、`::1`）上的 HTTP；`web` 客户端及非 loopback 地址必须使用 HTTPS。
+
+OAuth Server 返回 `401` 后，SDK 完成元数据发现并生成授权 URL。使用管理员凭据读取 `GET /agent/oauth/{server_id}`，在浏览器打开其中的 `authorization_url`；Provider 随后重定向到配置的 `/agent/oauth/{server_id}/callback`。回调端点不要求管理员 Header，但必须携带匹配的 `state`，并由 Host 与 SDK 再次校验；Uvicorn 访问日志会在记录前移除该回调的完整查询串。`POST /agent/oauth/{server_id}/cancel` 可由管理员取消当前待处理授权。OAuth 控制响应均设置 `Cache-Control: no-store`。
+
+多个 MCP Server 会独立并发初始化；一个 Provider 等待人工 OAuth 回调时，其他健康 Provider 仍可完成工具发现并变为可用。调用期间发生刷新、重新授权或取消失败时，Server 分别收敛为 `mcp_oauth_failed` 或 `mcp_oauth_cancelled`，并禁用该 Provider 的工具，避免继续调度不可用凭据。
+
+首版 `TokenStorage` 是可替换接口，默认实现只保存在当前进程内存，可在同一进程内供 SDK 自动刷新使用；应用重启后需要重新授权。生产 Secret Store 需要按部署环境另行实现。取消待处理授权不等于调用远端 Token Revocation Endpoint，本项目当前不声明远端撤销能力。
 
 应用启动后可查看：
 
@@ -81,9 +95,9 @@ uv run --no-sync --offline --no-env-file pytest tests/offline -q -k mcp
 
 `AGENT_PLANNER_MODE` 默认为 `json`，可设为 `native` 使用 OpenAI-compatible 原生 Tool Calling。原生模式直接投影可用工具并传递完整 MCP `inputSchema`，不修改 Registry 中的原始 Schema；不符合 Provider function-name 约束的 MCP 名称只在模型边界映射为稳定别名，调用返回后会反解为 Registry 原名。两种模式复用同一个 `ToolRegistry`、MCP Adapter、预算、审计、参数校验和结果安全链路。供应商若不支持某项 Schema 特性，应显式切回 JSON 模式，当前不会静默裁剪 Schema 或自动重放请求。原生模式当前每个模型响应只接受一个工具调用。
 
-基础 Streamable HTTP 连接不代表已经具备以下能力：
+当前标准 OAuth Client 不代表已经具备以下能力：
 
-- OAuth、企业 SSO 或 Token 持久化刷新；
+- 企业 SSO、生产 IdP 集成、跨进程 Token 持久化或远端 Token Revocation；
 - 多租户凭证、数据或索引隔离；
 - 持久化 Human-in-the-loop、跨进程恢复或工作流编排；
 - 高可用、服务发现、网关、集中策略、生产告警或自动扩缩容。
