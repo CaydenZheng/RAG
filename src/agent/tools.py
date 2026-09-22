@@ -17,6 +17,7 @@ import json
 import math
 import re
 import time
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
@@ -32,6 +33,16 @@ from src.agent.tool_schema import (
 from src.core.agent_runtime import ToolResult
 from src.infra.jsonl import append_jsonl
 from src.infra.tracer import tracer
+
+_CURRENT_TOOL_SESSION_ID: ContextVar[str | None] = ContextVar(
+    "current_tool_session_id",
+    default=None,
+)
+
+
+def current_tool_session_id() -> str | None:
+    """Return the storage-scoped session for the current tool execution."""
+    return _CURRENT_TOOL_SESSION_ID.get()
 
 # ================================================================
 # 数据模型
@@ -415,6 +426,7 @@ class ToolRegistry:
             )
         tool, call_hash = prepared
         for attempt in range(tool.max_retries + 1):
+            session_token = _CURRENT_TOOL_SESSION_ID.set(session_id)
             try:
                 if tool.execute_async_fn is not None:
                     result = await tool.execute_async_fn(params)
@@ -430,6 +442,8 @@ class ToolRegistry:
                     attempt + 1,
                     exc,
                 )
+            finally:
+                _CURRENT_TOOL_SESSION_ID.reset(session_token)
         return ToolResult(
             success=False,
             error="Tool execution failed",

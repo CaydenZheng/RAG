@@ -16,6 +16,7 @@ import httpx2
 from loguru import logger
 from mcp import Client, InputRequiredRoundsExceededError, MCPError
 from mcp.client.auth import OAuthFlowError, OAuthRegistrationError, OAuthTokenError
+from mcp.client.session import ElicitationFnT
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import (
@@ -38,6 +39,11 @@ from config.settings import (
     MCPStdioServerConfig,
     MCPStreamableHTTPServerConfig,
 )
+from src.agent.mcp_elicitation import (
+    MCPElicitationAction,
+    MCPElicitationManager,
+    MCPElicitationSnapshot,
+)
 from src.agent.mcp_oauth import (
     MCPOAuthAuthorizationCancelled,
     MCPOAuthFlowManager,
@@ -49,6 +55,7 @@ from src.agent.tools import (
     SafetyLevel,
     ToolDef,
     ToolRegistry,
+    current_tool_session_id,
     tool_params_from_schema,
 )
 from src.core.agent_runtime import ToolResult
@@ -232,6 +239,7 @@ logging.getLogger("mcp.client.auth.oauth2").addFilter(_OAUTH_LOG_FILTER)
 @asynccontextmanager
 async def _stdio_client_context(
     server: MCPStdioServerConfig,
+    elicitation_callback: ElicitationFnT | None = None,
 ) -> AsyncIterator[Client]:
     """Enter the official stdio transport without exposing peer output."""
     environment = (
@@ -250,13 +258,19 @@ async def _stdio_client_context(
     )
     with open(os.devnull, "w", encoding="utf-8") as error_sink:
         transport = stdio_client(parameters, errlog=error_sink)
-        async with Client(transport) as client:
+        client_options = (
+            {"elicitation_callback": elicitation_callback}
+            if elicitation_callback is not None
+            else {}
+        )
+        async with Client(transport, **client_options) as client:
             yield client
 
 
 @asynccontextmanager
 async def _streamable_http_client_context(
     server: MCPStreamableHTTPServerConfig,
+    elicitation_callback: ElicitationFnT | None = None,
     oauth_flow_manager: MCPOAuthFlowManager | None = None,
 ) -> AsyncIterator[Client]:
     """Enter the official Streamable HTTP transport with configured timeouts."""
@@ -274,19 +288,29 @@ async def _streamable_http_client_context(
             str(server.url),
             http_client=http_client,
         )
-        async with Client(transport) as client:
+        client_options = (
+            {"elicitation_callback": elicitation_callback}
+            if elicitation_callback is not None
+            else {}
+        )
+        async with Client(transport, **client_options) as client:
             yield client
 
 
 def _default_client_factory(
     server: MCPServerConfig,
+    elicitation_callback: ElicitationFnT | None = None,
     oauth_flow_manager: MCPOAuthFlowManager | None = None,
 ) -> AbstractAsyncContextManager[Client]:
     """Build an official SDK client while keeping transports behind one seam."""
     if isinstance(server, MCPStdioServerConfig):
-        return _stdio_client_context(server)
+        return _stdio_client_context(server, elicitation_callback)
     if isinstance(server, MCPStreamableHTTPServerConfig):
-        return _streamable_http_client_context(server, oauth_flow_manager)
+        return _streamable_http_client_context(
+            server,
+            elicitation_callback,
+            oauth_flow_manager,
+        )
     raise ValueError("MCP transport is not implemented")
 
 
@@ -315,9 +339,11 @@ class MCPClientManager:
         self._oauth_flow_manager = oauth_flow_manager or MCPOAuthFlowManager(
             self._servers
         )
+        self._elicitation_manager = MCPElicitationManager()
         self._client_factory: MCPClientFactory = client_factory or (
             lambda server: _default_client_factory(
                 server,
+                self._elicitation_manager.callback_for(server.id),
                 self._oauth_flow_manager,
             )
         )
@@ -342,6 +368,7 @@ class MCPClientManager:
                     )
                 return
 
+            await self._elicitation_manager.open()
             self._bind_discovery_registry(tool_registry)
             self._started = True
             self._tool_registry = tool_registry
@@ -392,6 +419,7 @@ class MCPClientManager:
         """Close every active server independently and make provider tools unavailable."""
         async with self._lifecycle_lock:
             try:
+                await self._elicitation_manager.close()
                 await self._close_connections()
             finally:
                 self._started = False
@@ -401,6 +429,33 @@ class MCPClientManager:
         """Return configuration-ordered copies without commands, URLs, or secrets."""
         with self._state_lock:
             return tuple(self._states[server.id].copy() for server in self._servers)
+
+    def elicitation_callback(self, server_id: str) -> ElicitationFnT:
+        """Return the official SDK callback for a configured Server."""
+        return self._elicitation_manager.callback_for(server_id)
+
+    async def pending_elicitations(
+        self,
+        session_id: str,
+    ) -> tuple[MCPElicitationSnapshot, ...]:
+        """Return Elicitation requests owned by one Agent session."""
+        return await self._elicitation_manager.pending_for_session(session_id)
+
+    async def respond_to_elicitation(
+        self,
+        session_id: str,
+        elicitation_id: str,
+        *,
+        action: MCPElicitationAction,
+        content: dict[str, object] | None,
+    ) -> None:
+        """Deliver one validated caller response to the SDK callback."""
+        await self._elicitation_manager.respond(
+            session_id,
+            elicitation_id,
+            action=action,
+            content=content,
+        )
 
     async def oauth_status(self, server_id: str) -> MCPOAuthStatus:
         """Return admin-only OAuth interaction state for one server."""
@@ -867,12 +922,24 @@ class MCPClientManager:
             )
 
         async def execute_async(arguments: dict[str, Any]) -> ToolResult:
-            try:
-                result = await client.call_tool(
-                    mcp_tool.name,
-                    arguments,
-                    read_timeout_seconds=call_timeout_seconds,
+            session_id = current_tool_session_id()
+            if session_id is None:
+                return ToolResult(
+                    success=False,
+                    error="MCP tool session is unavailable",
+                    error_code="mcp_session_unavailable",
+                    tool_name=registered_name,
                 )
+            try:
+                async with self._elicitation_manager.active_call(
+                    server_id,
+                    session_id,
+                ):
+                    result = await client.call_tool(
+                        mcp_tool.name,
+                        arguments,
+                        read_timeout_seconds=call_timeout_seconds,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as error:

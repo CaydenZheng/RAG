@@ -9,6 +9,8 @@ FastAPI 服务入口。
   POST /upload          上传文档（触发增量索引）
   POST /agent/chat      Agent 对话（Plan-Execute-Observe）
   POST /agent/chat/stream  Agent 执行事件流
+  GET  /agent/elicitation/{id}  查询待处理的 MCP Elicitation
+  POST /agent/elicitation/{id}/{request_id}  响应 MCP Elicitation
   POST /agent/reset     重置 Agent 会话
   GET  /agent/tools     查看工具来源和 MCP Server 状态
   GET  /agent/oauth/{id}  查看待处理的 MCP OAuth 授权
@@ -44,10 +46,17 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+from pydantic import ValidationError
 
 from config.settings import settings
 from src.agent import mcp_runtime as mcp_runtime_module
 from src.agent.harness import agent_harness
+from src.agent.mcp_elicitation import (
+    MAX_ELICITATION_RESPONSE_BODY_BYTES,
+    MCPElicitationInvalidResponse,
+    MCPElicitationNotPending,
+    MCPElicitationResponseTooLarge,
+)
 from src.agent.mcp_oauth import (
     MCPOAuthCallbackNotPending,
     MCPOAuthCallbackStateMismatch,
@@ -64,6 +73,7 @@ from src.api.schemas import (
     AgentChatRequest,
     AgentChatResponse,
     IndexJobResponse,
+    MCPElicitationResponseRequest,
     QueryRequest,
     QueryResponse,
     parse_metadata_filter_json,
@@ -669,6 +679,103 @@ async def agent_chat_stream(
             "Connection": "keep-alive",
         },
     )
+
+
+@app.get("/agent/elicitation/{session_id}")
+async def pending_mcp_elicitations(
+    session_id: str,
+    request: Request,
+    response: Response,
+) -> dict[str, object]:
+    """Return MCP interactions pending for this client and Agent session."""
+    session = scope_request_session(request, session_id, "agent")
+    pending = await mcp_runtime_module.mcp_runtime.pending_elicitations(
+        session.storage_id
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {"session_id": session.public_id, "pending": list(pending)}
+
+
+@app.post(
+    "/agent/elicitation/{session_id}/{elicitation_id}",
+    status_code=202,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": MCPElicitationResponseRequest.model_json_schema()
+                }
+            },
+        }
+    },
+)
+async def respond_to_mcp_elicitation(
+    session_id: str,
+    elicitation_id: str,
+    request: Request,
+    response: Response,
+) -> dict[str, str]:
+    """Deliver one response without returning submitted form content."""
+    session = scope_request_session(request, session_id, "agent")
+    response.headers["Cache-Control"] = "no-store"
+    content_length = request.headers.get("content-length")
+    try:
+        declared_size = int(content_length) if content_length is not None else None
+    except ValueError:
+        declared_size = None
+    if (
+        declared_size is not None
+        and declared_size > MAX_ELICITATION_RESPONSE_BODY_BYTES
+    ):
+        raise HTTPException(
+            status_code=413,
+            detail=public_error("mcp_elicitation_response_too_large"),
+            headers={"Cache-Control": "no-store"},
+        )
+    raw_body = bytearray()
+    async for chunk in request.stream():
+        if len(chunk) > MAX_ELICITATION_RESPONSE_BODY_BYTES - len(raw_body):
+            raise HTTPException(
+                status_code=413,
+                detail=public_error("mcp_elicitation_response_too_large"),
+                headers={"Cache-Control": "no-store"},
+            )
+        raw_body.extend(chunk)
+    try:
+        body = MCPElicitationResponseRequest.model_validate_json(raw_body)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=public_error("mcp_elicitation_response_invalid"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        await mcp_runtime_module.mcp_runtime.respond_to_elicitation(
+            session.storage_id,
+            elicitation_id,
+            action=body.action,
+            content=body.content,
+        )
+    except MCPElicitationNotPending as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=public_error("mcp_elicitation_not_pending"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except MCPElicitationResponseTooLarge as exc:
+        raise HTTPException(
+            status_code=413,
+            detail=public_error("mcp_elicitation_response_too_large"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except MCPElicitationInvalidResponse as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=public_error("mcp_elicitation_response_invalid"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    return {"status": "received"}
 
 
 @app.post("/agent/reset")

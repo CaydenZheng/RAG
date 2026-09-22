@@ -9,6 +9,7 @@
 | stdio | 通过官方 SDK 启动本地子进程；内置时间 Server 可直接演示 |
 | Streamable HTTP | 通过官方 SDK 连接远程 URL，复用与 stdio 相同的发现、Schema、结果和状态链路 |
 | OAuth | 可选使用官方 SDK Authorization Code + PKCE、动态客户端注册/CIMD 与自动刷新；Host 提供回调和取消协调 |
+| Elicitation | 复用官方 SDK form／URL callback 与现代 InputRequired 驱动；Host 通过 Agent session 传递请求和响应 |
 | 工具注册 | 命名为 `mcp__{server_id}__{tool_name}`，来源和 Provider 可在 `/agent/tools` 查看 |
 | Schema | 保存完整 `inputSchema`，使用 JSON Schema Draft 2020-12 在调用前校验；原生 Tool Calling 使用完整 Schema，JSON Planner 使用兼容投影 |
 | 调用安全 | MCP 工具默认为 Graylist、`max_retries=0`；结果经过审计、不可信包装和上下文长度限制 |
@@ -54,6 +55,23 @@ OAuth Server 返回 `401` 后，SDK 完成元数据发现并生成授权 URL。�
 - `GET /agent/tools`：工具来源、Provider、分类、安全等级、可用状态及脱敏后的 Server 状态。
 - `GET /ready`：核心组件 readiness 与可选 MCP 汇总。MCP 降级不会把健康的核心服务误报为宕机。
 
+## Elicitation
+
+MCP Client 在 stdio 和 Streamable HTTP 上都注册官方 `elicitation_callback`，因此会按 SDK 协议声明 form 和 URL Elicitation 能力。legacy server→client callback 与 2026 `InputRequiredResult` 自动多轮驱动共用同一条 Host 协调链路。
+
+当前 Agent HTTP 与 SSE 都是单向请求，不能在同一个请求体中途接收用户响应。调用方应在发起 `/agent/chat` 或 `/agent/chat/stream` 时显式提供稳定的 `session_id`，并用另一个并发请求完成交互：
+
+1. `GET /agent/elicitation/{session_id}` 查询该 Agent session 的 `pending` 列表。
+2. form 项包含 `message` 与 `requested_schema`；URL 项包含 `message`、受限 URL 和 Server 的不透明 `elicitation_id`。
+3. `POST /agent/elicitation/{session_id}/{pending_id}` 提交 `{"action":"accept","content":{...}}`，或提交不带 `content` 的 `decline`／`cancel`。
+4. Host 校验响应后只返回 `202 {"status":"received"}`，不回显表单内容；SDK callback 将标准 `ElicitResult` 返回 Server，原工具调用随后继续。
+
+公开 `session_id` 仍绑定客户端身份 cookie。另一个客户端即使知道相同 ID，也看不到或无法响应 pending；form `accept` 内容按 Server 的 JSON Schema 校验，非法内容不会解除等待。URL 只允许 HTTPS，或数值型 loopback IP 上的 HTTP，并且 URL 模式不接收 form 内容。Host 在 Server Schema 之外独立限制响应：HTTP 请求体最多 128 KiB，JSON 编码后的 `content` 最多 64 KiB、64 个字段，单个 key 最多 256 UTF-8 bytes，单个字符串最多 8 KiB，单个列表最多 64 项；非有限数字、嵌套对象和其他协议外值会被拒绝。消息、URL、Schema 和响应内容不写入日志或普通 MCP 状态接口。
+
+pending 仅保存在当前进程内存，默认最多等待 25 秒，并仍受更短的 MCP `call_timeout_seconds` 和 Agent 总时限约束。响应、超时、调用取消、连接关闭和 Manager 关闭通过同一个锁内终态提交点竞争；只有一个结果能成功，胜者立即清理 pending，较晚的响应返回 not-pending，不会出现 Host 确认成功但 Server 已收到 `cancel`。legacy callback 在同一 Server 存在多个并发工具调用且无法确定归属时会安全拒绝，不会猜测 session。调用方若省略 Agent `session_id`，在阻塞请求完成前拿不到自动生成的 ID，因此不能可靠完成 Elicitation。
+
+Elicitation 是 Server 主动请求输入的 MCP 协议能力，不是 Host 的工具执行审批。本项没有增加批准／拒绝工具执行的策略，也不支持跨进程恢复、审批委托、工作流编排或持久化 Human-in-the-loop。
+
 ## 本地演示
 
 内置 `get_current_time(timezone="UTC")` 使用标准库 `zoneinfo`。支持 `UTC` 和系统可用的 IANA 时区；非法时区返回稳定的 MCP 工具错误。
@@ -84,6 +102,7 @@ npx @modelcontextprotocol/inspector@2.7.0 --cli `
 
 - stdio：子进程握手、工具发现、结构化调用和可靠关闭。
 - Streamable HTTP：仅放行测试进程的数值型 loopback 地址，覆盖应用配置接线、初始化失败、工具发现、调用超时、恢复和关闭。
+- Elicitation：真实 in-process MCPServer 覆盖 legacy callback 与现代 InputRequired，并通过真实 stdio 子进程验证默认 Client factory 的 callback 接线；另覆盖 form／URL、Schema 与 Host 资源边界、非阻塞校验、超时／关闭终态竞争、并发归属和客户端 session 隔离。
 - 单元测试通过官方 SDK `Client` 边界进行 Mock，不实现 Fake MCP 协议或传输。
 
 ```powershell

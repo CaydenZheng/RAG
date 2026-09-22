@@ -12,7 +12,7 @@
 |---|---|
 | RAG 查询 | 查询改写、Dense／BM25、RRF、可选 Rerank、上下文预算和引用约束 |
 | Agent | JSON／原生 Tool Calling 可配置、有界迭代、SQLite 短期历史、同步结果与 SSE 共用事件模型 |
-| MCP | 官方 SDK 的 stdio 与 Streamable HTTP、动态工具发现、统一 Schema／结果／状态链路 |
+| MCP | 官方 SDK 的 stdio 与 Streamable HTTP、OAuth、Elicitation、动态工具发现及统一安全链路 |
 | 索引 | 上传、删除、全量重建、版本化 collection、原子发布和回滚 |
 | 可靠性 | 并发上限、总时限、有限重试、稳定错误码和显式降级警告 |
 | 安全 | 客户端会话隔离、metadata filter 校验、上传校验、工具参数和输出约束 |
@@ -218,6 +218,8 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 |---|---|---|
 | `POST` | `/agent/chat` | 普通 Agent 对话 |
 | `POST` | `/agent/chat/stream` | `planning → tool_call → tool_done → chunk → done` 事件流；答案完整生成后分块发送，不是 Provider 首 Token 流式 |
+| `GET` | `/agent/elicitation/{session_id}` | 查询当前客户端 Agent session 的待处理 MCP Elicitation |
+| `POST` | `/agent/elicitation/{session_id}/{elicitation_id}` | 提交 `accept`、`decline` 或 `cancel`；成功响应不回显表单内容 |
 | `POST` | `/agent/reset?session_id=...` | 清除当前客户端的 Agent 会话 |
 | `GET` | `/agent/memory/{session_id}` | 查看受当前客户端约束的 SQLite 短期历史 |
 
@@ -237,13 +239,14 @@ curl.exe -X POST http://127.0.0.1:8000/agent/chat `
 
 MCP 默认关闭。设置 `MCP_SERVERS` 后，应用会在后台连接启用的 Server；连接失败或握手等待不会阻塞核心 HTTP 服务。stdio 和 Streamable HTTP 共用工具注册、完整 JSON Schema 校验、结果安全、审计和状态模型，工具调用默认不自动重试。
 
-内置时间 Server 可通过 stdio 开箱演示；远程 URL 使用 Streamable HTTP，并可选用官方 SDK 的 OAuth Authorization Code + PKCE。配置示例、授权回调流程、官方 Inspector 命令、真实传输测试和明确的能力边界见 [MCP 集成](docs/mcp.md)。
+内置时间 Server 可通过 stdio 开箱演示；远程 URL 使用 Streamable HTTP，并可选用官方 SDK 的 OAuth Authorization Code + PKCE。MCP Server 发起 Elicitation 时，调用方可通过 Agent session 查询并提交有效响应；当前使用独立 HTTP 请求协调，不把单向 SSE 描述成双向通道。Host 独立限制响应请求体和 form 内容大小，超时、关闭与响应竞争只会接受一个终态。配置示例、授权与 Elicitation 流程、具体资源上限、官方 Inspector 命令、真实传输测试和明确的能力边界见 [MCP 集成](docs/mcp.md)。
 
 可观测入口：
 
 - `GET /agent/tools`：原生与 MCP 工具来源、Provider、分类、安全等级、可用性和脱敏 Server 状态。
 - `GET /ready`：MCP 作为可选组件汇总；MCP 不可用时核心服务仍按自身状态报告 readiness。
 - `GET /agent/oauth/{server_id}`：管理员读取待处理授权 URL；回调端点公开接收 Provider 重定向，state 仍由 Host 与 SDK 双重校验。
+- `GET /agent/elicitation/{session_id}` 与对应 `POST`：仅当前客户端可见的进程内 MCP Elicitation 查询与响应。
 
 ## 索引生命周期
 
@@ -373,7 +376,7 @@ Reranker 权重未缓存、模型路径错误、资源不足或超时。准备�
 - Windows 下 Chroma HNSW 对 Unicode 持久化路径存在兼容问题。
 - 完整 Agent 评测和新旧实现对照仍待补充。
 - 原生 Tool Calling 当前每个模型响应只接受一个工具调用；多个调用会稳定拒绝。模型若不支持完整工具 Schema，应显式切回 `AGENT_PLANNER_MODE=json`；系统不会静默改写 MCP 原始 Schema。
-- MCP OAuth Token 默认只保存在当前进程内存；尚未接入企业 Secret Store、企业 SSO、远端 Token Revocation、多租户、高可用或持久化 HITL。
+- MCP OAuth Token 与 Elicitation pending 状态默认只保存在当前进程内存；尚未接入企业 Secret Store、企业 SSO、远端 Token Revocation、多租户、高可用或持久化 HITL。
 
 ## License
 

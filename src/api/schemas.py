@@ -1,8 +1,9 @@
 """Request and response models for the HTTP interface."""
 
 import json
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.core.index_versions import LEGACY_INDEX_VERSION
 from src.core.knowledge import (
@@ -99,3 +100,15 @@ class AgentChatResponse(BaseModel):
     latency_ms: float = 0.0
     error_code: str = ""
     error: str = ""
+
+
+class MCPElicitationResponseRequest(BaseModel):
+    """One caller decision for a pending MCP Elicitation request."""
+
+    action: Literal["accept", "decline", "cancel"]
+    content: dict[
+        str,
+        str | int | float | bool | list[str] | None,
+    ] | None = None
+
+    model_config = ConfigDict(extra="forbid")
