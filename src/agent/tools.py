@@ -3,7 +3,7 @@
 
 安全等级：
   WHITELIST → 自动执行（纯读取、纯计算，无副作用）
-  GRAYLIST  → 自动执行并记录结果（向外部服务发送用户输入，需留痕）
+  GRAYLIST  → 生产默认等待审批并记录结果（向外部服务发送用户输入）
   BLACKLIST → 直接阻断（危险操作）
 
 内置工具：
@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict
 from loguru import logger
 
 from config.settings import settings
+from src.agent.tool_approval import ToolApprovalManager, tool_approval_manager
 from src.agent.tool_schema import (
     ensure_safe_input_schema,
     validate_tool_arguments,
@@ -51,7 +52,7 @@ def current_tool_session_id() -> str | None:
 class SafetyLevel(str, Enum):
     """工具安全等级"""
     WHITELIST = "whitelist"   # 自动执行
-    GRAYLIST = "graylist"     # 审计后执行
+    GRAYLIST = "graylist"     # 配置协调器时审批后执行
     BLACKLIST = "blacklist"   # 阻断
 
 
@@ -172,13 +173,16 @@ class ToolRegistry:
 
     安全流程：
       1. 参数校验（JSON Schema 风格，类型 + 必填检查）
-      2. 安全等级判断 → 白名单放行 / 灰名单审计 / 黑名单阻断
+      2. 安全等级判断 → 白名单放行 / 灰名单审批与审计 / 黑名单阻断
       3. 去重检查（同一 session 内相同调用 30s 内不重复）
       4. 执行 + 审计
     """
 
     def __init__(
-        self, dedup_window: float = 30.0, max_sessions: int = 10000
+        self,
+        dedup_window: float = 30.0,
+        max_sessions: int = 10000,
+        approval_manager: ToolApprovalManager | None = None,
     ) -> None:
         if max_sessions < 1:
             raise ValueError("max_sessions must be at least 1")
@@ -186,6 +190,7 @@ class ToolRegistry:
         self._dedup_cache: Dict[str, Dict[str, float]] = {}
         self._dedup_window = dedup_window
         self._max_sessions = max_sessions
+        self._approval_manager = approval_manager
 
     # ----------------------------------------------------------------
     # 注册
@@ -386,6 +391,23 @@ class ToolRegistry:
                 start,
             )
         tool, call_hash = prepared
+        if (
+            tool.safety_level == SafetyLevel.GRAYLIST
+            and self._approval_manager is not None
+        ):
+            return self._complete(
+                tool,
+                params,
+                ToolResult(
+                    success=False,
+                    error="Tool approval requires asynchronous execution",
+                    error_code="tool_approval_required",
+                    tool_name=tool.name,
+                ),
+                session_id,
+                call_hash,
+                start,
+            )
         for attempt in range(tool.max_retries + 1):
             try:
                 result = tool.execute_fn(params)
@@ -413,7 +435,7 @@ class ToolRegistry:
         params: dict,
         session_id: str = "default",
     ) -> ToolResult:
-        """Validate once, then run async tools directly and sync tools in a thread."""
+        """Validate around approval, then execute the current available tool."""
         start = time.time()
         prepared = self._prepare(tool_name, params, session_id)
         if isinstance(prepared, ToolResult):
@@ -425,6 +447,101 @@ class ToolRegistry:
                 start,
             )
         tool, call_hash = prepared
+        if (
+            tool.safety_level == SafetyLevel.GRAYLIST
+            and self._approval_manager is not None
+        ):
+            decision = await self._approval_manager.authorize(
+                session_id,
+                tool_name=tool.name,
+                source=tool.source,
+                provider=tool.provider,
+                category=tool.category,
+                params=params,
+            )
+            if decision.outcome != "approved":
+                error_by_outcome = {
+                    "rejected": (
+                        "Tool approval was rejected",
+                        "tool_approval_rejected",
+                    ),
+                    "timed_out": (
+                        "Tool approval timed out",
+                        "tool_approval_timeout",
+                    ),
+                    "cancelled": (
+                        "Tool approval was cancelled",
+                        "tool_approval_cancelled",
+                    ),
+                    "unavailable": (
+                        "Tool approval is unavailable",
+                        "tool_approval_unavailable",
+                    ),
+                }
+                error, error_code = error_by_outcome[decision.outcome]
+                return self._complete(
+                    tool,
+                    params,
+                    ToolResult(
+                        success=False,
+                        error=error,
+                        error_code=error_code,
+                        tool_name=tool.name,
+                    ),
+                    session_id,
+                    call_hash,
+                    start,
+                )
+            approved_params = decision.params
+            if approved_params is None:
+                return self._complete(
+                    tool,
+                    params,
+                    ToolResult(
+                        success=False,
+                        error="Tool approval is unavailable",
+                        error_code="tool_approval_unavailable",
+                        tool_name=tool.name,
+                    ),
+                    session_id,
+                    call_hash,
+                    start,
+                )
+            current_tool = self._tools.get(tool_name)
+            if (
+                current_tool is not tool
+                or not tool.available
+                or tool.safety_level is not SafetyLevel.GRAYLIST
+            ):
+                return self._complete(
+                    tool,
+                    approved_params,
+                    ToolResult(
+                        success=False,
+                        error="Tool changed or became unavailable during approval",
+                        error_code="tool_unavailable",
+                        tool_name=tool.name,
+                    ),
+                    session_id,
+                    call_hash,
+                    start,
+                )
+            param_error = self._validate_params(tool, approved_params)
+            if param_error is not None:
+                return self._complete(
+                    tool,
+                    approved_params,
+                    ToolResult(
+                        success=False,
+                        error=param_error,
+                        error_code="invalid_tool_parameters",
+                        tool_name=tool.name,
+                    ),
+                    session_id,
+                    call_hash,
+                    start,
+                )
+            params = approved_params
         for attempt in range(tool.max_retries + 1):
             session_token = _CURRENT_TOOL_SESSION_ID.set(session_id)
             try:
@@ -1065,6 +1182,7 @@ def create_default_registry() -> ToolRegistry:
     registry = ToolRegistry(
         dedup_window=30.0,
         max_sessions=settings.tool_dedup_max_sessions,
+        approval_manager=tool_approval_manager,
     )
 
     # 注册内置工具
