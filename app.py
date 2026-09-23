@@ -11,6 +11,8 @@ FastAPI 服务入口。
   POST /agent/chat/stream  Agent 执行事件流
   GET  /agent/elicitation/{id}  查询待处理的 MCP Elicitation
   POST /agent/elicitation/{id}/{request_id}  响应 MCP Elicitation
+  GET  /agent/approvals/{id}  查询待处理的工具执行审批
+  POST /agent/approvals/{id}/{approval_id}  响应工具执行审批
   POST /agent/reset     重置 Agent 会话
   GET  /agent/tools     查看工具来源和 MCP Server 状态
   GET  /agent/oauth/{id}  查看待处理的 MCP OAuth 授权
@@ -50,6 +52,7 @@ from pydantic import ValidationError
 
 from config.settings import settings
 from src.agent import mcp_runtime as mcp_runtime_module
+from src.agent import tool_approval as tool_approval_module
 from src.agent.harness import agent_harness
 from src.agent.mcp_elicitation import (
     MAX_ELICITATION_RESPONSE_BODY_BYTES,
@@ -62,6 +65,7 @@ from src.agent.mcp_oauth import (
     MCPOAuthCallbackStateMismatch,
     MCPOAuthNotConfigured,
 )
+from src.agent.tool_approval import MAX_TOOL_APPROVAL_RESPONSE_BODY_BYTES
 from src.api.admin_auth import AdminAuthMiddleware
 from src.api.client_identity import ClientIdentityMiddleware, scope_request_session
 from src.api.observability import RequestTracingMiddleware
@@ -76,6 +80,7 @@ from src.api.schemas import (
     MCPElicitationResponseRequest,
     QueryRequest,
     QueryResponse,
+    ToolApprovalResponseRequest,
     parse_metadata_filter_json,
 )
 from src.api.startup import runtime_readiness, warm_up_runtime
@@ -164,7 +169,13 @@ app.add_middleware(RequestTracingMiddleware)
 app.add_middleware(AdminAuthMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.router.add_event_handler("startup", warm_up_runtime)
+app.router.add_event_handler(
+    "startup", tool_approval_module.open_tool_approval_manager
+)
 app.router.add_event_handler("startup", mcp_runtime_module.start_mcp_runtime)
+app.router.add_event_handler(
+    "shutdown", tool_approval_module.close_tool_approval_manager
+)
 app.router.add_event_handler("shutdown", mcp_runtime_module.close_mcp_runtime)
 app.router.add_event_handler("shutdown", close_chroma_clients)
 
@@ -773,6 +784,90 @@ async def respond_to_mcp_elicitation(
         raise HTTPException(
             status_code=400,
             detail=public_error("mcp_elicitation_response_invalid"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    return {"status": "received"}
+
+
+@app.get("/agent/approvals/{session_id}")
+async def pending_tool_approvals(
+    session_id: str,
+    request: Request,
+    response: Response,
+) -> dict[str, object]:
+    """Return tool approvals pending for this client and Agent session."""
+    session = scope_request_session(request, session_id, "agent")
+    pending = await tool_approval_module.tool_approval_manager.pending_for_session(
+        session.storage_id
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {"session_id": session.public_id, "pending": list(pending)}
+
+
+@app.post(
+    "/agent/approvals/{session_id}/{approval_id}",
+    status_code=202,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": ToolApprovalResponseRequest.model_json_schema()
+                }
+            },
+        }
+    },
+)
+async def respond_to_tool_approval(
+    session_id: str,
+    approval_id: str,
+    request: Request,
+    response: Response,
+) -> dict[str, str]:
+    """Deliver one tool approval decision without echoing tool arguments."""
+    session = scope_request_session(request, session_id, "agent")
+    response.headers["Cache-Control"] = "no-store"
+    content_length = request.headers.get("content-length")
+    try:
+        declared_size = int(content_length) if content_length is not None else None
+    except ValueError:
+        declared_size = None
+    if (
+        declared_size is not None
+        and declared_size > MAX_TOOL_APPROVAL_RESPONSE_BODY_BYTES
+    ):
+        raise HTTPException(
+            status_code=413,
+            detail=public_error("tool_approval_response_too_large"),
+            headers={"Cache-Control": "no-store"},
+        )
+    raw_body = bytearray()
+    async for chunk in request.stream():
+        if len(chunk) > MAX_TOOL_APPROVAL_RESPONSE_BODY_BYTES - len(raw_body):
+            raise HTTPException(
+                status_code=413,
+                detail=public_error("tool_approval_response_too_large"),
+                headers={"Cache-Control": "no-store"},
+            )
+        raw_body.extend(chunk)
+    try:
+        body = ToolApprovalResponseRequest.model_validate_json(raw_body)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=public_error("tool_approval_response_invalid"),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    try:
+        await tool_approval_module.tool_approval_manager.respond(
+            session.storage_id,
+            approval_id,
+            action=body.action,
+        )
+    except tool_approval_module.ToolApprovalNotPending as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=public_error("tool_approval_not_pending"),
             headers={"Cache-Control": "no-store"},
         ) from exc
     return {"status": "received"}

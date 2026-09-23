@@ -12,7 +12,7 @@
 | Elicitation | 复用官方 SDK form／URL callback 与现代 InputRequired 驱动；Host 通过 Agent session 传递请求和响应 |
 | 工具注册 | 命名为 `mcp__{server_id}__{tool_name}`，来源和 Provider 可在 `/agent/tools` 查看 |
 | Schema | 保存完整 `inputSchema`，使用 JSON Schema Draft 2020-12 在调用前校验；原生 Tool Calling 使用完整 Schema，JSON Planner 使用兼容投影 |
-| 调用安全 | MCP 工具默认为 Graylist、`max_retries=0`；结果经过审计、不可信包装和上下文长度限制 |
+| 调用安全 | MCP 工具默认为 Graylist、`max_retries=0`；执行前等待 Host 审批，结果经过审计、不可信包装和上下文长度限制 |
 | 可用性 | MCP 在后台并发初始化；单个 Server 等待授权或失败不阻塞核心 HTTP 服务及其他 Provider |
 
 ## 配置
@@ -70,7 +70,21 @@ MCP Client 在 stdio 和 Streamable HTTP 上都注册官方 `elicitation_callbac
 
 pending 仅保存在当前进程内存，默认最多等待 25 秒，并仍受更短的 MCP `call_timeout_seconds` 和 Agent 总时限约束。响应、超时、调用取消、连接关闭和 Manager 关闭通过同一个锁内终态提交点竞争；只有一个结果能成功，胜者立即清理 pending，较晚的响应返回 not-pending，不会出现 Host 确认成功但 Server 已收到 `cancel`。legacy callback 在同一 Server 存在多个并发工具调用且无法确定归属时会安全拒绝，不会猜测 session。调用方若省略 Agent `session_id`，在阻塞请求完成前拿不到自动生成的 ID，因此不能可靠完成 Elicitation。
 
-Elicitation 是 Server 主动请求输入的 MCP 协议能力，不是 Host 的工具执行审批。本项没有增加批准／拒绝工具执行的策略，也不支持跨进程恢复、审批委托、工作流编排或持久化 Human-in-the-loop。
+Elicitation 是 Server 主动请求输入的 MCP 协议能力，不是 Host 的工具执行审批。两者使用独立协调器和端点，不会把工具审批伪装成 MCP 协议消息。
+
+## 工具执行审批
+
+所有 Graylist 工具，包括原生外部工具和 MCP 工具，都在 `ToolRegistry.execute_async` 完成参数校验与安全策略判断后、执行副作用和进入工具重试循环前等待 Host 审批。Whitelist 自动执行，Blacklist 直接阻断；配置审批协调器时，同步 `ToolRegistry.execute` 会安全返回 `tool_approval_required`，不能绕过异步审批。
+
+Agent HTTP 与 SSE 都是单向请求。调用方应显式提供稳定的 `session_id`，并用另一并发请求完成审批：
+
+1. `GET /agent/approvals/{session_id}` 查询当前客户端、当前 Agent session 的 `pending` 列表；每项包含工具名、`native`／`mcp` 来源、Provider、分类和有界参数快照。
+2. `POST /agent/approvals/{session_id}/{approval_id}` 提交 `{"action":"approve"}`、`{"action":"reject"}` 或 `{"action":"cancel"}`。
+3. Host 只返回 `202 {"status":"received"}`，不在响应中回显参数。批准后 Registry 会重新校验并只执行 pending 中展示的同一份参数快照，不再读取调用方原始可变对象；同时复核 Registry 中仍是同一工具定义、工具仍可用且仍为 Graylist。审批期间发生 MCP 注销、禁用、同名替换或安全等级变化时返回稳定 `tool_unavailable`，原定义和替换定义都不会执行。工具只执行一次；拒绝、取消或超时分别以稳定工具错误返回 Agent 循环，并且不执行、不进入自动重试。
+
+公开 `session_id` 仍绑定客户端身份 cookie；其他客户端即使知道相同 ID，也看不到或无法处理 pending。审批响应体在 DTO 解析前流式限制为 4 KiB。参数快照最多 64 KiB，并限制字段数、列表项、嵌套深度、节点数、key 和字符串长度；全局最多 128 个 pending、单 session 最多 8 个。超出容量或无法安全展示参数时，工具以 `tool_approval_unavailable` 失败关闭。审计只记录参数名、结果和稳定错误码，不记录参数值。
+
+pending 默认等待 `AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS=25` 秒，并仍受 Agent 总时限约束。响应、超时、调用取消和应用关闭通过同一个锁内终态提交点竞争；只有一个结果成功，应用重启时协调器可重新打开。pending 只存在于当前进程内存，因此不支持跨进程持久恢复、审批委托、复杂工作流或高可用审批；这些能力需要真实业务和部署基础设施后另行设计。
 
 ## 本地演示
 
@@ -103,6 +117,7 @@ npx @modelcontextprotocol/inspector@2.7.0 --cli `
 - stdio：子进程握手、工具发现、结构化调用和可靠关闭。
 - Streamable HTTP：仅放行测试进程的数值型 loopback 地址，覆盖应用配置接线、初始化失败、工具发现、调用超时、恢复和关闭。
 - Elicitation：真实 in-process MCPServer 覆盖 legacy callback 与现代 InputRequired，并通过真实 stdio 子进程验证默认 Client factory 的 callback 接线；另覆盖 form／URL、Schema 与 Host 资源边界、非阻塞校验、超时／关闭终态竞争、并发归属和客户端 session 隔离。
+- 工具审批：覆盖真实 Agent 循环、原生与 MCP Graylist、批准／拒绝／取消／超时、调用取消、关闭重开、终态竞争、客户端隔离、容量与请求体边界，以及审计参数值脱敏。
 - 单元测试通过官方 SDK `Client` 边界进行 Mock，不实现 Fake MCP 协议或传输。
 
 ```powershell

@@ -112,3 +112,11 @@ class MCPElicitationResponseRequest(BaseModel):
     ] | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+
+class ToolApprovalResponseRequest(BaseModel):
+    """One caller decision for a pending tool execution."""
+
+    action: Literal["approve", "reject", "cancel"]
+
+    model_config = ConfigDict(extra="forbid")

@@ -150,6 +150,7 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 | `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算 |
 | `AGENT_PLANNER_MODE` | `json` 为兼容默认；`native` 使用 OpenAI-compatible 原生 Tool Calling |
 | `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算 |
+| `AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS` | Graylist 工具等待调用方批准的时限，默认 25 秒 |
 | `TOOL_DEDUP_MAX_SESSIONS` | 工具调用去重状态的最大 session 数 |
 | `MCP_SERVERS` | 可选 MCP Server JSON 列表；支持 stdio、Streamable HTTP 及可选标准 OAuth |
 | `AGENT_LOG_MAX_BYTES`、`AGENT_LOG_BACKUP_COUNT`、`AGENT_LOG_RETENTION_SECONDS` | Agent 事件与工具审计日志的轮转和保留边界 |
@@ -239,6 +240,8 @@ curl.exe -X POST http://127.0.0.1:8000/agent/chat `
 
 MCP 默认关闭。设置 `MCP_SERVERS` 后，应用会在后台连接启用的 Server；连接失败或握手等待不会阻塞核心 HTTP 服务。stdio 和 Streamable HTTP 共用工具注册、完整 JSON Schema 校验、结果安全、审计和状态模型，工具调用默认不自动重试。
 
+原生与 MCP 的 Graylist 工具在参数校验后、任何副作用或重试前进入同一条轻量审批链路。调用方应显式提供稳定的 Agent `session_id`，并在另一个并发请求中用 `GET /agent/approvals/{session_id}` 查询 pending，再向 `POST /agent/approvals/{session_id}/{approval_id}` 提交 `approve`、`reject` 或 `cancel`。批准后只会重新校验并执行调用方实际看到的有界参数快照，等待期间对原始参数对象的修改不会改变执行内容；Registry 还会确认工具定义未被替换、仍可用且仍为 Graylist，MCP 重新发现或连接故障导致的注销、替换和禁用会稳定 fail closed。拒绝、取消、超时、调用取消和应用关闭都不会执行工具或触发工具重试；Whitelist 仍自动执行，Blacklist 仍直接阻断。
+
 内置时间 Server 可通过 stdio 开箱演示；远程 URL 使用 Streamable HTTP，并可选用官方 SDK 的 OAuth Authorization Code + PKCE。MCP Server 发起 Elicitation 时，调用方可通过 Agent session 查询并提交有效响应；当前使用独立 HTTP 请求协调，不把单向 SSE 描述成双向通道。Host 独立限制响应请求体和 form 内容大小，超时、关闭与响应竞争只会接受一个终态。配置示例、授权与 Elicitation 流程、具体资源上限、官方 Inspector 命令、真实传输测试和明确的能力边界见 [MCP 集成](docs/mcp.md)。
 
 可观测入口：
@@ -247,6 +250,7 @@ MCP 默认关闭。设置 `MCP_SERVERS` 后，应用会在后台连接启用的 
 - `GET /ready`：MCP 作为可选组件汇总；MCP 不可用时核心服务仍按自身状态报告 readiness。
 - `GET /agent/oauth/{server_id}`：管理员读取待处理授权 URL；回调端点公开接收 Provider 重定向，state 仍由 Host 与 SDK 双重校验。
 - `GET /agent/elicitation/{session_id}` 与对应 `POST`：仅当前客户端可见的进程内 MCP Elicitation 查询与响应。
+- `GET /agent/approvals/{session_id}` 与对应 `POST`：仅当前客户端可见的进程内 Graylist 工具审批查询与决策。
 
 ## 索引生命周期
 

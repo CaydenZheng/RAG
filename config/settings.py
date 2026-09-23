@@ -273,6 +273,12 @@ class Settings(BaseSettings):
     agent_timeout_seconds: float = Field(
         default=60.0, gt=0, le=300, alias="AGENT_TIMEOUT_SECONDS"
     )
+    agent_tool_approval_timeout_seconds: float = Field(
+        default=25.0,
+        gt=0,
+        le=300,
+        alias="AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS",
+    )
     agent_planner_temperature: float = Field(
         default=0.1, ge=0, le=2, alias="AGENT_PLANNER_TEMPERATURE"
     )
