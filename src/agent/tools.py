@@ -21,12 +21,14 @@ from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
+from itertools import islice
 from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict
 
 from loguru import logger
 
 from config.settings import settings
 from src.agent.tool_approval import ToolApprovalManager, tool_approval_manager
+from src.agent.tool_policy import ToolAccessPolicy
 from src.agent.tool_schema import (
     ensure_safe_input_schema,
     validate_tool_arguments,
@@ -39,6 +41,9 @@ _CURRENT_TOOL_SESSION_ID: ContextVar[str | None] = ContextVar(
     "current_tool_session_id",
     default=None,
 )
+MAX_AUDIT_PARAMETER_NAMES = 32
+MAX_AUDIT_PARAMETER_NAME_BYTES = 128
+MAX_AUDIT_PARAMETER_NAMES_BYTES = 256
 
 
 def current_tool_session_id() -> str | None:
@@ -172,10 +177,11 @@ class ToolRegistry:
     工具注册 & 安全执行。
 
     安全流程：
-      1. 参数校验（JSON Schema 风格，类型 + 必填检查）
-      2. 安全等级判断 → 白名单放行 / 灰名单审批与审计 / 黑名单阻断
-      3. 去重检查（同一 session 内相同调用 30s 内不重复）
-      4. 执行 + 审计
+      1. Host allowlist/denylist
+      2. 参数校验（JSON Schema 风格，类型 + 必填检查）
+      3. 安全等级判断 → 白名单放行 / 灰名单审批与审计 / 黑名单阻断
+      4. 去重检查（同一 session 内相同调用 30s 内不重复）
+      5. 执行 + 审计
     """
 
     def __init__(
@@ -183,6 +189,7 @@ class ToolRegistry:
         dedup_window: float = 30.0,
         max_sessions: int = 10000,
         approval_manager: ToolApprovalManager | None = None,
+        policy: ToolAccessPolicy | None = None,
     ) -> None:
         if max_sessions < 1:
             raise ValueError("max_sessions must be at least 1")
@@ -191,6 +198,7 @@ class ToolRegistry:
         self._dedup_window = dedup_window
         self._max_sessions = max_sessions
         self._approval_manager = approval_manager
+        self._policy = policy or ToolAccessPolicy()
 
     # ----------------------------------------------------------------
     # 注册
@@ -216,6 +224,26 @@ class ToolRegistry:
 
     def get_tool(self, name: str) -> Optional[ToolDef]:
         return self._tools.get(name)
+
+    def is_blocked_by_policy(self, name: str) -> bool:
+        """Return whether a registered tool is denied by Host policy."""
+
+        return (
+            name in self._tools
+            and not self._policy.evaluate(name).allowed
+        )
+
+    def audit_policy_result(
+        self,
+        tool_name: str,
+        params: dict,
+        result: ToolResult,
+        session_id: str,
+    ) -> None:
+        """Audit a non-Registry outcome after a configured policy decision."""
+
+        if self._policy.configured and tool_name in self._tools:
+            self._audit(tool_name, params, result, session_id)
 
     def status_snapshot(self) -> tuple[ToolStatusSnapshot, ...]:
         """Return stable public metadata without schemas or call details."""
@@ -293,7 +321,12 @@ class ToolRegistry:
         """Project available tools and retain the request name mapping."""
         definitions: list[dict[str, Any]] = []
         available_tools = sorted(
-            (tool for tool in self._tools.values() if tool.available),
+            (
+                tool
+                for tool in self._tools.values()
+                if tool.available
+                and self._policy.evaluate(tool.name).allowed
+            ),
             key=lambda item: item.name,
         )
         reserved_names = {
@@ -346,7 +379,10 @@ class ToolRegistry:
         """生成供 LLM 理解的工具列表（JSON 格式，注入 planner prompt）"""
         tools_list = []
         for name, tool in self._tools.items():
-            if not tool.available:
+            if (
+                not tool.available
+                or not self._policy.evaluate(name).allowed
+            ):
                 continue
             params_desc = {
                 p.name: {
@@ -421,12 +457,18 @@ class ToolRegistry:
                     attempt + 1,
                     exc,
                 )
-        return ToolResult(
-            success=False,
-            error="Tool execution failed",
-            error_code="tool_execution_failed",
-            tool_name=tool_name,
-            latency_ms=(time.time() - start) * 1000,
+        return self._complete(
+            tool,
+            params,
+            ToolResult(
+                success=False,
+                error="Tool execution failed",
+                error_code="tool_execution_failed",
+                tool_name=tool_name,
+            ),
+            session_id,
+            call_hash,
+            start,
         )
 
     async def execute_async(
@@ -561,12 +603,18 @@ class ToolRegistry:
                 )
             finally:
                 _CURRENT_TOOL_SESSION_ID.reset(session_token)
-        return ToolResult(
-            success=False,
-            error="Tool execution failed",
-            error_code="tool_execution_failed",
-            tool_name=tool_name,
-            latency_ms=(time.time() - start) * 1000,
+        return self._complete(
+            tool,
+            params,
+            ToolResult(
+                success=False,
+                error="Tool execution failed",
+                error_code="tool_execution_failed",
+                tool_name=tool_name,
+            ),
+            session_id,
+            call_hash,
+            start,
         )
 
     def _prepare(
@@ -578,6 +626,19 @@ class ToolRegistry:
                 success=False,
                 error="Unknown tool",
                 error_code="unknown_tool",
+                tool_name=tool_name,
+            )
+        policy_decision = self._policy.evaluate(tool_name)
+        if not policy_decision.allowed:
+            logger.warning(
+                "Tool blocked by access policy: {} ({})",
+                tool_name,
+                policy_decision.reason,
+            )
+            return ToolResult(
+                success=False,
+                error="Tool blocked by access policy",
+                error_code="tool_policy_denied",
                 tool_name=tool_name,
             )
         if not tool.available:
@@ -627,7 +688,10 @@ class ToolRegistry:
         if not result.success and not result.error_code:
             result.error_code = "tool_failed"
         self._record_call(session_id, call_hash)
-        if tool.safety_level == SafetyLevel.GRAYLIST:
+        if (
+            tool.safety_level == SafetyLevel.GRAYLIST
+            or self._policy.configured
+        ):
             self._audit(tool.name, params, result, session_id)
         return result
 
@@ -639,14 +703,18 @@ class ToolRegistry:
         session_id: str,
         start: float,
     ) -> ToolResult:
-        """Finalize rejected calls and audit graylist validation failures."""
+        """Finalize rejected calls and audit policy or graylist failures."""
         result.latency_ms = (time.time() - start) * 1000
         tool = self._tools.get(tool_name)
-        if (
+        configured_policy_failure = (
+            tool is not None and self._policy.configured
+        )
+        graylist_validation = (
             result.error_code == "invalid_tool_parameters"
             and tool is not None
             and tool.safety_level == SafetyLevel.GRAYLIST
-        ):
+        )
+        if configured_policy_failure or graylist_validation:
             safe_params = params if isinstance(params, dict) else {}
             self._audit(tool_name, safe_params, result, session_id)
         return result
@@ -782,14 +850,44 @@ class ToolRegistry:
                 del self._dedup_cache[session_id]
 
     @staticmethod
-    def _audit_parameter_names(params: object) -> list[str]:
-        """Return sortable, value-free names for untrusted arguments."""
+    def _audit_parameter_names(
+        params: object,
+    ) -> tuple[list[str], int, int]:
+        """Return bounded, value-free names for untrusted arguments."""
+
         if not isinstance(params, dict):
-            return []
-        return sorted(
-            name if isinstance(name, str) else "<non-string>"
-            for name in params
+            return [], 0, 0
+        omitted_count = max(
+            len(params) - MAX_AUDIT_PARAMETER_NAMES,
+            0,
         )
+        truncated_count = 0
+        total_bytes = 0
+        names: list[str] = []
+        for name in islice(params, MAX_AUDIT_PARAMETER_NAMES):
+            raw_name = name if isinstance(name, str) else "<non-string>"
+            truncated = len(raw_name) > MAX_AUDIT_PARAMETER_NAME_BYTES
+            candidate = raw_name[:MAX_AUDIT_PARAMETER_NAME_BYTES]
+            encoded = candidate.encode("utf-8", errors="replace")
+            if len(encoded) > MAX_AUDIT_PARAMETER_NAME_BYTES:
+                encoded = encoded[:MAX_AUDIT_PARAMETER_NAME_BYTES]
+                candidate = encoded.decode("utf-8", errors="ignore")
+                encoded = candidate.encode("utf-8")
+                truncated = True
+            remaining = MAX_AUDIT_PARAMETER_NAMES_BYTES - total_bytes
+            if len(encoded) > remaining:
+                encoded = encoded[:remaining]
+                candidate = encoded.decode("utf-8", errors="ignore")
+                encoded = candidate.encode("utf-8")
+                truncated = True
+            if not encoded:
+                omitted_count += 1
+                continue
+            names.append(candidate)
+            total_bytes += len(encoded)
+            if truncated:
+                truncated_count += 1
+        return sorted(names), omitted_count, truncated_count
 
     def _audit(
         self,
@@ -798,27 +896,53 @@ class ToolRegistry:
         result: ToolResult,
         session_id: str,
     ) -> None:
-        """记录灰名单执行结果；ToolRegistry 是唯一审计入口。"""
+        """Record value-free graylist and configured-policy outcomes."""
         audit_path = settings.log_dir / "audit.jsonl"
         trace = tracer.current or {}
+        (
+            parameter_names,
+            omitted_parameter_name_count,
+            truncated_parameter_name_count,
+        ) = self._audit_parameter_names(params)
         record = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "request_id": trace.get("request_id", "unavailable"),
             "trace_id": trace.get("trace_id", "unavailable"),
             "tool_name": tool_name,
-            "parameter_names": self._audit_parameter_names(params),
+            "parameter_names": parameter_names,
             "success": result.success,
             "error_code": result.error_code,
             "latency_ms": round(result.latency_ms, 1),
         }
+        if omitted_parameter_name_count:
+            record["omitted_parameter_name_count"] = (
+                omitted_parameter_name_count
+            )
+        if truncated_parameter_name_count:
+            record["truncated_parameter_name_count"] = (
+                truncated_parameter_name_count
+            )
+        if self._policy.configured:
+            decision = self._policy.evaluate(tool_name)
+            record.update(
+                policy_decision=(
+                    "allowed" if decision.allowed else "denied"
+                ),
+                policy_reason=decision.reason,
+            )
         try:
-            append_jsonl(
+            written = append_jsonl(
                 audit_path,
                 record,
                 max_bytes=settings.agent_log_max_bytes,
                 backup_count=settings.agent_log_backup_count,
                 retention_seconds=settings.agent_log_retention_seconds,
             )
+            if not written:
+                logger.warning(
+                    "Tool audit record exceeded the file limit: tool={}",
+                    tool_name,
+                )
         except OSError as exc:
             logger.warning(
                 "Tool audit log write failed: tool={} type={}",
@@ -1183,6 +1307,10 @@ def create_default_registry() -> ToolRegistry:
         dedup_window=30.0,
         max_sessions=settings.tool_dedup_max_sessions,
         approval_manager=tool_approval_manager,
+        policy=ToolAccessPolicy(
+            allowlist=settings.agent_tool_allowlist,
+            denylist=settings.agent_tool_denylist,
+        ),
     )
 
     # 注册内置工具

@@ -86,6 +86,16 @@ Agent HTTP 与 SSE 都是单向请求。调用方应显式提供稳定的 `sessi
 
 pending 默认等待 `AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS=25` 秒，并仍受 Agent 总时限约束。响应、超时、调用取消和应用关闭通过同一个锁内终态提交点竞争；只有一个结果成功，应用重启时协调器可重新打开。pending 只存在于当前进程内存，因此不支持跨进程持久恢复、审批委托、复杂工作流或高可用审批；这些能力需要真实业务和部署基础设施后另行设计。
 
+## 工具访问策略
+
+`AGENT_TOOL_ALLOWLIST` 和 `AGENT_TOOL_DENYLIST` 接受 JSON 字符串数组，并按 ToolRegistry 中的完整精确名称匹配。原生工具直接使用注册名；MCP 工具使用 `mcp__{server_id}__{tool_name}`。空 allowlist 表示默认允许；非空 allowlist 只允许列出的工具；denylist 始终优先，重叠项仍拒绝。配置项会拒绝空白、前后空格、重复、过长或过多的名称，不使用通配符或正则，因此不会因模式扩张意外授权新工具。
+
+策略位于共享 `ToolRegistry` 边界：被拒绝的工具不会出现在 JSON Planner 描述或 native Tool Calling Schema 中；即使模型臆造名称或代码直接调用同步/异步 Registry，也会在参数校验、审批、副作用和重试之前稳定返回 `tool_policy_denied`。原生与 MCP 工具使用同一判断。Agent 的既有危险名称正则 Hook 仍作为额外防线，但与配置拒绝重叠时由 Registry 策略提供权威错误码和审计。
+
+启用任一列表后，每次已注册工具调用的允许、拒绝或后续 Hook 阻断结果都会写入现有有界 `logs/audit.jsonl`，包含 `policy_decision` 和稳定的 `policy_reason`（`allowlist`、`default_allow`、`denylist` 或 `not_allowlisted`）。审计只记录参数名，不记录值；参数名最多记录 32 个、单名最多 128 UTF-8 bytes、合计最多 256 bytes，超出部分以计数元数据表示。通用 JSONL 写入会在创建目录或轮转前拒绝任何编码后超过 `AGENT_LOG_MAX_BYTES` 的单条记录并记录告警，现有日志不会被超限记录替换，活动文件也不会突破上限。该能力是当前单进程 Host 的基础工具策略，不实现用户角色、租户、资源关系或集中策略服务；只有出现真实授权模型后才评估 Casbin、OPA 或 OpenFGA。
+
+`GET /agent/tools` 中的 `available` 继续表示工具及其 Provider 的运行可用性，不混入授权含义；策略生效结果以 Planner 有效目录、调用错误码和上述审计记录为准。
+
 ## 本地演示
 
 内置 `get_current_time(timezone="UTC")` 使用标准库 `zoneinfo`。支持 `UTC` 和系统可用的 IANA 时区；非法时区返回稳定的 MCP 工具错误。
@@ -134,6 +144,6 @@ uv run --no-sync --offline --no-env-file pytest tests/offline -q -k mcp
 - 企业 SSO、生产 IdP 集成、跨进程 Token 持久化或远端 Token Revocation；
 - 多租户凭证、数据或索引隔离；
 - 持久化 Human-in-the-loop、跨进程恢复或工作流编排；
-- 高可用、服务发现、网关、集中策略、生产告警或自动扩缩容。
+- 高可用、服务发现、网关、集中策略服务、生产告警或自动扩缩容。
 
 这些能力需要真实 IdP、Secret Store、租户模型、部署平台或业务审批决策，将按独立任务评估，不在基础 MCP 接入中提供空壳。

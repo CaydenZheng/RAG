@@ -211,6 +211,28 @@ def test_jsonl_pruning_tolerates_backup_disappearing(
     assert json.loads(path.read_text(encoding="utf-8")) == {"new": True}
 
 
+def test_jsonl_rejects_one_record_larger_than_the_file_limit(
+    tmp_path: Path,
+) -> None:
+    from src.infra.jsonl import append_jsonl
+
+    path = tmp_path / "bounded.jsonl"
+    original = b'{"existing": true}\n'
+    path.write_bytes(original)
+
+    written = append_jsonl(
+        path,
+        {"oversized": "x" * 10_000},
+        max_bytes=1_024,
+        backup_count=1,
+        retention_seconds=60,
+    )
+
+    assert written is False
+    assert path.read_bytes() == original
+    assert not path.with_name("bounded.jsonl.1").exists()
+
+
 def test_default_pipeline_delegates_graylist_audit_to_registry(
     isolated_runtime: Path,
 ) -> None:
