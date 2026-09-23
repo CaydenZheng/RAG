@@ -318,12 +318,43 @@ class AgentHarness:
                         iteration=iteration,
                         tool_call=proposed,
                     )
-                    hook_ctx = self._fire_hook(
-                        HookEvent.PRE_TOOL_USE,
-                        session_id,
-                        {"tool_name": tool_name, "tool_params": params},
+                    policy_check = getattr(
+                        self.tools, "is_blocked_by_policy", None
                     )
-                    if hook_ctx.blocked:
+                    blocked_by_registry_policy = (
+                        callable(policy_check)
+                        and policy_check(tool_name)
+                    )
+                    blocked_by_hook = False
+                    if blocked_by_registry_policy:
+                        result = await self._await_with_budget(
+                            self._execute_tool_async(
+                                tool_name, params, session_id
+                            ),
+                            budget,
+                        )
+                        result.call_id = proposed.call_id
+                        completed = ToolCall(
+                            proposed.call_id,
+                            tool_name,
+                            params,
+                            success=False,
+                            blocked=True,
+                            reason="Tool blocked by access policy",
+                            error_code=result.error_code,
+                            latency_ms=result.latency_ms,
+                        )
+                    else:
+                        hook_ctx = self._fire_hook(
+                            HookEvent.PRE_TOOL_USE,
+                            session_id,
+                            {
+                                "tool_name": tool_name,
+                                "tool_params": params,
+                            },
+                        )
+                        blocked_by_hook = hook_ctx.blocked
+                    if blocked_by_hook:
                         result = ToolResult(
                             success=False,
                             call_id=proposed.call_id,
@@ -340,7 +371,17 @@ class AgentHarness:
                             reason="Tool blocked by policy",
                             error_code=result.error_code,
                         )
-                    else:
+                        policy_audit = getattr(
+                            self.tools, "audit_policy_result", None
+                        )
+                        if callable(policy_audit):
+                            policy_audit(
+                                tool_name,
+                                params,
+                                result,
+                                session_id,
+                            )
+                    elif not blocked_by_registry_policy:
                         budget.consume_tool()
                         result = await self._await_with_budget(
                             self._execute_tool_async(

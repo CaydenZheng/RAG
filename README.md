@@ -151,6 +151,7 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 | `AGENT_PLANNER_MODE` | `json` 为兼容默认；`native` 使用 OpenAI-compatible 原生 Tool Calling |
 | `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算 |
 | `AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS` | Graylist 工具等待调用方批准的时限，默认 25 秒 |
+| `AGENT_TOOL_ALLOWLIST`、`AGENT_TOOL_DENYLIST` | 工具精确注册名 JSON 数组；空 allowlist 默认允许，denylist 优先 |
 | `TOOL_DEDUP_MAX_SESSIONS` | 工具调用去重状态的最大 session 数 |
 | `MCP_SERVERS` | 可选 MCP Server JSON 列表；支持 stdio、Streamable HTTP 及可选标准 OAuth |
 | `AGENT_LOG_MAX_BYTES`、`AGENT_LOG_BACKUP_COUNT`、`AGENT_LOG_RETENTION_SECONDS` | Agent 事件与工具审计日志的轮转和保留边界 |
@@ -213,7 +214,7 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 - `get_weather`：获取天气信息。
 - `search_web`：受控外部搜索，属于灰名单工具。
 
-工具调用会校验名称、参数、调用次数和总预算；不可信工具输出带明确边界并截断后再交给模型。`AGENT_PLANNER_MODE=json` 保持兼容的 JSON Planner；设为 `native` 时通过 OpenAI-compatible SDK 发送标准工具 Schema，并用 `assistant.tool_calls` 与 `tool_call_id` 续接同一轮调用。两种模式共用 ToolRegistry、预算、Hook、审计、参数校验和结果安全链路。普通与流式 Agent 的 `message` 长度均为 1～2000 个字符。
+工具调用会校验名称、Host allowlist/denylist、参数、调用次数和总预算；不可信工具输出带明确边界并截断后再交给模型。`AGENT_PLANNER_MODE=json` 保持兼容的 JSON Planner；设为 `native` 时通过 OpenAI-compatible SDK 发送标准工具 Schema，并用 `assistant.tool_calls` 与 `tool_call_id` 续接同一轮调用。两种模式共用 ToolRegistry、预算、Hook、审计、参数校验和结果安全链路。普通与流式 Agent 的 `message` 长度均为 1～2000 个字符。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -225,6 +226,8 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 | `GET` | `/agent/memory/{session_id}` | 查看受当前客户端约束的 SQLite 短期历史 |
 
 配置 MCP 后，发现的工具会以 `mcp__{server_id}__{tool_name}` 注册到同一个 ToolRegistry；未配置时保持上述原生工具行为。MCP 工具来源与 Server 状态可通过 `GET /agent/tools` 查看。
+
+`AGENT_TOOL_ALLOWLIST` 与 `AGENT_TOOL_DENYLIST` 使用工具在 Registry 中的精确名称，例如 `["calculator","mcp__clock__get_current_time"]`。allowlist 为空时保持默认兼容；非空时只有列出的工具可见和可执行，denylist 在重叠时优先。策略同时作用于原生和 MCP 工具、JSON 与 native Planner 目录以及同步/异步 Registry 调用。启用任一列表后，允许、拒绝及后续 Hook 阻断结果都会进入有界 `logs/audit.jsonl`，只记录参数名和稳定策略原因，不记录参数值。参数名最多记录 32 个、单名 128 UTF-8 bytes、合计 256 bytes；任何编码后无法容纳在单文件上限内的 JSONL 记录都会在写入和轮转前安全丢弃并告警，不会突破配置的文件大小。它是单进程 Host 基础策略，不是角色、租户或资源级授权系统。
 
 若强制最终回答生成失败，Agent 返回 `agent_final_generation_failed`，记录失败 Trace，且不写入本轮历史。
 

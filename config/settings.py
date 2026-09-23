@@ -23,6 +23,8 @@ from pydantic import (
 from pydantic_settings import BaseSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MAX_TOOL_POLICY_ENTRIES = 2048
+MAX_TOOL_POLICY_NAME_LENGTH = 512
 
 
 class MCPServerConfigBase(BaseModel):
@@ -279,6 +281,14 @@ class Settings(BaseSettings):
         le=300,
         alias="AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS",
     )
+    agent_tool_allowlist: tuple[str, ...] = Field(
+        default_factory=tuple,
+        alias="AGENT_TOOL_ALLOWLIST",
+    )
+    agent_tool_denylist: tuple[str, ...] = Field(
+        default_factory=tuple,
+        alias="AGENT_TOOL_DENYLIST",
+    )
     agent_planner_temperature: float = Field(
         default=0.1, ge=0, le=2, alias="AGENT_PLANNER_TEMPERATURE"
     )
@@ -355,6 +365,26 @@ class Settings(BaseSettings):
         if normalized not in allowed:
             raise ValueError(f"LOG_LEVEL must be one of {sorted(allowed)}")
         return normalized
+
+    @field_validator("agent_tool_allowlist", "agent_tool_denylist")
+    @classmethod
+    def validate_tool_policy_names(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """Keep exact-name policy configuration bounded and unambiguous."""
+
+        if len(value) > MAX_TOOL_POLICY_ENTRIES:
+            raise ValueError("tool policy contains too many entries")
+        if len(value) != len(set(value)):
+            raise ValueError("tool policy entries must be unique")
+        for name in value:
+            if not name or name != name.strip():
+                raise ValueError(
+                    "tool policy names must be non-blank and unpadded"
+                )
+            if len(name) > MAX_TOOL_POLICY_NAME_LENGTH:
+                raise ValueError("tool policy name is too long")
+        return value
 
     @model_validator(mode="after")
     def validate_admin_auth(self) -> Self:
