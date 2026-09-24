@@ -147,3 +147,63 @@ uv run --no-sync --offline --no-env-file pytest tests/offline -q -k mcp
 - 高可用、服务发现、网关、集中策略服务、生产告警或自动扩缩容。
 
 这些能力需要真实 IdP、Secret Store、租户模型、部署平台或业务审批决策，将按独立任务评估，不在基础 MCP 接入中提供空壳。
+
+## 企业化能力路线（ENT-1）
+
+本节是架构边界和落地清单，不代表仓库已经提供对应生产能力。方案选择必须由真实组织的身份体系、数据分类、合规要求、流量规模和部署平台驱动；在这些输入缺失时，仓库不增加无法验证的适配器、配置项或部署清单。
+
+### 多租户身份、数据与审计隔离
+
+- **解决的问题**：阻止不同组织访问彼此的会话、索引、MCP 凭据、审批和审计数据，并支持租户级保留、导出、删除和用量归属。
+- **当前状态**：`ragflow_client` 只是浏览器客户端的随机 HttpOnly cookie，派生的 storage session 提供当前应用内的客户端作用域隔离；它不是已认证用户或租户主体。管理员认证是单个 `ADMIN_API_KEY`。会话 SQLite、Chroma、缓存、文件和 JSONL 日志均为本机共享资源，没有 tenant 列、数据库行级安全或租户密钥。
+- **成熟方案**：由企业 OIDC IdP 签发用户和服务身份，在可信入口校验 issuer、audience 与签名；将稳定 `tenant_id` 作为授权上下文传递。数据层可按风险选用独立数据库／索引，或 PostgreSQL tenant 列配合 Row-Level Security；对象存储、向量库、审计流和加密密钥采用同样的租户分区策略。资源级授权模型明确后，再评估 OPA、OpenFGA 或 Casbin。
+- **现有连接点**：身份上下文应在 `ClientIdentityMiddleware` 之前或替换该边界建立；`scope_request_session`、`SessionStore`、Chroma collection／索引版本、`ToolRegistry` 策略、OAuth `TokenStorage`、审批／Elicitation pending 和审计写入都必须显式接收租户上下文，不能从可伪造 Header 或公开 session ID 推断。
+- **当前不实现原因**：仓库没有租户生命周期、成员与角色、资源归属、计费、数据地域或删除 SLA；仅添加 `tenant_id` 字段无法证明端到端隔离，反而容易产生遗漏路径。
+- **落地前置条件**：确定身份 claim 到租户的映射、跨租户管理员规则、数据分类与隔离等级、存储拓扑、迁移方案、密钥轮换、备份恢复、审计保留和租户删除流程，并用越权与并发测试覆盖每个存储和工具调用边界。
+
+### 持久化审批与可靠工作流
+
+- **解决的问题**：让长时间审批跨进程重启、实例切换和人工离线时间继续存在，并保证批准、拒绝、超时、取消和工具副作用只有一个可恢复终态。
+- **当前状态**：Elicitation 与工具审批 pending 均保存在单进程内存，受短超时和应用关闭控制；应用重启或请求被调度到另一实例后不能恢复。MCP Elicitation callback、active call 和等待结果的 Future 还绑定原 Client session 与在途协议请求，连接断开后即使另存 pending 也无法向该请求继续回包。SQLite 索引任务是单 worker 本地任务，不是通用可靠工作流引擎。
+- **成熟方案**：工具业务审批等 Host 长事务可使用 Temporal、Camunda 等持久工作流，或使用具备事务 outbox、租约、幂等键和可靠队列的数据库状态机；人工任务需要独立的身份授权、通知、升级、委托和不可抵赖审计。MCP Elicitation 必须按单次 Client session 请求处理：断连时该次请求失败或取消，不能通过恢复本地 Future 冒充协议续接。若业务流程需要跨进程继续，应由 Server 在新 session 上重发请求，或由 Host 以幂等方式重新发起工具调用。
+- **现有连接点**：工具审批可从 `ToolApprovalManager` 的 pending／终态边界替换存储和调度实现，`ToolRegistry` 仍保留“审批后、执行副作用前”的权威复核；工具定义版本、批准参数快照和幂等键必须随工作流状态持久化。Elicitation 协调器只能在原连接生命周期内提交协议结果；断连时应收敛为失败或取消。新的 callback 必须由 Server 重发或新的工具调用产生，再通过独立于 connection／Future 的稳定业务关联键与持久工作流关联。
+- **当前不实现原因**：目前没有需要跨天等待的审批 SLA、审批角色、通知渠道、委托规则或可安全重放的业务工具语义；模拟一张 pending 表不能解决副作用幂等和恢复一致性。
+- **落地前置条件**：定义工作流状态机、审批权限、超时与升级策略、工具幂等契约、补偿动作、数据保留、灾难恢复目标及 worker 部署方式，并验证崩溃发生在“批准后／执行前”和“执行后／确认前”时的行为。对跨进程 Elicitation 还必须与 Server 约定稳定业务关联键和重发／重新调用协议，定义幂等处理、重复与过期响应协调，以及断连后由哪一方负责超时和取消；没有这些约定时只能终止原请求，不能声称可恢复。
+
+### 高可用、服务发现与弹性伸缩
+
+- **解决的问题**：在实例、节点或可用区故障时维持服务，并按 HTTP、Agent 与 MCP 负载独立扩缩容。
+- **当前状态**：应用按单实例运行；本地 SQLite、Chroma、JSONL、进程内 Token／pending 和 stdio 子进程都具有实例亲和性。`/ready` 只能报告本实例状态，MCP Manager 也只管理本进程的连接。
+- **成熟方案**：在已有平台上使用 Kubernetes Deployment／StatefulSet、Service、PodDisruptionBudget、Horizontal Pod Autoscaler 和跨区策略；依赖使用具备备份与故障转移的托管数据库、对象存储、向量服务和消息系统。远程 MCP Server 通过平台服务发现或受控服务目录提供稳定地址。
+- **现有连接点**：ASGI startup／shutdown、`/ready`、MCP Runtime 与外部存储 adapter 是迁移边界；只有将 session、Token、审批、任务和索引元数据移出本地进程后，HTTP 实例才可能无状态扩容。stdio Server 若保留，必须明确其 pod 生命周期和容量模型。
+- **当前不实现原因**：仓库没有集群、共享数据服务、镜像发布流程、容量基线或恢复目标；提交 Kubernetes YAML 不能证明实际调度、存储和故障切换可用。
+- **落地前置条件**：确定部署平台、网络拓扑、共享存储、镜像与供应链策略、健康探针语义、容量与压测数据、RPO／RTO、备份恢复演练和 MCP 连接所有权，再编写与目标环境匹配的部署清单。
+
+### API Gateway、集中认证与网络策略
+
+- **解决的问题**：统一 TLS、用户／服务认证、路由、限流、配额、WAF、请求大小、访问日志和南北向／东西向网络控制。
+- **当前状态**：Uvicorn 直接暴露 FastAPI；普通请求依赖随机客户端 cookie，管理接口使用单个静态 API key。应用内存在局部请求和资源上限，但没有集中网关策略、服务身份、mTLS 或 MCP egress allowlist。
+- **成熟方案**：根据现有平台选择 Envoy、Kong、APISIX 或云 API Gateway，结合企业 OIDC、workload identity、mTLS 和 Kubernetes NetworkPolicy／服务网格；网关负责粗粒度入口控制，应用仍负责 session、工具和资源级授权，不能把两者混为一层。
+- **现有连接点**：HTTP 中间件可接收网关验证后、经过防伪保护的身份上下文；`require_admin` 应迁移为角色／scope 校验；Streamable HTTP MCP 配置与 transport factory 是 egress、代理、私有 CA 和 mTLS 的接入点。
+- **当前不实现原因**：没有选定网关、IdP、证书颁发体系、域名、可信代理链或网络分区。通用的“X-User” Header 方案会扩大身份伪造风险。
+- **落地前置条件**：确定信任边界、Token audience／scope、Header 清洗、TLS 与证书轮换、入口和 egress 路由、限流维度、真实客户端 IP 规则、失败模式及网关与应用的责任矩阵。
+
+### 企业 IdP 与 Secret Store
+
+- **解决的问题**：集中管理用户和 workload 身份，并安全保存 MCP OAuth Token、客户端凭据、模型密钥和管理员秘密，支持最小权限、轮换、吊销和访问审计。
+- **当前状态**：MCP 使用官方 OAuth Client，但默认 `InMemoryOAuthTokenStorage` 只服务当前进程；重启后需重新授权。`.env`／进程环境承载其他秘密，仓库没有企业 SSO、workload identity、持久 Token 加密、远端 Token Revocation 或密钥轮换控制面。
+- **成熟方案**：对接组织已有的 Entra ID、Okta、Keycloak 或其他 OIDC IdP；秘密使用 HashiCorp Vault、AWS Secrets Manager、Azure Key Vault 或 GCP Secret Manager，并优先采用 workload identity 获取短期访问权。持久 Token 应使用 KMS 包封加密、版本化和租户隔离。
+- **现有连接点**：`OAuthCredentialStorage`／storage factory 是 MCP Token 持久化 seam；`SecretStr` 配置、LLM Client、管理员认证和 stdio 环境构造需要改为启动时或按需解析 secret reference，公共状态仍只输出脱敏字段。
+- **当前不实现原因**：没有真实 Provider metadata、客户端注册政策、云账号、KMS key、secret path 命名、轮换 SLA 或事故响应流程；伪造 Vault adapter 无法验证权限和吊销行为。
+- **落地前置条件**：选择 IdP 与 Secret Store，定义用户和服务主体、OAuth client 类型、redirect URI、scope、Token 归属、加密与轮换、缓存时限、故障降级、审计访问和远端吊销策略，并在真实测试租户中完成集成验证。
+
+### 集中观测、告警与 SLO
+
+- **解决的问题**：跨实例关联一次 Agent 请求、MCP Provider 和工具调用，发现延迟、错误、容量与安全异常，并用可量化目标驱动告警和容量决策。
+- **当前状态**：请求 Trace、Agent 事件和审计写入本地 JSONL；Trace 字段会脱敏和截断，Agent 事件与审计文件另有轮转和保留边界，但这些都不是集中遥测。`/ready` 只提供本实例快照，`LANGFUSE_*` 是预留配置且运行时不会上报。当前没有 OpenTelemetry Collector、集中日志、Prometheus 指标、告警路由、值班或 SLO。
+- **成熟方案**：使用 OpenTelemetry SDK／Collector 输出 Trace 与指标，Prometheus 和 Grafana 展示服务指标，Alertmanager 或组织告警平台负责路由；日志可进入 Loki、OpenSearch／Elastic 或云日志服务。供应商和存储应由现有平台标准决定。
+- **现有连接点**：复用 request／trace ID、`TraceLogger` 的 span 语义、MCP Manager 状态、工具稳定错误码和 JSONL 脱敏规则；OBS-1 先补足单请求到 MCP Server／工具的关联及有界 SDK 事件，再考虑 exporter，避免建立第二套语义。
+- **当前不实现原因**：没有遥测后端、采样与成本预算、数据保留、敏感字段政策、服务等级目标或值班流程；只新增 exporter 不能构成生产监控。
+- **落地前置条件**：定义可用性和延迟 SLI／SLO、错误预算、指标基数、采样、日志与 Trace 保留、敏感数据过滤、租户隔离、dashboard owner、告警阈值与 runbook，并通过故障演练验证告警可行动。
+
+以上各项必须分别进行威胁建模、迁移和故障演练。它们不能仅凭依赖已安装、接口已预留或示例部署文件存在就标记为完成。

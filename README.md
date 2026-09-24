@@ -295,6 +295,8 @@ Agent 事件与工具审计 JSONL 按配置的单文件大小轮转，并同时�
 
 Trace 记录稳定错误码、耗时、模型名、Token、缓存命中和索引版本；不记录完整查询、回答、会话身份、凭据或原始工具参数。`LANGFUSE_*` 目前只是预留配置，运行时不会向 Langfuse 发送 Trace。
 
+当前部署仍是单实例、本地 SQLite／Chroma／JSONL 与进程内 OAuth Token／审批状态；浏览器客户端 cookie 不是用户或租户身份，单个管理员密钥也不是企业授权系统。多租户隔离、持久审批、高可用、网关、企业 IdP／Secret Store 及集中监控需要真实组织和部署条件，不通过空壳配置声称完成。各能力的成熟方案、现有接入点、暂不实现原因和落地前置条件见 [ENT-1 企业化能力路线](docs/mcp.md#企业化能力路线ent-1)。
+
 ## 评测
 
 评测数据规则见 [`data/testset/README.md`](data/testset/README.md)。当前 56 条 development 样本由 AI 生成且未经人工核验；`final_v1.json` 只有人工确认后才能加入样本。单文档组合事实使用 `multi_fact`，`multi_hop` 仅表示至少需要两个不同来源的跨文档问题。
