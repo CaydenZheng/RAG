@@ -220,3 +220,37 @@ uv run --no-sync --offline --no-env-file pytest tests/offline -q -k mcp
 - **落地前置条件**：定义可用性和延迟 SLI／SLO、错误预算、指标基数、采样、日志与 Trace 保留、敏感数据过滤、租户隔离、dashboard owner、告警阈值与 runbook，并通过故障演练验证告警可行动。
 
 以上各项必须分别进行威胁建模、迁移和故障演练。它们不能仅凭依赖已安装、接口已预留或示例部署文件存在就标记为完成。
+
+## Agent 框架替代路线（ALT-1）
+
+本节只说明未来可能的独立替代实现，不代表仓库已经接入 LangChain、LangGraph、LangSmith 或 LangChain MCPAdapter。当前运行依赖中的 `langchain-text-splitters` 只用于文本切分，`eval` 依赖组中的 LangChain 包只服务 Ragas 兼容评测；生产 Agent 仍由 `AgentHarness`、`ToolRegistry` 和官方 MCP Python SDK 薄适配组成。替代路线必须从 `AgentRuntime` 边界整体切换，不能在现有模型—工具循环外再套一层同职责框架。
+
+| 选择 | 适用条件 | 替换的主要责任 | 不能默认获得 |
+|---|---|---|---|
+| 保持当前实现 | 单次请求内 Agent 与工具调用为主，现有安全和 MCP 能力已满足需求 | 不替换 | 跨进程工作流、图式编排、集中观测平台 |
+| LangChain | 需要通用 Agent harness、多模型／工具生态和 middleware，并愿意让框架接管模型—工具循环 | `AgentHarness`，并适配或保留 `ToolRegistry` | 本仓库策略、审批快照、稳定错误码、秘密保护和 MCP 行为等价 |
+| LangGraph | 已有明确分支、循环、并行节点、长时间暂停或恢复需求 | Agent 编排及状态生命周期；可独立使用 | Exactly-once、副作用幂等、生产数据库、身份隔离或 LangSmith 部署 |
+
+### LangChain 高层 Agent 替代
+
+- **解决的问题**：用统一的 model、tools、prompt 和 middleware 组成通用 Agent harness，复用供应商集成、标准工具循环以及工具错误处理、调用限制和 HITL 等 middleware。官方说明 LangChain Agent 构建在 LangGraph 上；需要更低层的确定性流程与 Agent 步骤混合时应直接评估 LangGraph。[LangChain overview](https://docs.langchain.com/oss/python/langchain/overview) · [Agents](https://docs.langchain.com/oss/python/langchain/agents) · [Middleware](https://docs.langchain.com/oss/python/langchain/middleware/built-in)
+- **当前状态**：项目没有 LangChain Agent 运行时或平行版本。现有 JSON／native Planner、工具预算、Hook、策略、审批、审计、MCP OAuth／Elicitation 和结果安全都由自有小接口实现；依赖中出现 LangChain 相关包不改变这一事实。
+- **成熟方案**：让 `create_agent` 成为唯一模型—工具循环，并把需要的业务控制实现为明确 middleware 或唯一执行网关。若采用 MCP，可评估官方 `langchain.mcp.MCPAdapter`；截至本说明日期该接口标为 beta、连接能力基于 FastMCP，工具结果、错误和生命周期边界与本项目当前官方 `mcp` SDK Adapter 不同，不能视为无损替换。[MCPAdapter](https://docs.langchain.com/oss/python/langchain/mcp) · [MCP tools](https://docs.langchain.com/oss/python/langchain/mcp/tools) · [MCP authentication](https://docs.langchain.com/oss/python/langchain/mcp/auth)
+- **现有连接点**：在 `AgentRuntime.execute/events` 后替换 `AgentHarness`；`ToolRegistry` 要么继续作为所有工具的唯一安全执行网关，要么转换为 LangChain `BaseTool` 后逐项重建完整 Schema、策略、审批、生命周期复核、审计和结果包装。若以 MCPAdapter 替换 `MCPClientManager`，还必须重新验证 stdio／Streamable HTTP、OAuth、Elicitation、Provider 隔离、状态接口、取消、错误映射及秘密保护。
+- **当前不实现原因**：当前循环已经满足验收，引入另一套 Tool、Agent、state 和 middleware 抽象不能删除足够多的现有代码，反而容易产生两条安全链路。MCPAdapter 仍为 beta，仓库也没有需要通过 LangChain 生态立即解决的确定业务缺口，因此不增加依赖或维护平行运行时。
+- **落地前置条件**：先确定要改善的指标，例如供应商接入时间、middleware 复用率或复杂任务成功率；在独立分支对同一模型、Prompt 和工具集做基准。候选实现必须通过当前参数校验、零隐式副作用重试、allow／deny、审批快照、取消、审计、输出大小、秘密保护和 Provider 故障隔离测试，再决定一次性切换，不能长期双写或双执行。
+
+### LangGraph 状态图与持久工作流替代
+
+- **解决的问题**：把确定性业务步骤与 LLM 决策表示为可检查的状态图，支持分支、循环、流式、暂停和长运行流程。LangGraph 是低层编排运行时，可以独立于 LangChain 使用。[LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview) · [官方仓库](https://github.com/langchain-ai/langgraph/blob/main/README.md)
+- **当前状态**：项目没有 LangGraph graph、checkpointer 或 store。SQLite 会话历史不是 graph checkpoint；进程内工具审批和 Elicitation pending 也不能跨重启恢复。现有 `AgentRuntime` 只抽象有界执行和事件流，没有声明持久图语义。
+- **成熟方案**：以显式 state schema、nodes 和 edges 重建编排；用 checkpointer 保存单个 `thread_id` 的图状态，用 store 保存跨 thread 数据，并通过 interrupt／resume 实现需要人工输入的业务节点。生产环境使用目标数据库 saver，而不是 `InMemorySaver`。[Persistence](https://docs.langchain.com/oss/python/langgraph/persistence) · [Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)
+- **现有连接点**：`AgentRuntime` 是整体替换 seam；检索、生成和 `ToolRegistry` 可作为 graph node 继续复用，Agent 事件需从 graph stream 映射回现有 `AgentEvent`。`SessionStore`／`MemoryManager` 与 checkpointer／store 的归属、清除和迁移必须明确；工具业务审批可以映射到 interrupt，但 MCP Elicitation 仍受原 Client session 和协议请求生命周期约束，不能仅靠恢复 graph checkpoint 向已断开的请求回包。
+- **当前不实现原因**：尚无经过确认的长时间工作流、状态图、恢复 SLA 或跨进程审批业务。官方说明 interrupt 恢复会从节点开头重新执行，副作用仍需幂等或任务封装；仅接入内存 checkpointer 只能演示 API，不能证明可靠恢复。当前也没有生产 saver、稳定 thread／user 身份或状态保留策略。
+- **落地前置条件**：定义真实 graph、状态所有权、稳定 `thread_id`／用户／租户映射、数据库 saver 与 store、加密和保留、并发恢复规则、幂等键、重复／过期 resume、补偿和灾难恢复；验证崩溃位于“副作用前后”和“checkpoint 前后”的行为。只有候选实现达到现有 API、工具安全、MCP 和可观测性语义等价，并在故障演练中满足恢复目标，才可替换当前运行时。
+
+### 观测与验证边界
+
+LangSmith 是可观测、评测和监控平台，不是启用 LangChain／LangGraph 后自动存在的本地后端；使用它需要单独的账户／部署、凭据、采样、脱敏、保留、租户隔离和成本决策。[LangSmith Observability](https://docs.langchain.com/langsmith/observability) 当前 `TraceLogger` 可作为未来 instrumentation 语义来源，但不能直接称为 LangSmith 集成。
+
+如果未来确有迁移需求，应只建立短期独立原型：选择一个无副作用原生工具和一个 MCP 工具，对比 Schema、调用、错误、取消、审批和 Trace；持久化原型必须使用目标生产 saver 并执行重启／并发／重放测试。原型达不到可量化收益或无法保持安全不变量时即删除，不在主运行时长期维护双实现。MCP 的 Host／Client／Server 协议责任仍以 [MCP 架构](https://modelcontextprotocol.io/docs/learn/architecture) 和 [官方 Python SDK](https://github.com/modelcontextprotocol/python-sdk/blob/main/README.md) 为准，Agent 框架不能替代 Host 的业务授权与安全责任。

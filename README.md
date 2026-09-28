@@ -299,6 +299,8 @@ Trace 记录稳定错误码、耗时、模型名、Token、缓存命中和索引
 
 当前部署仍是单实例、本地 SQLite／Chroma／JSONL 与进程内 OAuth Token／审批状态；浏览器客户端 cookie 不是用户或租户身份，单个管理员密钥也不是企业授权系统。多租户隔离、持久审批、高可用、网关、企业 IdP／Secret Store 及集中监控需要真实组织和部署条件，不通过空壳配置声称完成。各能力的成熟方案、现有接入点、暂不实现原因和落地前置条件见 [ENT-1 企业化能力路线](docs/mcp.md#企业化能力路线ent-1)。
 
+当前 Agent 运行时没有接入 LangChain 或 LangGraph；运行时使用 `langchain-text-splitters`、评测依赖包含 LangChain 包，都不等于已有 LangChain Agent。若未来需求转向通用 Agent middleware，可在独立实现中评估由 LangChain `create_agent` 替换 `AgentHarness`；若出现长运行、分支和跨进程恢复需求，可评估由 LangGraph 状态图替换编排层。两条路线都必须重新验证现有 ToolRegistry、MCP、安全、审批、审计和结果边界，不能与当前循环叠层后宣称迁移完成。选择条件、连接点和官方来源见 [ALT-1 Agent 框架替代路线](docs/mcp.md#agent-框架替代路线alt-1)。
+
 ## 评测
 
 评测数据规则见 [`data/testset/README.md`](data/testset/README.md)。当前 56 条 development 样本由 AI 生成且未经人工核验；`final_v1.json` 只有人工确认后才能加入样本。单文档组合事实使用 `multi_fact`，`multi_hop` 仅表示至少需要两个不同来源的跨文档问题。
