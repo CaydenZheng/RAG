@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import re
 import secrets
-import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -15,6 +13,10 @@ from typing import Any, Iterator
 from loguru import logger
 
 from config.settings import settings
+from src.infra.jsonl import append_jsonl
+
+MAX_TRACE_SPANS = 128
+_MAX_DROPPED_SPANS = 1_000_000
 
 _MAX_TEXT_LENGTH = 160
 _SECRET_VALUE = re.compile(
@@ -90,7 +92,6 @@ class TraceLogger:
         self._stage: ContextVar[str] = ContextVar(
             f"request_trace_stage_{id(self)}", default="llm"
         )
-        self._write_lock = threading.Lock()
 
     @property
     def trace_file(self) -> Path:
@@ -109,6 +110,7 @@ class TraceLogger:
             "trace_id": trace_id or secrets.token_hex(16),
             "operation": operation,
             "spans": [],
+            "dropped_spans": 0,
             "started_at": time.perf_counter(),
             "status": "ok",
             "error_code": "",
@@ -149,6 +151,12 @@ class TraceLogger:
     ) -> None:
         target = trace or self.current
         if target is None:
+            return
+        if len(target["spans"]) >= MAX_TRACE_SPANS:
+            target["dropped_spans"] = min(
+                int(target.get("dropped_spans", 0)) + 1,
+                _MAX_DROPPED_SPANS,
+            )
             return
         span = {
             "name": name,
@@ -207,20 +215,27 @@ class TraceLogger:
             ),
             "index_version": trace["index_version"] or "unavailable",
             "spans": trace["spans"],
+            "dropped_spans": trace.get("dropped_spans", 0),
             "metrics": safe_attributes(metrics),
         }
         path = self.trace_file
-        path.parent.mkdir(parents=True, exist_ok=True)
-        encoded = json.dumps(record, ensure_ascii=False, sort_keys=True)
-        with self._write_lock, path.open("a", encoding="utf-8") as stream:
-            stream.write(encoded + "\n")
-        logger.info(
-            "Trace written: request_id={}, trace_id={}, status={}, total_ms={:.1f}",
-            record["request_id"],
-            record["trace_id"],
-            record["status"],
-            record["total_ms"],
+        written = append_jsonl(
+            path,
+            record,
+            max_bytes=settings.agent_log_max_bytes,
+            backup_count=settings.agent_log_backup_count,
+            retention_seconds=settings.agent_log_retention_seconds,
         )
+        if not written:
+            logger.warning("Trace record exceeded the file limit")
+        else:
+            logger.info(
+                "Trace written: request_id={}, trace_id={}, status={}, total_ms={:.1f}",
+                record["request_id"],
+                record["trace_id"],
+                record["status"],
+                record["total_ms"],
+            )
         return record
 
 

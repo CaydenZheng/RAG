@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import httpx2
 import pytest
@@ -235,6 +235,7 @@ def test_structured_content_takes_precedence_over_unstructured_blocks() -> None:
         "inspect",
         {"query": "value"},
         read_timeout_seconds=1.5,
+        progress_callback=ANY,
     )
 
 
@@ -501,8 +502,9 @@ def test_concurrent_failures_preserve_connection_error_and_disabled_tool() -> No
         arguments: dict[str, Any],
         *,
         read_timeout_seconds: float,
+        progress_callback: Any,
     ) -> CallToolResult:
-        del name, arguments, read_timeout_seconds
+        del name, arguments, read_timeout_seconds, progress_callback
         nonlocal call_count
         call_count += 1
         if call_count == 1:

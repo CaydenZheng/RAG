@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from copy import deepcopy
@@ -16,7 +17,7 @@ import httpx2
 from loguru import logger
 from mcp import Client, InputRequiredRoundsExceededError, MCPError
 from mcp.client.auth import OAuthFlowError, OAuthRegistrationError, OAuthTokenError
-from mcp.client.session import ElicitationFnT
+from mcp.client.session import ElicitationFnT, LoggingFnT
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import (
@@ -50,6 +51,7 @@ from src.agent.mcp_oauth import (
     MCPOAuthFlowSetupError,
     MCPOAuthStatus,
 )
+from src.agent.mcp_observability import mcp_observability
 from src.agent.tool_schema import InvalidToolSchema, ensure_safe_input_schema
 from src.agent.tools import (
     SafetyLevel,
@@ -240,6 +242,7 @@ logging.getLogger("mcp.client.auth.oauth2").addFilter(_OAUTH_LOG_FILTER)
 async def _stdio_client_context(
     server: MCPStdioServerConfig,
     elicitation_callback: ElicitationFnT | None = None,
+    logging_callback: LoggingFnT | None = None,
 ) -> AsyncIterator[Client]:
     """Enter the official stdio transport without exposing peer output."""
     environment = (
@@ -258,11 +261,12 @@ async def _stdio_client_context(
     )
     with open(os.devnull, "w", encoding="utf-8") as error_sink:
         transport = stdio_client(parameters, errlog=error_sink)
-        client_options = (
-            {"elicitation_callback": elicitation_callback}
-            if elicitation_callback is not None
-            else {}
-        )
+        client_options: dict[str, Any] = {}
+        if elicitation_callback is not None:
+            client_options["elicitation_callback"] = elicitation_callback
+        if logging_callback is not None:
+            client_options["logging_callback"] = logging_callback
+            client_options["log_level"] = "warning"
         async with Client(transport, **client_options) as client:
             yield client
 
@@ -271,6 +275,7 @@ async def _stdio_client_context(
 async def _streamable_http_client_context(
     server: MCPStreamableHTTPServerConfig,
     elicitation_callback: ElicitationFnT | None = None,
+    logging_callback: LoggingFnT | None = None,
     oauth_flow_manager: MCPOAuthFlowManager | None = None,
 ) -> AsyncIterator[Client]:
     """Enter the official Streamable HTTP transport with configured timeouts."""
@@ -288,11 +293,12 @@ async def _streamable_http_client_context(
             str(server.url),
             http_client=http_client,
         )
-        client_options = (
-            {"elicitation_callback": elicitation_callback}
-            if elicitation_callback is not None
-            else {}
-        )
+        client_options: dict[str, Any] = {}
+        if elicitation_callback is not None:
+            client_options["elicitation_callback"] = elicitation_callback
+        if logging_callback is not None:
+            client_options["logging_callback"] = logging_callback
+            client_options["log_level"] = "warning"
         async with Client(transport, **client_options) as client:
             yield client
 
@@ -300,15 +306,21 @@ async def _streamable_http_client_context(
 def _default_client_factory(
     server: MCPServerConfig,
     elicitation_callback: ElicitationFnT | None = None,
+    logging_callback: LoggingFnT | None = None,
     oauth_flow_manager: MCPOAuthFlowManager | None = None,
 ) -> AbstractAsyncContextManager[Client]:
     """Build an official SDK client while keeping transports behind one seam."""
     if isinstance(server, MCPStdioServerConfig):
-        return _stdio_client_context(server, elicitation_callback)
+        return _stdio_client_context(
+            server,
+            elicitation_callback,
+            logging_callback,
+        )
     if isinstance(server, MCPStreamableHTTPServerConfig):
         return _streamable_http_client_context(
             server,
             elicitation_callback,
+            logging_callback,
             oauth_flow_manager,
         )
     raise ValueError("MCP transport is not implemented")
@@ -344,6 +356,7 @@ class MCPClientManager:
             lambda server: _default_client_factory(
                 server,
                 self._elicitation_manager.callback_for(server.id),
+                mcp_observability.logging_callback(server.id),
                 self._oauth_flow_manager,
             )
         )
@@ -494,10 +507,22 @@ class MCPClientManager:
         server: MCPServerConfig,
         tool_registry: ToolRegistry,
     ) -> None:
+        lifecycle = mcp_observability.server_lifecycle(
+            server.id,
+            server.transport,
+        )
+        connect_started = time.monotonic()
         try:
             client_context = self._client_factory(server)
         except Exception as error:
-            self._record_connection_failure(server.id, error)
+            error_code = self._record_connection_failure(server.id, error)
+            lifecycle.add_phase(
+                "mcp_connect",
+                connect_started,
+                status="error",
+                error_code=error_code,
+            )
+            lifecycle.finish(status="error", error_code=error_code)
             return
 
         close_requested = asyncio.Event()
@@ -518,14 +543,37 @@ class MCPClientManager:
         try:
             client = await asyncio.shield(ready)
         except asyncio.CancelledError:
+            lifecycle.add_phase(
+                "mcp_connect",
+                connect_started,
+                status="cancelled",
+                error_code="mcp_start_cancelled",
+            )
+            lifecycle.finish(
+                status="cancelled",
+                error_code="mcp_start_cancelled",
+            )
             raise
         except Exception as error:
             await owner_task
             self._connections.pop(server.id, None)
-            self._record_connection_failure(server.id, error)
+            error_code = self._record_connection_failure(server.id, error)
+            lifecycle.add_phase(
+                "mcp_connect",
+                connect_started,
+                status="error",
+                error_code=error_code,
+            )
+            lifecycle.finish(status="error", error_code=error_code)
             return
 
         connection.client = client
+        lifecycle.add_phase(
+            "mcp_connect",
+            connect_started,
+            status="ok",
+        )
+        discovery_started = time.monotonic()
         try:
             (
                 registered_tool_names,
@@ -536,6 +584,16 @@ class MCPClientManager:
                 tool_registry,
             )
         except asyncio.CancelledError:
+            lifecycle.add_phase(
+                "mcp_discover",
+                discovery_started,
+                status="cancelled",
+                error_code="mcp_start_cancelled",
+            )
+            lifecycle.finish(
+                status="cancelled",
+                error_code="mcp_start_cancelled",
+            )
             raise
         except Exception as error:
             await self._close_after_discovery_failure(server.id, connection)
@@ -549,6 +607,16 @@ class MCPClientManager:
                 "MCP server {} tool discovery failed: {}",
                 server.id,
                 type(error).__name__,
+            )
+            lifecycle.add_phase(
+                "mcp_discover",
+                discovery_started,
+                status="error",
+                error_code="mcp_tool_discovery_failed",
+            )
+            lifecycle.finish(
+                status="error",
+                error_code="mcp_tool_discovery_failed",
             )
             return
 
@@ -564,6 +632,20 @@ class MCPClientManager:
                 error_code="mcp_tool_definition_rejected",
                 message="one or more server tool definitions were rejected",
             )
+            lifecycle.add_phase(
+                "mcp_discover",
+                discovery_started,
+                status="degraded",
+                error_code="mcp_tool_definition_rejected",
+                tool_count=len(registered_tool_names),
+                rejected_tool_count=rejected_tool_count,
+            )
+            lifecycle.finish(
+                status="degraded",
+                error_code="mcp_tool_definition_rejected",
+                tool_count=len(registered_tool_names),
+                rejected_tool_count=rejected_tool_count,
+            )
         else:
             self._update_state(
                 server.id,
@@ -571,12 +653,23 @@ class MCPClientManager:
                 error_code=None,
                 message="server connection is available",
             )
+            lifecycle.add_phase(
+                "mcp_discover",
+                discovery_started,
+                status="ok",
+                tool_count=len(registered_tool_names),
+                rejected_tool_count=0,
+            )
+            lifecycle.finish(
+                status="ok",
+                tool_count=len(registered_tool_names),
+            )
 
     def _record_connection_failure(
         self,
         server_id: str,
         error: BaseException,
-    ) -> None:
+    ) -> str:
         oauth_failure = self._classify_oauth_error(error)
         if oauth_failure is not None:
             error_code = oauth_failure.error_code
@@ -595,6 +688,7 @@ class MCPClientManager:
             server_id,
             type(error).__name__,
         )
+        return error_code
 
     @classmethod
     def _classify_oauth_error(
@@ -680,6 +774,7 @@ class MCPClientManager:
                         server_id=server.id,
                         call_timeout_seconds=server.call_timeout_seconds,
                         registered_name=registered_name,
+                        transport=server.transport,
                         mcp_tool=mcp_tool,
                         client=client,
                         tool_registry=tool_registry,
@@ -903,6 +998,7 @@ class MCPClientManager:
         server_id: str,
         call_timeout_seconds: float,
         registered_name: str,
+        transport: MCPTransport,
         mcp_tool: MCPTool,
         client: Client,
         tool_registry: ToolRegistry,
@@ -930,6 +1026,11 @@ class MCPClientManager:
                     error_code="mcp_session_unavailable",
                     tool_name=registered_name,
                 )
+            observation = mcp_observability.tool_call(
+                server_id,
+                transport,
+                registered_name,
+            )
             try:
                 async with self._elicitation_manager.active_call(
                     server_id,
@@ -939,25 +1040,44 @@ class MCPClientManager:
                         mcp_tool.name,
                         arguments,
                         read_timeout_seconds=call_timeout_seconds,
+                        progress_callback=observation.on_progress,
                     )
             except asyncio.CancelledError:
+                mcp_observability.record_cancellation(
+                    server_id,
+                    registered_name,
+                )
+                observation.finish(
+                    status="cancelled",
+                    error_code="mcp_call_cancelled",
+                )
                 raise
             except Exception as error:
-                return self._complete_tool_call_failure(
+                failed = self._complete_tool_call_failure(
                     server_id=server_id,
                     registered_name=registered_name,
                     tool_registry=tool_registry,
                     error=error,
                     has_output_schema=has_output_schema,
                 )
+                observation.finish(
+                    status="error",
+                    error_code=failed.error_code or "mcp_call_failed",
+                )
+                return failed
             self._recover_from_transient_call_failure(server_id)
             if result.is_error:
+                observation.finish(
+                    status="error",
+                    error_code="mcp_tool_error",
+                )
                 return ToolResult(
                     success=False,
                     error="MCP tool returned an error",
                     error_code="mcp_tool_error",
                     tool_name=registered_name,
                 )
+            observation.finish(status="ok")
             return ToolResult(
                 success=True,
                 data=self._result_data(result),

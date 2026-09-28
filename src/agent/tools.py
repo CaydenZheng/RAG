@@ -809,7 +809,9 @@ class ToolRegistry:
     def _hash_call(self, tool_name: str, params: dict) -> str:
         """计算调用指纹（去重用）"""
         raw = f"{tool_name}:{json.dumps(params, sort_keys=True)}"
-        return hashlib.md5(raw.encode()).hexdigest()
+        return hashlib.md5(
+            raw.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
 
     def _is_duplicate(self, session_id: str, call_hash: str) -> bool:
         """检查是否在去重窗口内重复调用"""
