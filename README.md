@@ -154,7 +154,7 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 | `AGENT_TOOL_ALLOWLIST`、`AGENT_TOOL_DENYLIST` | 工具精确注册名 JSON 数组；空 allowlist 默认允许，denylist 优先 |
 | `TOOL_DEDUP_MAX_SESSIONS` | 工具调用去重状态的最大 session 数 |
 | `MCP_SERVERS` | 可选 MCP Server JSON 列表；支持 stdio、Streamable HTTP 及可选标准 OAuth |
-| `AGENT_LOG_MAX_BYTES`、`AGENT_LOG_BACKUP_COUNT`、`AGENT_LOG_RETENTION_SECONDS` | Agent 事件与工具审计日志的轮转和保留边界 |
+| `AGENT_LOG_MAX_BYTES`、`AGENT_LOG_BACKUP_COUNT`、`AGENT_LOG_RETENTION_SECONDS` | Agent 事件、工具审计、Trace 与 MCP 事件 JSONL 的轮转和保留边界 |
 | `PROMPT_VERSION` | 选择 `prompts/<version>/` |
 | `LANGFUSE_*` | 预留的远端观测字段；当前运行时未接入 |
 | `MAX_UPLOAD_BYTES` | 单文件上传上限 |
@@ -255,6 +255,8 @@ MCP 默认关闭。设置 `MCP_SERVERS` 后，应用会在后台连接启用的 
 - `GET /agent/elicitation/{session_id}` 与对应 `POST`：仅当前客户端可见的进程内 MCP Elicitation 查询与响应。
 - `GET /agent/approvals/{session_id}` 与对应 `POST`：仅当前客户端可见的进程内 Graylist 工具审批查询与决策。
 
+MCP 连接与发现写入独立的 `mcp_server_start` Trace，工具调用在当前 Agent 请求 Trace 中写入 `mcp_tool_call` span，并关联脱敏的 Server ID、Transport 和 Registry 工具名。进度最多保留 32 条数值摘要，Server 日志只接收 `warning` 及以上级别并丢弃正文，取消沿官方 SDK 生命周期传播；具体事件边界见 [MCP 集成](docs/mcp.md#观测与取消)。
+
 ## 索引生命周期
 
 全量构建根据语料内容生成不可变版本和 `rag_v_<version>` collection；构建成功后再原子切换 active 指针。旧的 `rag_collection` 仍可作为无 manifest 时的兼容索引。
@@ -290,8 +292,8 @@ curl.exe -X POST http://127.0.0.1:8000/index/rebuild `
 
 ## 可观测性
 
-普通响应和 SSE 都返回 `X-Request-ID` 与 `X-Trace-ID`。本地 Trace 默认追加到 `logs/traces.jsonl`，覆盖查询改写、候选检索、Rerank、上下文构建、模型生成、Agent 和工具调用。
-Agent 事件与工具审计 JSONL 按配置的单文件大小轮转，并同时受备份数量和保留时长约束。
+普通响应和 SSE 都返回 `X-Request-ID` 与 `X-Trace-ID`。本地 Trace 默认追加到 `logs/traces.jsonl`，覆盖查询改写、候选检索、Rerank、上下文构建、模型生成、Agent 和工具调用；每条 Trace 最多保留 128 个 span，超出部分只累计丢弃数。
+Trace、Agent 事件、工具审计和 MCP 事件 JSONL 都按配置的单文件大小轮转，并同时受备份数量和保留时长约束。
 
 Trace 记录稳定错误码、耗时、模型名、Token、缓存命中和索引版本；不记录完整查询、回答、会话身份、凭据或原始工具参数。`LANGFUSE_*` 目前只是预留配置，运行时不会向 Langfuse 发送 Trace。
 

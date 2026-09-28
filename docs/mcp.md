@@ -96,6 +96,18 @@ pending 默认等待 `AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS=25` 秒，并仍受 Ag
 
 `GET /agent/tools` 中的 `available` 继续表示工具及其 Provider 的运行可用性，不混入授权含义；策略生效结果以 Planner 有效目录、调用错误码和上述审计记录为准。
 
+## 观测与取消
+
+MCP 观测复用现有 `TraceLogger`，不建立第二套追踪模型。每个启用的 Server 在启动时产生一个独立 `mcp_server_start` Trace，其中 `mcp_connect` 和 `mcp_discover` span 记录脱敏 Server ID、Transport、耗时、状态、稳定错误码和工具数量。每次工具调用在当前 Agent 请求 Trace 中追加 `mcp_tool_call` span，关联同一 Server、Transport 和具体 Registry 工具名，并记录耗时、状态及稳定错误码；没有当前请求 Trace 时不会伪造跨请求关联。每条 Trace 最多保留 128 个 span，超出部分只累计有界 `dropped_spans`。
+
+工具调用通过官方 SDK 的 `progress_callback` 接收进度。单次调用最多保留 32 条事件的有限数值摘要及最后一次 `progress`／`total`，非有限数值单独计数；超出数量只累计有界丢弃数。Server 提供的 progress message 无论内容如何都不进入 Trace 或事件文件，只记录省略数量。
+
+stdio 和 Streamable HTTP 的默认 Client 都注册官方 `logging_callback`，并把 SDK 日志级别设为 `warning`。Host 只记录级别，不保存 Server 的日志正文或 logger 名；每个 Server、每种事件在 60 秒窗口内最多写入 20 条，首次超限只追加一条 `mcp_event_rate_limited` 通知，其余丢弃。记录写入 `logs/mcp_events.jsonl`，与 `logs/traces.jsonl` 一样复用 `AGENT_LOG_MAX_BYTES`、`AGENT_LOG_BACKUP_COUNT` 和 `AGENT_LOG_RETENTION_SECONDS` 的单条大小、轮转、备份与保留边界。锁定的 MCP SDK 2.2.0 仍支持 logging callback，但 MCP logging capability 已于 2026-07-28 标记 deprecated；这里是对当前锁定版本的有界兼容接入，不承诺未来协议版本继续提供该能力。
+
+调用方取消工具任务时，Host 保留 `CancelledError` 语义并让官方 SDK 负责协议级取消或传输中止，不自行构造 `notifications/cancelled`。本地只写一条不含参数值的 `tool_cancelled` 事件和状态为 cancelled 的调用 span。观测写入失败不会替换工具结果或取消结果。
+
+这些文件仍是单实例本地 JSONL，不是 OpenTelemetry、Langfuse、Prometheus、集中日志、告警或 SLO 后端。生产集中观测的外部条件和接入位置见[企业化能力路线](#集中观测告警与-slo)。
+
 ## 本地演示
 
 内置 `get_current_time(timezone="UTC")` 使用标准库 `zoneinfo`。支持 `UTC` 和系统可用的 IANA 时区；非法时区返回稳定的 MCP 工具错误。
@@ -128,6 +140,7 @@ npx @modelcontextprotocol/inspector@2.7.0 --cli `
 - Streamable HTTP：仅放行测试进程的数值型 loopback 地址，覆盖应用配置接线、初始化失败、工具发现、调用超时、恢复和关闭。
 - Elicitation：真实 in-process MCPServer 覆盖 legacy callback 与现代 InputRequired，并通过真实 stdio 子进程验证默认 Client factory 的 callback 接线；另覆盖 form／URL、Schema 与 Host 资源边界、非阻塞校验、超时／关闭终态竞争、并发归属和客户端 session 隔离。
 - 工具审批：覆盖真实 Agent 循环、原生与 MCP Graylist、批准／拒绝／取消／超时、调用取消、关闭重开、终态竞争、客户端隔离、容量与请求体边界，以及审计参数值脱敏。
+- 观测：真实 SDK Server 覆盖 progress、Server logging 和取消传播；另覆盖默认双传输 callback 接线、事件限频、秘密丢弃、Trace span 数量及 JSONL 轮转边界。
 - 单元测试通过官方 SDK `Client` 边界进行 Mock，不实现 Fake MCP 协议或传输。
 
 ```powershell
