@@ -568,9 +568,32 @@ def test_oauth_admin_endpoints_are_protected_but_callback_is_public(
     ]
 
 
+@pytest.mark.parametrize(
+    ("root_path", "request_path", "scope_path"),
+    [
+        (
+            "",
+            "/agent/oauth/remote/callback",
+            "/agent/oauth/remote/callback",
+        ),
+        (
+            "/api",
+            "/api/agent/oauth/remote/callback",
+            "/api/agent/oauth/remote/callback",
+        ),
+        (
+            "/api",
+            "/api/agent/oauth/remote%20server/callback",
+            "/api/agent/oauth/remote server/callback",
+        ),
+    ],
+)
 def test_uvicorn_access_log_redacts_oauth_callback_query(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    root_path: str,
+    request_path: str,
+    scope_path: str,
 ) -> None:
     import h11
     from uvicorn.protocols.http.h11_impl import RequestResponseCycle
@@ -580,8 +603,8 @@ def test_uvicorn_access_log_redacts_oauth_callback_query(
     caplog.set_level(logging.INFO, logger="uvicorn.access")
 
     target = (
-        "/agent/oauth/remote/callback"
-        "?code=authorization-code-secret"
+        request_path
+        + "?code=authorization-code-secret"
         "&state=state-secret&iss=issuer-secret"
     )
 
@@ -597,10 +620,10 @@ def test_uvicorn_access_log_redacts_oauth_callback_query(
                 "http_version": "1.1",
                 "method": "GET",
                 "scheme": "http",
-                "path": "/agent/oauth/remote/callback",
-                "raw_path": b"/agent/oauth/remote/callback",
+                "path": scope_path,
+                "raw_path": request_path.encode(),
                 "query_string": target.partition("?")[2].encode(),
-                "root_path": "",
+                "root_path": root_path,
                 "headers": [(b"host", b"testserver")],
                 "client": ("127.0.0.1", 43110),
                 "server": ("127.0.0.1", 8000),
@@ -623,10 +646,64 @@ def test_uvicorn_access_log_redacts_oauth_callback_query(
 
     asyncio.run(emit_uvicorn_access_record())
 
-    assert "GET /agent/oauth/remote/callback HTTP/1.1" in caplog.text
+    assert f"GET {request_path} HTTP/1.1" in caplog.text
     assert "authorization-code-secret" not in caplog.text
     assert "state-secret" not in caplog.text
     assert "issuer-secret" not in caplog.text
+
+
+def test_uvicorn_access_log_preserves_non_callback_query(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import h11
+    from uvicorn.protocols.http.h11_impl import RequestResponseCycle
+
+    _import_app(monkeypatch)
+    access_logger = logging.getLogger("uvicorn.access")
+    caplog.set_level(logging.INFO, logger="uvicorn.access")
+    path = "/api/agent/oauth/remote/status"
+    query = "visible=ordinary-query"
+
+    async def emit_uvicorn_access_record() -> None:
+        connection = h11.Connection(h11.SERVER)
+        connection.receive_data(
+            f"GET {path}?{query} HTTP/1.1\r\nHost: testserver\r\n\r\n".encode()
+        )
+        assert isinstance(connection.next_event(), h11.Request)
+        cycle = RequestResponseCycle(
+            scope={
+                "type": "http",
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": path,
+                "raw_path": path.encode(),
+                "query_string": query.encode(),
+                "root_path": "/api",
+                "headers": [(b"host", b"testserver")],
+                "client": ("127.0.0.1", 43110),
+                "server": ("127.0.0.1", 8000),
+                "state": {},
+                "extensions": {},
+            },
+            conn=connection,
+            transport=SimpleNamespace(write=lambda data: None),
+            flow=SimpleNamespace(write_paused=False),
+            logger=logging.getLogger("uvicorn.error"),
+            access_logger=access_logger,
+            access_log=True,
+            default_headers=[],
+            message_event=asyncio.Event(),
+            on_response=lambda: None,
+        )
+        await cycle.send(
+            {"type": "http.response.start", "status": 200, "headers": []}
+        )
+
+    asyncio.run(emit_uvicorn_access_record())
+
+    assert f"GET {path}?{query} HTTP/1.1" in caplog.text
 
 
 def test_oauth_callback_rejects_ambiguous_secret_values_before_runtime(

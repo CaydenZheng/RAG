@@ -286,6 +286,7 @@ def test_real_sdk_cancellation_interrupts_server_and_records_no_arguments(
                     "mcp__cancelled__wait",
                     {"value": secret},
                     session_id="cancel-session",
+                    call_id="agent-call-cancelled",
                 )
             )
             await asyncio.wait_for(started.wait(), timeout=1)
@@ -308,9 +309,11 @@ def test_real_sdk_cancellation_interrupts_server_and_records_no_arguments(
     )
     assert call_span["status"] == "cancelled"
     assert call_span["error_code"] == "mcp_call_cancelled"
+    assert call_span["attributes"]["call_id"] == "agent-call-cancelled"
     events = _jsonl(event_path)
     assert [event["event"] for event in events] == ["tool_cancelled"]
     assert events[0]["tool_name"] == "mcp__cancelled__wait"
+    assert events[0]["call_id"] == "agent-call-cancelled"
     assert secret not in trace_path.read_text(encoding="utf-8")
     assert secret not in event_path.read_text(encoding="utf-8")
 

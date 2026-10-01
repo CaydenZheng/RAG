@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from mcp import Client
-from mcp.types import ListToolsResult, Tool
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 if TYPE_CHECKING:
     from config.settings import MCPStdioServerConfig
@@ -113,6 +113,63 @@ def test_complex_schema_is_preserved_and_rejected_before_sdk_call(
     assert record["parameter_names"] == ["profile"]
     assert record["error_code"] == "invalid_tool_parameters"
     assert "do-not-log" not in audit_text
+
+
+def test_nullable_schema_is_registered_in_both_catalogs_and_fully_validated(
+    isolated_runtime: Path,
+) -> None:
+    del isolated_runtime
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": ["string", "null"]}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+    client = AsyncMock(spec=Client)
+    client.list_tools.return_value = ListToolsResult(
+        tools=[Tool(name="nullable", inputSchema=schema)]
+    )
+    client.call_tool.return_value = CallToolResult(
+        content=[TextContent(type="text", text="accepted")]
+    )
+    manager = _manager(cast(Client, client))
+    registry = _registry()
+
+    async def exercise() -> tuple[object, ...]:
+        await manager.start(registry)
+        tool = registry.get_tool("mcp__schema__nullable")
+        assert tool is not None
+        valid = await registry.execute_async(
+            tool.name,
+            {"value": None},
+            session_id="nullable-valid",
+        )
+        invalid = await registry.execute_async(
+            tool.name,
+            {"value": 1},
+            session_id="nullable-invalid",
+        )
+        snapshot = manager.snapshot()[0]
+        json_catalog = json.loads(registry.get_tool_descriptions())
+        native_catalog = registry.get_model_tools()
+        await manager.close()
+        return tool, valid, invalid, snapshot, json_catalog, native_catalog
+
+    tool, valid, invalid, snapshot, json_catalog, native_catalog = asyncio.run(
+        exercise()
+    )
+
+    assert tool.input_schema == schema
+    assert tool.params[0].type == "str"
+    assert any("nullable" in warning for warning in tool.schema_warnings)
+    assert [item["name"] for item in json_catalog] == [
+        "mcp__schema__nullable"
+    ]
+    assert native_catalog[0]["function"]["parameters"] == schema
+    assert valid.success is True
+    assert invalid.error_code == "invalid_tool_parameters"
+    assert client.call_tool.await_count == 1
+    assert snapshot["status"] == "available"
 
 
 def test_sync_validation_failure_audits_mixed_parameter_keys(

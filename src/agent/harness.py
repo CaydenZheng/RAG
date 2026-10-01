@@ -329,7 +329,10 @@ class AgentHarness:
                     if blocked_by_registry_policy:
                         result = await self._await_with_budget(
                             self._execute_tool_async(
-                                tool_name, params, session_id
+                                tool_name,
+                                params,
+                                session_id,
+                                proposed.call_id,
                             ),
                             budget,
                         )
@@ -385,7 +388,10 @@ class AgentHarness:
                         budget.consume_tool()
                         result = await self._await_with_budget(
                             self._execute_tool_async(
-                                tool_name, params, session_id
+                                tool_name,
+                                params,
+                                session_id,
+                                proposed.call_id,
                             ),
                             budget,
                         )
@@ -595,10 +601,21 @@ class AgentHarness:
         return existed
 
     async def _execute_tool_async(
-        self, tool_name: str, params: dict, session_id: str
+        self,
+        tool_name: str,
+        params: dict,
+        session_id: str,
+        call_id: str = "",
     ) -> ToolResult:
         execute_async = getattr(self.tools, "execute_async", None)
         if execute_async is not None:
+            if isinstance(self.tools, ToolRegistry):
+                return await execute_async(
+                    tool_name,
+                    params,
+                    session_id,
+                    call_id=call_id,
+                )
             return await execute_async(tool_name, params, session_id)
         return await asyncio.to_thread(
             self.tools.execute, tool_name, params, session_id

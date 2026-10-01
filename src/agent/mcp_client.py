@@ -57,6 +57,7 @@ from src.agent.tools import (
     SafetyLevel,
     ToolDef,
     ToolRegistry,
+    current_tool_call_id,
     current_tool_session_id,
     tool_params_from_schema,
 )
@@ -1030,6 +1031,7 @@ class MCPClientManager:
                 server_id,
                 transport,
                 registered_name,
+                current_tool_call_id() or "",
             )
             try:
                 async with self._elicitation_manager.active_call(
@@ -1046,6 +1048,7 @@ class MCPClientManager:
                 mcp_observability.record_cancellation(
                     server_id,
                     registered_name,
+                    current_tool_call_id() or "",
                 )
                 observation.finish(
                     status="cancelled",
