@@ -44,7 +44,7 @@ MCP_SERVERS=[{"id":"remote","transport":"streamable_http","url":"https://mcp.exa
 - 工具调用不会因连接错误自动重放。对可能产生副作用的调用，由上层调用方决定是否重新执行。
 - OAuth `redirect_uri` 对 `native` 客户端允许 HTTPS 或 loopback IP（`127.0.0.0/8`、`::1`）上的 HTTP；`web` 客户端及非 loopback 地址必须使用 HTTPS。
 
-OAuth Server 返回 `401` 后，SDK 完成元数据发现并生成授权 URL。使用管理员凭据读取 `GET /agent/oauth/{server_id}`，在浏览器打开其中的 `authorization_url`；Provider 随后重定向到配置的 `/agent/oauth/{server_id}/callback`。回调端点不要求管理员 Header，但必须携带匹配的 `state`，并由 Host 与 SDK 再次校验；Uvicorn 访问日志会在记录前移除该回调的完整查询串。`POST /agent/oauth/{server_id}/cancel` 可由管理员取消当前待处理授权。OAuth 控制响应均设置 `Cache-Control: no-store`。
+OAuth Server 返回 `401` 后，SDK 完成元数据发现并生成授权 URL。使用管理员凭据读取 `GET /agent/oauth/{server_id}`，在浏览器打开其中的 `authorization_url`；Provider 随后重定向到配置的 `/agent/oauth/{server_id}/callback`。回调端点不要求管理员 Header，但必须携带匹配的 `state`，并由 Host 与 SDK 再次校验；无论应用是否配置 `/api` 等部署前缀，Uvicorn 访问日志都会在记录前移除该回调的完整查询串，非回调请求仍按原目标记录。`POST /agent/oauth/{server_id}/cancel` 可由管理员取消当前待处理授权。OAuth 控制响应均设置 `Cache-Control: no-store`。
 
 多个 MCP Server 会独立并发初始化；一个 Provider 等待人工 OAuth 回调时，其他健康 Provider 仍可完成工具发现并变为可用。调用期间发生刷新、重新授权或取消失败时，Server 分别收敛为 `mcp_oauth_failed` 或 `mcp_oauth_cancelled`，并禁用该 Provider 的工具，避免继续调度不可用凭据。
 
@@ -74,13 +74,13 @@ Elicitation 是 Server 主动请求输入的 MCP 协议能力，不是 Host 的�
 
 ## 工具执行审批
 
-所有 Graylist 工具，包括原生外部工具和 MCP 工具，都在 `ToolRegistry.execute_async` 完成参数校验与安全策略判断后、执行副作用和进入工具重试循环前等待 Host 审批。Whitelist 自动执行，Blacklist 直接阻断；配置审批协调器时，同步 `ToolRegistry.execute` 会安全返回 `tool_approval_required`，不能绕过异步审批。
+所有 Graylist 工具，包括原生外部工具和 MCP 工具，都在 `ToolRegistry.execute_async` 完成参数校验与安全策略判断后、执行副作用前等待 Host 审批。Whitelist 自动执行，Blacklist 直接阻断；配置审批协调器时，同步 `ToolRegistry.execute` 会安全返回 `tool_approval_required`，不能绕过异步审批。Graylist 的 `max_retries` 不参与执行：一次批准最多发起一次工具执行，出现“副作用已发生但确认响应丢失”等异常时也不会自动重放；只有具备明确幂等合同和幂等键的上层业务才能决定另行发起新调用。
 
 Agent HTTP 与 SSE 都是单向请求。调用方应显式提供稳定的 `session_id`，并用另一并发请求完成审批：
 
 1. `GET /agent/approvals/{session_id}` 查询当前客户端、当前 Agent session 的 `pending` 列表；每项包含工具名、`native`／`mcp` 来源、Provider、分类和有界参数快照。
 2. `POST /agent/approvals/{session_id}/{approval_id}` 提交 `{"action":"approve"}`、`{"action":"reject"}` 或 `{"action":"cancel"}`。
-3. Host 只返回 `202 {"status":"received"}`，不在响应中回显参数。批准后 Registry 会重新校验并只执行 pending 中展示的同一份参数快照，不再读取调用方原始可变对象；同时复核 Registry 中仍是同一工具定义、工具仍可用且仍为 Graylist。审批期间发生 MCP 注销、禁用、同名替换或安全等级变化时返回稳定 `tool_unavailable`，原定义和替换定义都不会执行。工具只执行一次；拒绝、取消或超时分别以稳定工具错误返回 Agent 循环，并且不执行、不进入自动重试。
+3. Host 只返回 `202 {"status":"received"}`，不在响应中回显参数。批准后 Registry 会重新校验并只执行 pending 中展示的同一份参数快照，不再读取调用方原始可变对象；同时复核 Registry 中仍是同一工具定义、工具仍可用且仍为 Graylist。审批期间发生 MCP 注销、禁用、同名替换或安全等级变化时返回稳定 `tool_unavailable`，原定义和替换定义都不会执行。工具最多执行一次；执行抛错也不会因 `max_retries` 自动重放。拒绝、取消或超时分别以稳定工具错误返回 Agent 循环，并且不执行工具。
 
 公开 `session_id` 仍绑定客户端身份 cookie；其他客户端即使知道相同 ID，也看不到或无法处理 pending。审批响应体在 DTO 解析前流式限制为 4 KiB。参数快照最多 64 KiB，并限制字段数、列表项、嵌套深度、节点数、key 和字符串长度；全局最多 128 个 pending、单 session 最多 8 个。超出容量或无法安全展示参数时，工具以 `tool_approval_unavailable` 失败关闭。审计只记录参数名、结果和稳定错误码，不记录参数值。
 
@@ -98,13 +98,13 @@ pending 默认等待 `AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS=25` 秒，并仍受 Ag
 
 ## 观测与取消
 
-MCP 观测复用现有 `TraceLogger`，不建立第二套追踪模型。每个启用的 Server 在启动时产生一个独立 `mcp_server_start` Trace，其中 `mcp_connect` 和 `mcp_discover` span 记录脱敏 Server ID、Transport、耗时、状态、稳定错误码和工具数量。每次工具调用在当前 Agent 请求 Trace 中追加 `mcp_tool_call` span，关联同一 Server、Transport 和具体 Registry 工具名，并记录耗时、状态及稳定错误码；没有当前请求 Trace 时不会伪造跨请求关联。每条 Trace 最多保留 128 个 span，超出部分只累计有界 `dropped_spans`。
+MCP 观测复用现有 `TraceLogger`，不建立第二套追踪模型。每个启用的 Server 在启动时产生一个独立 `mcp_server_start` Trace，其中 `mcp_connect` 和 `mcp_discover` span 记录脱敏 Server ID、Transport、耗时、状态、稳定错误码和工具数量。每次工具调用在当前 Agent 请求 Trace 中追加 `mcp_tool_call` span，关联同一 Server、Transport、具体 Registry 工具名和有界的内部 `ToolCall.call_id`，并记录耗时、状态及稳定错误码；没有当前请求 Trace 时不会伪造跨请求关联。每条 Trace 最多保留 128 个 span，超出部分只累计有界 `dropped_spans`。
 
 工具调用通过官方 SDK 的 `progress_callback` 接收进度。单次调用最多保留 32 条事件的有限数值摘要及最后一次 `progress`／`total`，非有限数值单独计数；超出数量只累计有界丢弃数。Server 提供的 progress message 无论内容如何都不进入 Trace 或事件文件，只记录省略数量。
 
 stdio 和 Streamable HTTP 的默认 Client 都注册官方 `logging_callback`，并把 SDK 日志级别设为 `warning`。Host 只记录级别，不保存 Server 的日志正文或 logger 名；每个 Server、每种事件在 60 秒窗口内最多写入 20 条，首次超限只追加一条 `mcp_event_rate_limited` 通知，其余丢弃。记录写入 `logs/mcp_events.jsonl`，与 `logs/traces.jsonl` 一样复用 `AGENT_LOG_MAX_BYTES`、`AGENT_LOG_BACKUP_COUNT` 和 `AGENT_LOG_RETENTION_SECONDS` 的单条大小、轮转、备份与保留边界。锁定的 MCP SDK 2.2.0 仍支持 logging callback，但 MCP logging capability 已于 2026-07-28 标记 deprecated；这里是对当前锁定版本的有界兼容接入，不承诺未来协议版本继续提供该能力。
 
-调用方取消工具任务时，Host 保留 `CancelledError` 语义并让官方 SDK 负责协议级取消或传输中止，不自行构造 `notifications/cancelled`。本地只写一条不含参数值的 `tool_cancelled` 事件和状态为 cancelled 的调用 span。观测写入失败不会替换工具结果或取消结果。
+调用方取消工具任务时，Host 保留 `CancelledError` 语义并让官方 SDK 负责协议级取消或传输中止，不自行构造 `notifications/cancelled`。Registry 在重新抛出取消前写入一条值脱敏的稳定终态审计；MCP 另写一条不含参数值、带同一有界 `call_id` 的 `tool_cancelled` 事件和状态为 cancelled 的调用 span。观测写入失败不会替换工具结果或取消结果。
 
 这些文件仍是单实例本地 JSONL，不是 OpenTelemetry、Langfuse、Prometheus、集中日志、告警或 SLO 后端。生产集中观测的外部条件和接入位置见[企业化能力路线](#集中观测告警与-slo)。
 

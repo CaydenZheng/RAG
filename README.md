@@ -243,7 +243,7 @@ curl.exe -X POST http://127.0.0.1:8000/agent/chat `
 
 MCP 默认关闭。设置 `MCP_SERVERS` 后，应用会在后台连接启用的 Server；连接失败或握手等待不会阻塞核心 HTTP 服务。stdio 和 Streamable HTTP 共用工具注册、完整 JSON Schema 校验、结果安全、审计和状态模型，工具调用默认不自动重试。
 
-原生与 MCP 的 Graylist 工具在参数校验后、任何副作用或重试前进入同一条轻量审批链路。调用方应显式提供稳定的 Agent `session_id`，并在另一个并发请求中用 `GET /agent/approvals/{session_id}` 查询 pending，再向 `POST /agent/approvals/{session_id}/{approval_id}` 提交 `approve`、`reject` 或 `cancel`。批准后只会重新校验并执行调用方实际看到的有界参数快照，等待期间对原始参数对象的修改不会改变执行内容；Registry 还会确认工具定义未被替换、仍可用且仍为 Graylist，MCP 重新发现或连接故障导致的注销、替换和禁用会稳定 fail closed。拒绝、取消、超时、调用取消和应用关闭都不会执行工具或触发工具重试；Whitelist 仍自动执行，Blacklist 仍直接阻断。
+原生与 MCP 的 Graylist 工具在参数校验后、任何副作用前进入同一条轻量审批链路。调用方应显式提供稳定的 Agent `session_id`，并在另一个并发请求中用 `GET /agent/approvals/{session_id}` 查询 pending，再向 `POST /agent/approvals/{session_id}/{approval_id}` 提交 `approve`、`reject` 或 `cancel`。批准后只会重新校验并执行调用方实际看到的有界参数快照，等待期间对原始参数对象的修改不会改变执行内容；Registry 还会确认工具定义未被替换、仍可用且仍为 Graylist，MCP 重新发现或连接故障导致的注销、替换和禁用会稳定 fail closed。一次批准最多发起一次执行；即使副作用完成后确认响应丢失，也不会按 `max_retries` 自动重放。拒绝、审批取消、审批超时，以及审批完成前发生的调用取消或应用关闭，都不会启动工具。执行已经开始后，取消仍会传播并写入终态审计，但不能强制终止已在线程中运行的同步工具；需要可撤销副作用时，工具自身必须支持取消，或由业务提供幂等与补偿。Whitelist 仍自动执行，Blacklist 仍直接阻断。
 
 内置时间 Server 可通过 stdio 开箱演示；远程 URL 使用 Streamable HTTP，并可选用官方 SDK 的 OAuth Authorization Code + PKCE。MCP Server 发起 Elicitation 时，调用方可通过 Agent session 查询并提交有效响应；当前使用独立 HTTP 请求协调，不把单向 SSE 描述成双向通道。Host 独立限制响应请求体和 form 内容大小，超时、关闭与响应竞争只会接受一个终态。配置示例、授权与 Elicitation 流程、具体资源上限、官方 Inspector 命令、真实传输测试和明确的能力边界见 [MCP 集成](docs/mcp.md)。
 
@@ -255,7 +255,7 @@ MCP 默认关闭。设置 `MCP_SERVERS` 后，应用会在后台连接启用的 
 - `GET /agent/elicitation/{session_id}` 与对应 `POST`：仅当前客户端可见的进程内 MCP Elicitation 查询与响应。
 - `GET /agent/approvals/{session_id}` 与对应 `POST`：仅当前客户端可见的进程内 Graylist 工具审批查询与决策。
 
-MCP 连接与发现写入独立的 `mcp_server_start` Trace，工具调用在当前 Agent 请求 Trace 中写入 `mcp_tool_call` span，并关联脱敏的 Server ID、Transport 和 Registry 工具名。进度最多保留 32 条数值摘要，Server 日志只接收 `warning` 及以上级别并丢弃正文，取消沿官方 SDK 生命周期传播；具体事件边界见 [MCP 集成](docs/mcp.md#观测与取消)。
+MCP 连接与发现写入独立的 `mcp_server_start` Trace，工具调用在当前 Agent 请求 Trace 中写入 `mcp_tool_call` span，并关联脱敏的 Server ID、Transport、Registry 工具名和内部 `ToolCall.call_id`。进度最多保留 32 条数值摘要，Server 日志只接收 `warning` 及以上级别并丢弃正文；取消沿官方 SDK 生命周期传播，同时写入值脱敏的 Registry 终态审计和可关联的 MCP 取消事件。具体事件边界见 [MCP 集成](docs/mcp.md#观测与取消)。
 
 ## 索引生命周期
 

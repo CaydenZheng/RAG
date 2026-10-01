@@ -8,9 +8,10 @@
 
 内置工具：
   search_knowledge_base — 直连统一 KnowledgeSystem，检索知识库
-  calculator            — 安全数学表达式求值（受限 eval + 白名单）
+  calculator            — 安全数学表达式求值（严格 AST 算术语言）
 """
 
+import ast
 import asyncio
 import hashlib
 import json
@@ -41,14 +42,39 @@ _CURRENT_TOOL_SESSION_ID: ContextVar[str | None] = ContextVar(
     "current_tool_session_id",
     default=None,
 )
+_CURRENT_TOOL_CALL_ID: ContextVar[str | None] = ContextVar(
+    "current_tool_call_id",
+    default=None,
+)
 MAX_AUDIT_PARAMETER_NAMES = 32
 MAX_AUDIT_PARAMETER_NAME_BYTES = 128
 MAX_AUDIT_PARAMETER_NAMES_BYTES = 256
+MAX_TOOL_LOG_IDENTIFIER_CHARS = 160
 
 
 def current_tool_session_id() -> str | None:
     """Return the storage-scoped session for the current tool execution."""
     return _CURRENT_TOOL_SESSION_ID.get()
+
+
+def current_tool_call_id() -> str | None:
+    """Return the Agent call identity for the current tool execution."""
+    return _CURRENT_TOOL_CALL_ID.get()
+
+
+def _bounded_log_identifier(value: str) -> str:
+    """Keep internal identifiers single-line and bounded in logs."""
+    sanitized = "".join(
+        character if character.isprintable() and character not in "\r\n" else "?"
+        for character in value
+    )
+    if len(sanitized) <= MAX_TOOL_LOG_IDENTIFIER_CHARS:
+        return sanitized
+    digest = hashlib.sha256(
+        sanitized.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()[:16]
+    prefix_length = MAX_TOOL_LOG_IDENTIFIER_CHARS - len(digest) - 2
+    return f"{sanitized[:prefix_length]}__{digest}"
 
 # ================================================================
 # 数据模型
@@ -86,7 +112,7 @@ class ToolDef:
     execute_fn: Callable          # 执行函数 (params: dict) -> ToolResult
     execute_async_fn: Callable | None = None
     category: str = "general"     # 分类
-    max_retries: int = 1          # 失败重试次数
+    max_retries: int = 1          # Whitelist 失败重试次数；Graylist 忽略
     source: Literal["native", "mcp"] = "native"
     provider: str | None = None
     input_schema: dict[str, Any] | None = None
@@ -140,7 +166,30 @@ def tool_params_from_schema(
             warnings.append("a non-standard property was omitted from the planner view")
             continue
         schema_type = definition.get("type")
-        planner_type = type_map.get(schema_type)
+        if isinstance(schema_type, str):
+            planner_type = type_map.get(schema_type)
+        elif isinstance(schema_type, list):
+            non_null_types = [
+                candidate
+                for candidate in schema_type
+                if isinstance(candidate, str) and candidate != "null"
+            ]
+            planner_types = {
+                type_map[candidate]
+                for candidate in non_null_types
+                if candidate in type_map
+            }
+            planner_type = (
+                next(iter(planner_types))
+                if len(non_null_types) == 1 and len(planner_types) == 1
+                else None
+            )
+            warnings.append(
+                f"parameter '{name}' uses a nullable or union type; "
+                "planner view is approximate"
+            )
+        else:
+            planner_type = None
         if planner_type is None:
             planner_type = "dict"
             warnings.append(
@@ -244,6 +293,13 @@ class ToolRegistry:
 
         if self._policy.configured and tool_name in self._tools:
             self._audit(tool_name, params, result, session_id)
+
+    @staticmethod
+    def _execution_attempts(tool: ToolDef) -> int:
+        """Never replay a tool whose safety level permits side effects."""
+        if tool.safety_level is SafetyLevel.GRAYLIST:
+            return 1
+        return max(tool.max_retries + 1, 0)
 
     def status_snapshot(self) -> tuple[ToolStatusSnapshot, ...]:
         """Return stable public metadata without schemas or call details."""
@@ -444,7 +500,7 @@ class ToolRegistry:
                 call_hash,
                 start,
             )
-        for attempt in range(tool.max_retries + 1):
+        for attempt in range(self._execution_attempts(tool)):
             try:
                 result = tool.execute_fn(params)
                 return self._complete(
@@ -452,10 +508,11 @@ class ToolRegistry:
                 )
             except Exception as exc:
                 logger.warning(
-                    "Tool {} attempt {} failed: {}",
-                    tool_name,
+                    "Tool execution failed: tool={} attempt={} "
+                    "error_code=tool_execution_failed exception_type={}",
+                    _bounded_log_identifier(tool_name),
                     attempt + 1,
-                    exc,
+                    _bounded_log_identifier(type(exc).__name__),
                 )
         return self._complete(
             tool,
@@ -476,6 +533,8 @@ class ToolRegistry:
         tool_name: str,
         params: dict,
         session_id: str = "default",
+        *,
+        call_id: str = "",
     ) -> ToolResult:
         """Validate around approval, then execute the current available tool."""
         start = time.time()
@@ -487,20 +546,39 @@ class ToolRegistry:
                 prepared,
                 session_id,
                 start,
+                call_id=call_id,
             )
         tool, call_hash = prepared
         if (
             tool.safety_level == SafetyLevel.GRAYLIST
             and self._approval_manager is not None
         ):
-            decision = await self._approval_manager.authorize(
-                session_id,
-                tool_name=tool.name,
-                source=tool.source,
-                provider=tool.provider,
-                category=tool.category,
-                params=params,
-            )
+            try:
+                decision = await self._approval_manager.authorize(
+                    session_id,
+                    tool_name=tool.name,
+                    source=tool.source,
+                    provider=tool.provider,
+                    category=tool.category,
+                    params=params,
+                )
+            except asyncio.CancelledError:
+                self._complete(
+                    tool,
+                    params,
+                    ToolResult(
+                        success=False,
+                        error="Tool execution was cancelled",
+                        error_code="tool_execution_cancelled",
+                        tool_name=tool_name,
+                    ),
+                    session_id,
+                    call_hash,
+                    start,
+                    call_id=call_id,
+                    force_audit=True,
+                )
+                raise
             if decision.outcome != "approved":
                 error_by_outcome = {
                     "rejected": (
@@ -533,6 +611,7 @@ class ToolRegistry:
                     session_id,
                     call_hash,
                     start,
+                    call_id=call_id,
                 )
             approved_params = decision.params
             if approved_params is None:
@@ -548,6 +627,7 @@ class ToolRegistry:
                     session_id,
                     call_hash,
                     start,
+                    call_id=call_id,
                 )
             current_tool = self._tools.get(tool_name)
             if (
@@ -567,6 +647,7 @@ class ToolRegistry:
                     session_id,
                     call_hash,
                     start,
+                    call_id=call_id,
                 )
             param_error = self._validate_params(tool, approved_params)
             if param_error is not None:
@@ -582,26 +663,53 @@ class ToolRegistry:
                     session_id,
                     call_hash,
                     start,
+                    call_id=call_id,
                 )
             params = approved_params
-        for attempt in range(tool.max_retries + 1):
+        for attempt in range(self._execution_attempts(tool)):
             session_token = _CURRENT_TOOL_SESSION_ID.set(session_id)
+            call_token = _CURRENT_TOOL_CALL_ID.set(call_id or None)
             try:
                 if tool.execute_async_fn is not None:
                     result = await tool.execute_async_fn(params)
                 else:
                     result = await asyncio.to_thread(tool.execute_fn, params)
                 return self._complete(
-                    tool, params, result, session_id, call_hash, start
+                    tool,
+                    params,
+                    result,
+                    session_id,
+                    call_hash,
+                    start,
+                    call_id=call_id,
                 )
+            except asyncio.CancelledError:
+                self._complete(
+                    tool,
+                    params,
+                    ToolResult(
+                        success=False,
+                        error="Tool execution was cancelled",
+                        error_code="tool_execution_cancelled",
+                        tool_name=tool_name,
+                    ),
+                    session_id,
+                    call_hash,
+                    start,
+                    call_id=call_id,
+                    force_audit=True,
+                )
+                raise
             except Exception as exc:
                 logger.warning(
-                    "Tool {} async attempt {} failed: {}",
-                    tool_name,
+                    "Tool async execution failed: tool={} attempt={} "
+                    "error_code=tool_execution_failed exception_type={}",
+                    _bounded_log_identifier(tool_name),
                     attempt + 1,
-                    exc,
+                    _bounded_log_identifier(type(exc).__name__),
                 )
             finally:
+                _CURRENT_TOOL_CALL_ID.reset(call_token)
                 _CURRENT_TOOL_SESSION_ID.reset(session_token)
         return self._complete(
             tool,
@@ -615,6 +723,7 @@ class ToolRegistry:
             session_id,
             call_hash,
             start,
+            call_id=call_id,
         )
 
     def _prepare(
@@ -682,17 +791,29 @@ class ToolRegistry:
         session_id: str,
         call_hash: str,
         start: float,
+        *,
+        call_id: str = "",
+        force_audit: bool = False,
     ) -> ToolResult:
+        if call_id:
+            result.call_id = call_id
         result.tool_name = tool.name
         result.latency_ms = (time.time() - start) * 1000
         if not result.success and not result.error_code:
             result.error_code = "tool_failed"
         self._record_call(session_id, call_hash)
         if (
-            tool.safety_level == SafetyLevel.GRAYLIST
+            force_audit
+            or tool.safety_level == SafetyLevel.GRAYLIST
             or self._policy.configured
         ):
-            self._audit(tool.name, params, result, session_id)
+            self._audit(
+                tool.name,
+                params,
+                result,
+                session_id,
+                call_id=call_id,
+            )
         return result
 
     def _complete_preparation_failure(
@@ -702,9 +823,13 @@ class ToolRegistry:
         result: ToolResult,
         session_id: str,
         start: float,
+        *,
+        call_id: str = "",
     ) -> ToolResult:
         """Finalize rejected calls and audit policy or graylist failures."""
         result.latency_ms = (time.time() - start) * 1000
+        if call_id:
+            result.call_id = call_id
         tool = self._tools.get(tool_name)
         configured_policy_failure = (
             tool is not None and self._policy.configured
@@ -716,7 +841,13 @@ class ToolRegistry:
         )
         if configured_policy_failure or graylist_validation:
             safe_params = params if isinstance(params, dict) else {}
-            self._audit(tool_name, safe_params, result, session_id)
+            self._audit(
+                tool_name,
+                safe_params,
+                result,
+                session_id,
+                call_id=call_id,
+            )
         return result
 
     # ----------------------------------------------------------------
@@ -897,8 +1028,10 @@ class ToolRegistry:
         params: dict,
         result: ToolResult,
         session_id: str,
+        *,
+        call_id: str = "",
     ) -> None:
-        """Record value-free graylist and configured-policy outcomes."""
+        """Record value-free policy, graylist, and cancellation outcomes."""
         audit_path = settings.log_dir / "audit.jsonl"
         trace = tracer.current or {}
         (
@@ -916,6 +1049,8 @@ class ToolRegistry:
             "error_code": result.error_code,
             "latency_ms": round(result.latency_ms, 1),
         }
+        if call_id:
+            record["call_id"] = _bounded_log_identifier(call_id)
         if omitted_parameter_name_count:
             record["omitted_parameter_name_count"] = (
                 omitted_parameter_name_count
@@ -1074,46 +1209,222 @@ def _create_search_kb_tool() -> ToolDef:
     )
 
 
+class _CalculatorExpressionRejected(ValueError):
+    """The expression is outside the calculator's arithmetic language."""
+
+
+MAX_CALCULATOR_AST_NODES = 128
+MAX_CALCULATOR_AST_DEPTH = 24
+MAX_CALCULATOR_ABS_VALUE = 1e100
+MAX_CALCULATOR_POWER_EXPONENT = 1000
+MAX_CALCULATOR_ROUND_DIGITS = 100
+
+
+class _CalculatorEvaluator:
+    """Evaluate a small numeric AST without exposing Python objects."""
+
+    _CONSTANTS = {"pi": math.pi, "e": math.e}
+    _FUNCTIONS = {
+        "abs": abs,
+        "round": round,
+        "min": min,
+        "max": max,
+        "sum": sum,
+        "pow": pow,
+        "sqrt": math.sqrt,
+        "sin": math.sin,
+        "cos": math.cos,
+        "tan": math.tan,
+        "log": math.log,
+        "log10": math.log10,
+        "log2": math.log2,
+        "ceil": math.ceil,
+        "floor": math.floor,
+        "int": int,
+        "float": float,
+    }
+
+    def evaluate(self, expression: str) -> int | float:
+        try:
+            tree = ast.parse(expression, mode="eval")
+        except (SyntaxError, ValueError, RecursionError) as exc:
+            raise _CalculatorExpressionRejected from exc
+        if sum(1 for _ in ast.walk(tree)) > MAX_CALCULATOR_AST_NODES:
+            raise _CalculatorExpressionRejected
+        result = self._evaluate_node(tree.body, depth=0)
+        return self._number(result)
+
+    def _evaluate_node(self, node: ast.AST, *, depth: int) -> object:
+        if depth > MAX_CALCULATOR_AST_DEPTH:
+            raise _CalculatorExpressionRejected
+        next_depth = depth + 1
+        if isinstance(node, ast.Constant):
+            if type(node.value) not in (int, float):
+                raise _CalculatorExpressionRejected
+            return self._number(node.value)
+        if isinstance(node, ast.Name):
+            if node.id not in self._CONSTANTS:
+                raise _CalculatorExpressionRejected
+            return self._CONSTANTS[node.id]
+        if isinstance(node, ast.UnaryOp):
+            operand = self._number(
+                self._evaluate_node(node.operand, depth=next_depth)
+            )
+            if isinstance(node.op, ast.UAdd):
+                return operand
+            if isinstance(node.op, ast.USub):
+                return self._number(-operand)
+            raise _CalculatorExpressionRejected
+        if isinstance(node, ast.BinOp):
+            left = self._number(
+                self._evaluate_node(node.left, depth=next_depth)
+            )
+            right = self._number(
+                self._evaluate_node(node.right, depth=next_depth)
+            )
+            try:
+                if isinstance(node.op, ast.Add):
+                    result = left + right
+                elif isinstance(node.op, ast.Sub):
+                    result = left - right
+                elif isinstance(node.op, ast.Mult):
+                    result = left * right
+                elif isinstance(node.op, ast.Div):
+                    result = left / right
+                elif isinstance(node.op, ast.FloorDiv):
+                    result = left // right
+                elif isinstance(node.op, ast.Mod):
+                    result = left % right
+                elif isinstance(node.op, ast.Pow):
+                    result = self._power(left, right)
+                else:
+                    raise _CalculatorExpressionRejected
+            except (ArithmeticError, OverflowError, ValueError) as exc:
+                raise _CalculatorExpressionRejected from exc
+            return self._number(result)
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return tuple(
+                self._number(
+                    self._evaluate_node(item, depth=next_depth)
+                )
+                for item in node.elts
+            )
+        if isinstance(node, ast.Call):
+            if (
+                not isinstance(node.func, ast.Name)
+                or node.func.id not in self._FUNCTIONS
+                or node.keywords
+            ):
+                raise _CalculatorExpressionRejected
+            arguments = [
+                self._evaluate_node(argument, depth=next_depth)
+                for argument in node.args
+            ]
+            return self._call(node.func.id, arguments)
+        raise _CalculatorExpressionRejected
+
+    def _call(self, name: str, arguments: list[object]) -> int | float:
+        try:
+            if name == "pow":
+                if len(arguments) != 2:
+                    raise _CalculatorExpressionRejected
+                return self._power(
+                    self._number(arguments[0]),
+                    self._number(arguments[1]),
+                )
+            if name == "sum":
+                if len(arguments) not in (1, 2) or not isinstance(
+                    arguments[0], tuple
+                ):
+                    raise _CalculatorExpressionRejected
+                start = (
+                    self._number(arguments[1])
+                    if len(arguments) == 2
+                    else 0
+                )
+                total = start
+                for value in arguments[0]:
+                    total = self._number(total + self._number(value))
+                return total
+            if name in ("min", "max"):
+                values: tuple[object, ...]
+                if len(arguments) == 1 and isinstance(arguments[0], tuple):
+                    values = arguments[0]
+                else:
+                    values = tuple(arguments)
+                if not values:
+                    raise _CalculatorExpressionRejected
+                numbers = tuple(self._number(value) for value in values)
+                function = min if name == "min" else max
+                return self._number(function(numbers))
+            if name == "round":
+                if len(arguments) not in (1, 2):
+                    raise _CalculatorExpressionRejected
+                number = self._number(arguments[0])
+                if len(arguments) == 1:
+                    return self._number(round(number))
+                digits = arguments[1]
+                if type(digits) is not int or abs(digits) > MAX_CALCULATOR_ROUND_DIGITS:
+                    raise _CalculatorExpressionRejected
+                return self._number(round(number, digits))
+            numeric_arguments = [
+                self._number(argument) for argument in arguments
+            ]
+            function = self._FUNCTIONS[name]
+            return self._number(function(*numeric_arguments))
+        except _CalculatorExpressionRejected:
+            raise
+        except (ArithmeticError, OverflowError, TypeError, ValueError) as exc:
+            raise _CalculatorExpressionRejected from exc
+
+    def _power(self, base: int | float, exponent: int | float) -> int | float:
+        if abs(exponent) > MAX_CALCULATOR_POWER_EXPONENT:
+            raise _CalculatorExpressionRejected
+        absolute_base = abs(base)
+        if absolute_base == 0 and exponent < 0:
+            raise _CalculatorExpressionRejected
+        if absolute_base not in (0, 1):
+            projected_log = exponent * math.log10(absolute_base)
+            if projected_log > math.log10(MAX_CALCULATOR_ABS_VALUE):
+                raise _CalculatorExpressionRejected
+        try:
+            return self._number(base**exponent)
+        except (ArithmeticError, OverflowError, ValueError) as exc:
+            raise _CalculatorExpressionRejected from exc
+
+    @staticmethod
+    def _number(value: object) -> int | float:
+        if type(value) not in (int, float):
+            raise _CalculatorExpressionRejected
+        if isinstance(value, float) and not math.isfinite(value):
+            raise _CalculatorExpressionRejected
+        if abs(value) > MAX_CALCULATOR_ABS_VALUE:
+            raise _CalculatorExpressionRejected
+        return value
+
+
 def _create_calculator_tool() -> ToolDef:
     """
     安全计算器 — 仅支持基本数学运算。
 
-    使用受限的 eval 环境：只允许数字、运算符、math 函数。
+    使用严格 AST 求值器：只允许数字、运算符和明确的纯数学函数。
     """
-
-    # 安全表达式求值白名单
-    _SAFE_LOCALS = {
-        "abs": abs, "round": round, "min": min, "max": max,
-        "sum": sum, "pow": pow, "sqrt": math.sqrt,
-        "sin": math.sin, "cos": math.cos, "tan": math.tan,
-        "log": math.log, "log10": math.log10, "log2": math.log2,
-        "pi": math.pi, "e": math.e,
-        "ceil": math.ceil, "floor": math.floor,
-        "int": int, "float": float, "str": str,
-    }
 
     def execute(params: dict) -> ToolResult:
         expression = params["expression"]
 
         try:
-            # 编译表达式，只允许 eval 白名单
-            code = compile(expression, "<calculator>", "eval")
-
-            # 检查是否只使用了安全名称
-            for name in code.co_names:
-                if name not in _SAFE_LOCALS and name not in __builtins__:
-                    return ToolResult(
-                        success=False,
-                        error=f"Unsafe name in expression: '{name}'. Allowed: {list(_SAFE_LOCALS.keys())}",
-                    )
-
-            result = eval(code, {"__builtins__": {}}, _SAFE_LOCALS)
-            return ToolResult(success=True, data={"result": result, "expression": expression})
-
-        except SyntaxError as e:
-            return ToolResult(success=False, error=f"Syntax error: {e}")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
+            result = _CalculatorEvaluator().evaluate(expression)
+        except _CalculatorExpressionRejected:
+            return ToolResult(
+                success=False,
+                error="Calculator expression was rejected",
+                error_code="calculator_expression_rejected",
+            )
+        return ToolResult(
+            success=True,
+            data={"result": result, "expression": expression},
+        )
 
     return ToolDef(
         name="calculator",
@@ -1127,7 +1438,7 @@ def _create_calculator_tool() -> ToolDef:
                 max_length=512,
             ),
         ],
-        safety_level=SafetyLevel.WHITELIST,  # 受限 eval，无副作用
+        safety_level=SafetyLevel.WHITELIST,
         execute_fn=execute,
         category="utility",
     )
@@ -1164,10 +1475,18 @@ def _create_weather_tool() -> ToolDef:
             }
             return ToolResult(success=True, data=result)
 
-        except urllib.error.HTTPError as e:
-            return ToolResult(success=False, error=f"Weather API HTTP {e.code}")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
+        except urllib.error.HTTPError:
+            return ToolResult(
+                success=False,
+                error="Weather service returned an HTTP error",
+                error_code="weather_http_error",
+            )
+        except Exception:
+            return ToolResult(
+                success=False,
+                error="Weather lookup failed",
+                error_code="weather_lookup_failed",
+            )
 
     return ToolDef(
         name="get_weather",
@@ -1277,8 +1596,12 @@ def _create_search_web_tool() -> ToolDef:
                 return ToolResult(success=True, data={"query": query, "results": results})
             return ToolResult(success=False, error="No results found")
 
-        except Exception as e:
-            return ToolResult(success=False, error=f"Web search failed: {e}")
+        except Exception:
+            return ToolResult(
+                success=False,
+                error="Web search failed",
+                error_code="web_search_failed",
+            )
 
     return ToolDef(
         name="search_web",

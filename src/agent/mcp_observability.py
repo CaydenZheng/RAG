@@ -44,12 +44,14 @@ class MCPToolCallObserver:
         server_id: str,
         transport: str,
         tool_name: str,
+        call_id: str = "",
         progress_limit: int,
     ) -> None:
         self._trace_logger = trace_logger
         self._server_id = _bounded_identifier(server_id)
         self._transport = _bounded_identifier(transport)
         self._tool_name = _bounded_identifier(tool_name)
+        self._call_id = _bounded_identifier(call_id) if call_id else ""
         self._progress_limit = progress_limit
         self._started_at = time.monotonic()
         self._progress_events = 0
@@ -99,6 +101,8 @@ class MCPToolCallObserver:
             "invalid_progress_events": self._invalid_progress_events,
             "progress_messages_omitted": self._progress_messages_omitted,
         }
+        if self._call_id:
+            attributes["call_id"] = self._call_id
         if self._last_progress is not None:
             attributes["last_progress"] = self._last_progress
         if self._last_total is not None:
@@ -226,12 +230,14 @@ class MCPObservability:
         server_id: str,
         transport: str,
         tool_name: str,
+        call_id: str = "",
     ) -> MCPToolCallObserver:
         return MCPToolCallObserver(
             self._trace_logger,
             server_id=server_id,
             transport=transport,
             tool_name=tool_name,
+            call_id=call_id,
             progress_limit=self._progress_limit,
         )
 
@@ -248,12 +254,20 @@ class MCPObservability:
 
         return record
 
-    def record_cancellation(self, server_id: str, tool_name: str) -> None:
+    def record_cancellation(
+        self,
+        server_id: str,
+        tool_name: str,
+        call_id: str = "",
+    ) -> None:
         """Record the local cancellation that the SDK propagates to the Server."""
+        fields = {"tool_name": _bounded_identifier(tool_name)}
+        if call_id:
+            fields["call_id"] = _bounded_identifier(call_id)
         self._record_limited_event(
             server_id,
             "tool_cancelled",
-            tool_name=_bounded_identifier(tool_name),
+            **fields,
         )
 
     def _record_limited_event(

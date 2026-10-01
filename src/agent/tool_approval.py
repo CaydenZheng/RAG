@@ -70,6 +70,16 @@ class ToolApprovalDecision:
     params: dict[str, object] | None = None
 
 
+def _utf8_length(value: str) -> int:
+    """Return strict UTF-8 size or normalize invalid text to snapshot failure."""
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise _ToolApprovalSnapshotInvalid(
+            "parameter text is not valid UTF-8"
+        ) from exc
+
+
 def _bounded_params_snapshot(params: dict[str, object]) -> dict[str, object]:
     """Copy JSON-like arguments while enforcing Host-owned display limits."""
     nodes = 0
@@ -88,9 +98,9 @@ def _bounded_params_snapshot(params: dict[str, object]) -> dict[str, object]:
             for key, item in value.items():
                 if not isinstance(key, str):
                     raise _ToolApprovalSnapshotInvalid("parameter key is not text")
-                if len(key) > MAX_TOOL_APPROVAL_PARAM_KEY_BYTES or len(
-                    key.encode("utf-8")
-                ) > MAX_TOOL_APPROVAL_PARAM_KEY_BYTES:
+                if len(key) > MAX_TOOL_APPROVAL_PARAM_KEY_BYTES or (
+                    _utf8_length(key) > MAX_TOOL_APPROVAL_PARAM_KEY_BYTES
+                ):
                     raise _ToolApprovalSnapshotInvalid("parameter key is too large")
                 copied[key] = copy_value(item, depth + 1)
             return copied
@@ -99,9 +109,9 @@ def _bounded_params_snapshot(params: dict[str, object]) -> dict[str, object]:
                 raise _ToolApprovalSnapshotInvalid("parameter list is too large")
             return [copy_value(item, depth + 1) for item in value]
         if isinstance(value, str):
-            if len(value) > MAX_TOOL_APPROVAL_PARAM_STRING_BYTES or len(
-                value.encode("utf-8")
-            ) > MAX_TOOL_APPROVAL_PARAM_STRING_BYTES:
+            if len(value) > MAX_TOOL_APPROVAL_PARAM_STRING_BYTES or (
+                _utf8_length(value) > MAX_TOOL_APPROVAL_PARAM_STRING_BYTES
+            ):
                 raise _ToolApprovalSnapshotInvalid("parameter text is too large")
             return value
         if value is None or isinstance(value, bool):
@@ -124,7 +134,7 @@ def _bounded_params_snapshot(params: dict[str, object]) -> dict[str, object]:
             separators=(",", ":"),
             allow_nan=False,
         ).encode("utf-8")
-    except (RecursionError, TypeError, ValueError) as exc:
+    except (RecursionError, TypeError, UnicodeEncodeError, ValueError) as exc:
         raise _ToolApprovalSnapshotInvalid(
             "parameters are not safe JSON"
         ) from exc
@@ -175,9 +185,11 @@ class ToolApprovalManager:
     ) -> ToolApprovalDecision:
         """Wait for one caller decision before the tool may execute."""
         try:
+            metadata = (session_id, tool_name, category, provider or "")
             if any(
                 len(value) > MAX_TOOL_APPROVAL_METADATA_LENGTH
-                for value in (session_id, tool_name, category, provider or "")
+                or _utf8_length(value) > MAX_TOOL_APPROVAL_METADATA_LENGTH
+                for value in metadata
             ):
                 raise _ToolApprovalSnapshotInvalid(
                     "approval metadata is too large"

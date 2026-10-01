@@ -133,12 +133,14 @@ class _SafeOAuthCallbackAccessLogFilter(logging.Filter):
 
         target = record.args[2]
         path, separator, _query = target.partition("?")
+        callback_start = path.rfind(self._CALLBACK_PREFIX)
         server_id = path[
-            len(self._CALLBACK_PREFIX) : -len(self._CALLBACK_SUFFIX)
+            callback_start + len(self._CALLBACK_PREFIX) :
+            -len(self._CALLBACK_SUFFIX)
         ]
         if (
             separator
-            and path.startswith(self._CALLBACK_PREFIX)
+            and callback_start >= 0
             and path.endswith(self._CALLBACK_SUFFIX)
             and server_id
             and "/" not in server_id
