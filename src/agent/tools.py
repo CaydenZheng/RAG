@@ -288,11 +288,19 @@ class ToolRegistry:
         params: dict,
         result: ToolResult,
         session_id: str,
+        *,
+        call_id: str = "",
     ) -> None:
         """Audit a non-Registry outcome after a configured policy decision."""
 
         if self._policy.configured and tool_name in self._tools:
-            self._audit(tool_name, params, result, session_id)
+            self._audit(
+                tool_name,
+                params,
+                result,
+                session_id,
+                call_id=call_id,
+            )
 
     @staticmethod
     def _execution_attempts(tool: ToolDef) -> int:

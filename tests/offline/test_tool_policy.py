@@ -327,11 +327,12 @@ def test_agent_policy_and_overlapping_hook_outcomes_are_audited(
     expected_decision: str,
     expected_reason: str,
 ) -> None:
+    import src.agent.harness as harness_module
     from src.agent.harness import AgentConfig, AgentHarness
     from src.agent.hooks import create_default_pipeline
     from src.agent.memory import MemoryConfig, MemoryManager
     from src.agent.tool_policy import ToolAccessPolicy
-    from src.agent.tools import SafetyLevel, ToolDef, ToolRegistry
+    from src.agent.tools import SafetyLevel, ToolDef, ToolParam, ToolRegistry
     from src.core.agent_runtime import AgentEventKind, ToolResult
     from src.infra.session_store import SessionStore
 
@@ -346,7 +347,7 @@ def test_agent_policy_and_overlapping_hook_outcomes_are_audited(
         ToolDef(
             name="execute_code",
             description="Static-hook overlap probe",
-            params=[],
+            params=[ToolParam("value", "str", "Probe value")],
             safety_level=SafetyLevel.WHITELIST,
             execute_fn=lambda params: (
                 calls.append(params)
@@ -370,7 +371,7 @@ def test_agent_policy_and_overlapping_hook_outcomes_are_audited(
             {
                 "action": "tool_call",
                 "tool_name": "execute_code",
-                "tool_params": {},
+                "tool_params": {"value": "synthetic-sensitive-value"},
             },
             {"action": "final_answer", "answer": "blocked safely"},
         ]
@@ -390,22 +391,44 @@ def test_agent_policy_and_overlapping_hook_outcomes_are_audited(
             async for event in harness.events("policy-agent", "run tool")
         ]
 
-    events = asyncio.run(consume())
+    trace = harness_module.tracer.start_trace("policy-agent", "agent")
+    trace_token = harness_module.tracer.bind(trace)
+    try:
+        events = asyncio.run(consume())
+        trace_record = harness_module.tracer.finish_trace(trace)
+    finally:
+        harness_module.tracer.reset(trace_token)
     response = events[-1].response
+    proposed = next(
+        event.tool_call
+        for event in events
+        if event.kind is AgentEventKind.TOOL_CALL
+    )
+    tool_span = next(
+        span for span in trace_record["spans"] if span["name"] == "tool_call"
+    )
 
     assert events[-1].kind is AgentEventKind.DONE
     assert response is not None
+    assert proposed is not None
     assert response.tool_calls[0].blocked is True
     assert response.tool_calls[0].error_code == expected_error_code
     assert calls == []
-    record = json.loads(
-        (isolated_runtime / "logs" / "audit.jsonl").read_text(
-            encoding="utf-8"
-        )
+    audit_text = (isolated_runtime / "logs" / "audit.jsonl").read_text(
+        encoding="utf-8"
     )
-    assert record["policy_decision"] == expected_decision
-    assert record["policy_reason"] == expected_reason
-    assert record["error_code"] == expected_error_code
+    audit_record = json.loads(audit_text)
+    call_id = proposed.call_id
+    assert response.tool_calls[0].call_id == call_id
+    assert tool_span["attributes"]["call_id"] == call_id
+    assert audit_record["call_id"] == call_id
+    assert audit_record["request_id"] == trace_record["request_id"]
+    assert audit_record["trace_id"] == trace_record["trace_id"]
+    assert audit_record["parameter_names"] == ["value"]
+    assert "synthetic-sensitive-value" not in audit_text
+    assert audit_record["policy_decision"] == expected_decision
+    assert audit_record["policy_reason"] == expected_reason
+    assert audit_record["error_code"] == expected_error_code
 
 
 def test_default_registry_uses_settings_policy(
