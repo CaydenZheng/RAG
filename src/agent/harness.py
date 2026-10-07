@@ -383,6 +383,7 @@ class AgentHarness:
                                 params,
                                 result,
                                 session_id,
+                                call_id=proposed.call_id,
                             )
                     elif not blocked_by_registry_policy:
                         budget.consume_tool()
