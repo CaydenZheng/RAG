@@ -752,7 +752,12 @@ def test_mcp_text_uses_existing_untrusted_wrapper_and_result_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from config.settings import MCPStdioServerConfig
-    from src.agent.harness import AgentConfig, AgentHarness
+    from src.agent.harness import (
+        AgentConfig,
+        AgentHarness,
+        _FinalAnswerPlan,
+        _ToolCallPlan,
+    )
     from src.agent.hooks import HookPipeline
     from src.agent.mcp_client import MCPClientManager
     from src.agent.memory import MemoryConfig, MemoryManager
@@ -815,12 +820,11 @@ def test_mcp_text_uses_existing_untrusted_wrapper_and_result_limit(
     )
     plans = iter(
         [
-            {
-                "action": "tool_call",
-                "tool_name": "mcp__remote__inspect",
-                "tool_params": {"query": "value"},
-            },
-            {"action": "final_answer", "answer": "finished"},
+            _ToolCallPlan(
+                name="mcp__remote__inspect",
+                params={"query": "value"},
+            ),
+            _FinalAnswerPlan(answer="finished"),
         ]
     )
     planner_messages: list[list[dict[str, Any]]] = []
@@ -828,7 +832,7 @@ def test_mcp_text_uses_existing_untrusted_wrapper_and_result_limit(
     async def plan(
         messages: list[dict[str, Any]],
         max_tokens: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> object:
         del max_tokens
         planner_messages.append([dict(message) for message in messages])
         return next(plans)

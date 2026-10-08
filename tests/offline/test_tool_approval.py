@@ -938,7 +938,12 @@ def test_agent_loop_waits_for_graylist_approval_before_side_effect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from src.agent.harness import AgentConfig, AgentHarness
+    from src.agent.harness import (
+        AgentConfig,
+        AgentHarness,
+        _FinalAnswerPlan,
+        _ToolCallPlan,
+    )
     from src.agent.hooks import HookPipeline
     from src.agent.memory import MemoryConfig, MemoryManager
     from src.agent.tool_approval import ToolApprovalManager
@@ -975,12 +980,11 @@ def test_agent_loop_waits_for_graylist_approval_before_side_effect(
     )
     plans = iter(
         [
-            {
-                "action": "tool_call",
-                "tool_name": "send_message",
-                "tool_params": {"message": "hello"},
-            },
-            {"action": "final_answer", "answer": "sent"},
+            _ToolCallPlan(
+                name="send_message",
+                params={"message": "hello"},
+            ),
+            _FinalAnswerPlan(answer="sent"),
         ]
     )
 
