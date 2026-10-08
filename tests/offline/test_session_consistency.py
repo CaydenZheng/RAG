@@ -113,7 +113,12 @@ class _ToolStub:
 def test_agent_preserves_original_user_and_tool_roles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from src.agent.harness import AgentConfig, AgentHarness
+    from src.agent.harness import (
+        AgentConfig,
+        AgentHarness,
+        _FinalAnswerPlan,
+        _ToolCallPlan,
+    )
     from src.agent.hooks import HookPipeline
     from src.agent.memory import MemoryConfig, MemoryManager
     from src.infra.session_store import SessionStore
@@ -132,12 +137,8 @@ def test_agent_preserves_original_user_and_tool_roles(
     )
     plans = iter(
         [
-            {
-                "action": "tool_call",
-                "tool_name": "lookup",
-                "tool_params": {"key": "value"},
-            },
-            {"action": "final_answer", "answer": "final answer"},
+            _ToolCallPlan(name="lookup", params={"key": "value"}),
+            _FinalAnswerPlan(answer="final answer"),
         ]
     )
     async def next_plan(messages, max_tokens=None):
@@ -173,7 +174,11 @@ def test_agent_preserves_original_user_and_tool_roles(
 def test_streaming_agent_saves_one_complete_exchange(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from src.agent.harness import AgentConfig, AgentHarness
+    from src.agent.harness import (
+        AgentConfig,
+        AgentHarness,
+        _FinalAnswerPlan,
+    )
     from src.agent.hooks import HookPipeline
     from src.agent.memory import MemoryConfig, MemoryManager
     from src.infra.session_store import SessionStore
@@ -193,8 +198,8 @@ def test_streaming_agent_saves_one_complete_exchange(
 
     async def final_plan(
         messages: list[dict[str, str]], max_tokens=None
-    ) -> dict[str, str]:
-        return {"action": "final_answer", "answer": "stream answer"}
+    ) -> object:
+        return _FinalAnswerPlan(answer="stream answer")
 
     monkeypatch.setattr(harness, "_plan_async", final_plan)
 

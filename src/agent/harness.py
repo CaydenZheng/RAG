@@ -90,6 +90,33 @@ class _AgentExecutionError(RuntimeError):
         self.public_message = message
 
 
+@dataclass(frozen=True)
+class _FinalAnswerPlan:
+    """One validated final answer produced by a Planner adapter."""
+
+    answer: str
+
+
+@dataclass(frozen=True)
+class _NativeToolContext:
+    """Provider protocol state required to pair one native tool result."""
+
+    call_id: str
+    assistant_message: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _ToolCallPlan:
+    """One validated Registry tool request produced by a Planner adapter."""
+
+    name: str
+    params: dict[str, Any]
+    native_context: _NativeToolContext | None = None
+
+
+type _AgentPlan = _FinalAnswerPlan | _ToolCallPlan
+
+
 @dataclass
 class _RunBudget:
     token_limit: int
@@ -279,35 +306,27 @@ class AgentHarness:
                     budget,
                 )
                 if self.config.verbose:
+                    plan_action = (
+                        "tool_call"
+                        if isinstance(plan, _ToolCallPlan)
+                        else (
+                            "final_answer"
+                            if isinstance(plan, _FinalAnswerPlan)
+                            else "invalid"
+                        )
+                    )
                     logger.info(
                         "Agent plan: iteration={} action={}",
                         iteration,
-                        plan.get("action", "invalid"),
+                        plan_action,
                     )
 
-                action = plan.get("action")
-                if action == "tool_call":
-                    tool_name = str(plan.get("tool_name", ""))
-                    params = plan.get("tool_params", {})
-                    if not isinstance(params, dict):
-                        params = {"_invalid": params}
-                    native_tool_call_id = ""
-                    if self.config.planner_mode == "native":
-                        native_tool_call_id = str(
-                            plan.get("_native_tool_call_id", "")
-                        )
-                        assistant_message = plan.get(
-                            "_native_assistant_message"
-                        )
-                        if (
-                            not native_tool_call_id
-                            or not isinstance(assistant_message, dict)
-                        ):
-                            raise _AgentExecutionError(
-                                "invalid_agent_plan",
-                                "Agent planner returned an invalid tool call.",
-                            )
-                        messages.append(assistant_message)
+                if isinstance(plan, _ToolCallPlan):
+                    tool_name = plan.name
+                    params = plan.params
+                    native_context = plan.native_context
+                    if native_context is not None:
+                        messages.append(native_context.assistant_message)
                     proposed = ToolCall(
                         call_id=uuid.uuid4().hex,
                         name=tool_name,
@@ -433,11 +452,11 @@ class AgentHarness:
                         tool_name, result_content
                     )
                     budget.consume_text(tool_message)
-                    if native_tool_call_id:
+                    if native_context is not None:
                         messages.append(
                             {
                                 "role": "tool",
-                                "tool_call_id": native_tool_call_id,
+                                "tool_call_id": native_context.call_id,
                                 "content": tool_message,
                             }
                         )
@@ -473,14 +492,8 @@ class AgentHarness:
                     )
                     continue
 
-                if action == "final_answer":
-                    answer = plan.get("answer")
-                    if not isinstance(answer, str) or not answer.strip():
-                        raise _AgentExecutionError(
-                            "invalid_agent_plan",
-                            "Agent planner returned an invalid answer.",
-                        )
-                    final_answer = answer
+                if isinstance(plan, _FinalAnswerPlan):
+                    final_answer = plan.answer
                     self._record_final_answer(
                         session_id, iteration, final_answer, turns
                     )
@@ -679,9 +692,16 @@ class AgentHarness:
 
     async def _plan_async(
         self, messages: list[dict], max_tokens: int | None = None
-    ) -> dict:
+    ) -> _AgentPlan:
         if self.config.planner_mode == "native":
             return await self._plan_native_async(messages, max_tokens)
+
+        return await self._plan_json_async(messages, max_tokens)
+
+    async def _plan_json_async(
+        self, messages: list[dict], max_tokens: int | None
+    ) -> _AgentPlan:
+        """Translate one JSON Planner response into the internal plan type."""
 
         from config.settings import settings
         from src.llm import llm_client
@@ -697,8 +717,8 @@ class AgentHarness:
 
     async def _plan_native_async(
         self, messages: list[dict], max_tokens: int | None
-    ) -> dict[str, Any]:
-        """Translate one native model response into the shared plan contract."""
+    ) -> _AgentPlan:
+        """Translate one native model response into the internal plan type."""
         from config.settings import settings
         from src.llm import llm_client
 
@@ -717,10 +737,7 @@ class AgentHarness:
                 "Agent planner returned multiple tool calls.",
             )
         if not response.tool_calls:
-            return {
-                "action": "final_answer",
-                "answer": response.content,
-            }
+            return self._final_answer_plan(response.content)
 
         call = response.tool_calls[0]
         registry_name = (
@@ -742,26 +759,54 @@ class AgentHarness:
                 "invalid_agent_plan",
                 "Agent planner returned invalid tool arguments.",
             )
-        return {
-            "action": "tool_call",
-            "tool_name": registry_name,
-            "tool_params": arguments,
-            "_native_tool_call_id": call.call_id,
-            "_native_assistant_message": {
-                "role": "assistant",
-                "content": response.content or None,
-                "tool_calls": [
-                    {
-                        "id": call.call_id,
-                        "type": "function",
-                        "function": {
-                            "name": call.name,
-                            "arguments": call.arguments,
-                        },
-                    }
-                ],
-            },
-        }
+        return _ToolCallPlan(
+            name=registry_name,
+            params=arguments,
+            native_context=_NativeToolContext(
+                call_id=call.call_id,
+                assistant_message={
+                    "role": "assistant",
+                    "content": response.content or None,
+                    "tool_calls": [
+                        {
+                            "id": call.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.arguments,
+                            },
+                        }
+                    ],
+                },
+            ),
+        )
+
+    @staticmethod
+    def _final_answer_plan(answer: object) -> _FinalAnswerPlan:
+        if not isinstance(answer, str) or not answer.strip():
+            raise _AgentExecutionError(
+                "invalid_agent_plan",
+                "Agent planner returned an invalid answer.",
+            )
+        return _FinalAnswerPlan(answer=answer)
+
+    @staticmethod
+    def _plan_from_mapping(plan: dict[str, Any]) -> _AgentPlan:
+        action = plan.get("action")
+        if action == "tool_call":
+            params = plan.get("tool_params", {})
+            if not isinstance(params, dict):
+                params = {"_invalid": params}
+            return _ToolCallPlan(
+                name=str(plan.get("tool_name", "")),
+                params=params,
+            )
+        if action == "final_answer":
+            return AgentHarness._final_answer_plan(plan.get("answer"))
+        raise _AgentExecutionError(
+            "invalid_agent_plan",
+            "Agent planner returned an invalid action.",
+        )
 
     @staticmethod
     def _extract_json_object(raw: str) -> dict:
@@ -807,7 +852,7 @@ class AgentHarness:
         return {}
 
     @staticmethod
-    def _parse_plan_json(raw: str) -> dict:
+    def _parse_plan_json(raw: str) -> _AgentPlan:
         fence = chr(96) * 3
         json_fence = fence + "json"
         if json_fence in raw:
@@ -816,13 +861,17 @@ class AgentHarness:
             raw = raw.split(fence, 1)[1].split(fence, 1)[0].strip()
         try:
             parsed = json.loads(raw)
-            return parsed if isinstance(parsed, dict) else {}
+            if isinstance(parsed, dict):
+                return AgentHarness._plan_from_mapping(parsed)
         except json.JSONDecodeError:
             parsed = AgentHarness._extract_json_object(raw)
             if parsed:
-                return parsed
+                return AgentHarness._plan_from_mapping(parsed)
         logger.warning("Failed to parse planner JSON")
-        return {}
+        raise _AgentExecutionError(
+            "invalid_agent_plan",
+            "Agent planner returned an invalid action.",
+        )
 
     async def _force_final_answer_async(
         self, messages: list[dict], *, max_tokens: int

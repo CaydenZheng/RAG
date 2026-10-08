@@ -368,18 +368,17 @@ def test_agent_policy_and_overlapping_hook_outcomes_are_audited(
     )
     plans = iter(
         [
-            {
-                "action": "tool_call",
-                "tool_name": "execute_code",
-                "tool_params": {"value": "synthetic-sensitive-value"},
-            },
-            {"action": "final_answer", "answer": "blocked safely"},
+            harness_module._ToolCallPlan(
+                name="execute_code",
+                params={"value": "synthetic-sensitive-value"},
+            ),
+            harness_module._FinalAnswerPlan(answer="blocked safely"),
         ]
     )
 
     async def plan(
         _messages: object, max_tokens: int | None = None
-    ) -> dict[str, object]:
+    ) -> object:
         del max_tokens
         return next(plans)
 
