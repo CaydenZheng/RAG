@@ -66,10 +66,22 @@ def _tool_plan(name: str, params: dict) -> object:
     return _ToolCallPlan(name=name, params=params)
 
 
-def _answer_plan(answer: str) -> object:
+def _answer_plan() -> object:
     from src.agent.harness import _FinalAnswerPlan
 
-    return _FinalAnswerPlan(answer=answer)
+    return _FinalAnswerPlan()
+
+
+def _set_answer_stream(
+    monkeypatch: pytest.MonkeyPatch, *chunks: str
+) -> None:
+    from src.llm import llm_client
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        for chunk in chunks:
+            yield chunk
+
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
 
 
 def test_typed_events_share_one_async_execution_core(
@@ -84,7 +96,7 @@ def test_typed_events_share_one_async_execution_core(
     plans = iter(
         [
             _tool_plan("lookup", {"key": "value"}),
-            _answer_plan("final answer"),
+            _answer_plan(),
         ]
     )
     planner_messages: list[list[dict]] = []
@@ -94,6 +106,7 @@ def test_typed_events_share_one_async_execution_core(
         return next(plans)
 
     monkeypatch.setattr(harness, "_plan_async", plan)
+    _set_answer_stream(monkeypatch, "final answer")
 
     async def consume():
         return [
@@ -139,9 +152,10 @@ def test_ordinary_execute_collects_the_same_terminal_event(
     harness, memory, _ = _runtime(tmp_path)
 
     async def plan(messages, max_tokens=None):
-        return _answer_plan("ordinary answer")
+        return _answer_plan()
 
     monkeypatch.setattr(harness, "_plan_async", plan)
+    _set_answer_stream(monkeypatch, "ordinary answer")
     response = asyncio.run(harness.execute("ordinary", "question"))
 
     assert response.answer == "ordinary answer"
@@ -163,9 +177,12 @@ def test_chunk_events_preserve_words_and_whitespace(
     answer: str = "stress tests stay stable"
 
     async def chat_async(*_args: object, **_kwargs: object) -> str:
-        return json.dumps({"action": "final_answer", "answer": answer})
+        return json.dumps({"action": "final_answer"})
 
     monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    _set_answer_stream(
+        monkeypatch, "stress", " ", "tests", " ", "stay", " ", "stable"
+    )
 
     async def consume() -> list[AgentEvent]:
         return [event async for event in harness.events("chunking", "question")]
@@ -177,6 +194,348 @@ def test_chunk_events_preserve_words_and_whitespace(
 
     assert chunks == ["stress", " ", "tests", " ", "stay", " ", "stable"]
     assert "".join(chunks) == answer
+
+
+def test_json_answer_chunk_arrives_before_provider_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.core.agent_runtime import AgentEvent, AgentEventKind
+    from src.llm import llm_client
+
+    harness, memory, _ = _runtime(tmp_path)
+    release_provider = asyncio.Event()
+    provider_finished = False
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return json.dumps({"action": "final_answer"})
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        nonlocal provider_finished
+        yield "first"
+        await release_provider.wait()
+        yield " second"
+        provider_finished = True
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    async def exercise() -> list[AgentEvent]:
+        events = harness.events("json-stream", "question")
+        planning = await anext(events)
+        first_chunk = await anext(events)
+        assert planning.kind is AgentEventKind.PLANNING
+        assert first_chunk.kind is AgentEventKind.CHUNK
+        assert first_chunk.chunk == "first"
+        assert provider_finished is False
+        assert memory.load_history("json-stream") == []
+        release_provider.set()
+        return [first_chunk, *[event async for event in events]]
+
+    events = asyncio.run(exercise())
+
+    chunks = [
+        event.chunk for event in events if event.kind is AgentEventKind.CHUNK
+    ]
+    assert chunks == ["first", " second"]
+    assert provider_finished is True
+    assert events[-1].kind is AgentEventKind.DONE
+    assert events[-1].response is not None
+    assert events[-1].response.answer == "first second"
+    assert [
+        (turn.role, turn.content)
+        for turn in memory.load_history("json-stream")
+    ] == [("user", "question"), ("assistant", "first second")]
+
+
+def test_answer_stream_failure_after_chunk_has_one_error_and_no_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.core.agent_runtime import AgentEventKind
+    from src.llm import llm_client
+
+    harness, memory, _ = _runtime(tmp_path)
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return json.dumps({"action": "final_answer"})
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "partial"
+        raise RuntimeError("synthetic-provider-secret")
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    async def consume():
+        return [
+            event
+            async for event in harness.events("stream-failure", "question")
+        ]
+
+    events = asyncio.run(consume())
+
+    assert [event.kind for event in events] == [
+        AgentEventKind.PLANNING,
+        AgentEventKind.CHUNK,
+        AgentEventKind.ERROR,
+    ]
+    assert events[1].chunk == "partial"
+    assert events[-1].error_code == "agent_final_generation_failed"
+    assert "synthetic-provider-secret" not in events[-1].message
+    assert memory.load_history("stream-failure") == []
+
+
+def test_cancelled_answer_stream_closes_provider_without_partial_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.core.agent_runtime import AgentEventKind
+    from src.llm import llm_client
+
+    harness, memory, _ = _runtime(tmp_path)
+    provider_waiting = asyncio.Event()
+    provider_closed = False
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return json.dumps({"action": "final_answer"})
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        nonlocal provider_closed
+        try:
+            yield "partial"
+            provider_waiting.set()
+            await asyncio.Event().wait()
+        finally:
+            provider_closed = True
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    async def exercise() -> None:
+        events = harness.events("stream-cancel", "question")
+        assert (await anext(events)).kind is AgentEventKind.PLANNING
+        assert (await anext(events)).chunk == "partial"
+        pending = asyncio.create_task(anext(events))
+        await provider_waiting.wait()
+        assert pending.done() is False
+        assert pending.cancel() is True
+        try:
+            returned = await pending
+        except asyncio.CancelledError:
+            pass
+        else:
+            pytest.fail(
+                "cancelled Agent stream returned "
+                f"{returned.kind.value}:{returned.error_code}"
+            )
+        await events.aclose()
+
+    asyncio.run(exercise())
+
+    assert provider_closed is True
+    assert memory.load_history("stream-cancel") == []
+
+
+def test_empty_answer_stream_returns_stable_error_without_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.core.agent_runtime import AgentEventKind
+    from src.llm import llm_client
+
+    harness, memory, _ = _runtime(tmp_path)
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return json.dumps({"action": "final_answer"})
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield ""
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    async def consume():
+        return [
+            event
+            async for event in harness.events("empty-stream", "question")
+        ]
+
+    events = asyncio.run(consume())
+
+    assert [event.kind for event in events] == [
+        AgentEventKind.PLANNING,
+        AgentEventKind.ERROR,
+    ]
+    assert events[-1].error_code == "agent_final_generation_failed"
+    assert memory.load_history("empty-stream") == []
+
+
+def test_answer_stream_timeout_closes_provider_without_partial_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.core.agent_runtime import AgentEventKind
+    from src.llm import llm_client
+
+    harness, memory, _ = _runtime(tmp_path, timeout_seconds=0.05)
+    provider_closed = False
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return json.dumps({"action": "final_answer"})
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        nonlocal provider_closed
+        try:
+            yield "partial"
+            await asyncio.Event().wait()
+        finally:
+            provider_closed = True
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    async def consume():
+        return [
+            event
+            async for event in harness.events("stream-timeout", "question")
+        ]
+
+    events = asyncio.run(consume())
+
+    assert [event.kind for event in events] == [
+        AgentEventKind.PLANNING,
+        AgentEventKind.CHUNK,
+        AgentEventKind.ERROR,
+    ]
+    assert events[-1].error_code == "agent_timeout"
+    assert provider_closed is True
+    assert memory.load_history("stream-timeout") == []
+    assert sum(
+        event.kind in {AgentEventKind.DONE, AgentEventKind.ERROR}
+        for event in events
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "terminal_kind", "error_code"),
+    [
+        ("stop", "done", ""),
+        ("length", "error", "agent_final_generation_failed"),
+        (None, "error", "agent_final_generation_failed"),
+    ],
+)
+def test_provider_finish_reason_controls_agent_terminal_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    finish_reason: str | None,
+    terminal_kind: str,
+    error_code: str,
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.core.agent_runtime import AgentEventKind
+    from src.llm import llm_client
+    from src.llm.client import LLMClient
+
+    harness, memory, _ = _runtime(tmp_path)
+
+    class ProviderStream:
+        def __init__(self) -> None:
+            self.closed = False
+            self.chunks = iter(
+                [
+                    SimpleNamespace(
+                        usage=None,
+                        choices=[
+                            SimpleNamespace(
+                                finish_reason=None,
+                                delta=SimpleNamespace(
+                                    content="partial answer",
+                                    tool_calls=None,
+                                ),
+                            )
+                        ],
+                    ),
+                    SimpleNamespace(
+                        usage=None,
+                        choices=[
+                            SimpleNamespace(
+                                finish_reason=finish_reason,
+                                delta=SimpleNamespace(
+                                    content=None,
+                                    tool_calls=None,
+                                ),
+                            )
+                        ],
+                    ),
+                ]
+            )
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.chunks)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+        async def close(self) -> None:
+            self.closed = True
+
+    provider_stream = ProviderStream()
+    client = object.__new__(LLMClient)
+    client._async_chat_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(return_value=provider_stream)
+            )
+        )
+    )
+    client._chat_model = "test-model"
+
+    async def plan(*_args: object, **_kwargs: object) -> object:
+        return _answer_plan()
+
+    monkeypatch.setattr(harness, "_plan_async", plan)
+    monkeypatch.setattr(llm_client, "chat_stream_async", client.chat_stream_async)
+
+    async def consume():
+        return [
+            event
+            async for event in harness.events(
+                f"finish-{finish_reason}", "question"
+            )
+        ]
+
+    events = asyncio.run(consume())
+    expected_terminal = (
+        AgentEventKind.DONE
+        if terminal_kind == "done"
+        else AgentEventKind.ERROR
+    )
+
+    assert [event.kind for event in events[:2]] == [
+        AgentEventKind.PLANNING,
+        AgentEventKind.CHUNK,
+    ]
+    assert "".join(
+        event.chunk
+        for event in events
+        if event.kind is AgentEventKind.CHUNK
+    ) == "partial answer"
+    assert events[-1].kind is expected_terminal
+    assert events[-1].error_code == error_code
+    assert sum(
+        event.kind in {AgentEventKind.DONE, AgentEventKind.ERROR}
+        for event in events
+    ) == 1
+    assert provider_stream.closed is True
+    history = memory.load_history(f"finish-{finish_reason}")
+    if finish_reason == "stop":
+        assert [(turn.role, turn.content) for turn in history] == [
+            ("user", "question"),
+            ("assistant", "partial answer"),
+        ]
+    else:
+        assert history == []
 
 
 def test_wrapped_nested_planner_json_executes_tool_call(
@@ -195,9 +554,9 @@ def test_wrapped_nested_planner_json_executes_tool_call(
   "tool_name": "lookup",
   "tool_params": {"filters": {"topic": "stress"}}
 }
-Proceed.""",
+            Proceed.""",
             "  ```json\n"
-            + json.dumps({"action": "final_answer", "answer": "complete"})
+            + json.dumps({"action": "final_answer"})
             + "\n```  ",
         ]
     )
@@ -206,6 +565,7 @@ Proceed.""",
         return next(provider_responses)
 
     monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    _set_answer_stream(monkeypatch, "complete")
 
     async def consume() -> list[AgentEvent]:
         return [event async for event in harness.events("nested-plan", "question")]
@@ -279,11 +639,8 @@ def test_iteration_budget_forces_one_terminal_answer(
     async def plan(messages, max_tokens=None):
         return _tool_plan("lookup", {"key": "value"})
 
-    async def force(messages, *, max_tokens):
-        return "bounded final answer"
-
     monkeypatch.setattr(harness, "_plan_async", plan)
-    monkeypatch.setattr(harness, "_force_final_answer_async", force)
+    _set_answer_stream(monkeypatch, "bounded final answer")
 
     async def consume():
         return [event async for event in harness.events("steps", "question")]
@@ -308,24 +665,23 @@ def test_forced_final_answer_failure_is_error_and_saves_no_history(
     from src.llm import llm_client
 
     harness, memory, _ = _runtime(tmp_path, max_iterations=1)
-    provider_calls = 0
-
     async def chat_async(*_args: object, **_kwargs: object) -> str:
-        nonlocal provider_calls
-        provider_calls += 1
-        if provider_calls == 1:
-            return json.dumps(
-                {
-                    "action": "tool_call",
-                    "tool_name": "lookup",
-                    "tool_params": {"key": "value"},
-                }
-            )
+        return json.dumps(
+            {
+                "action": "tool_call",
+                "tool_name": "lookup",
+                "tool_params": {"key": "value"},
+            }
+        )
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
         if failure_mode == "blank":
-            return "   "
+            yield "   "
+            return
         raise RuntimeError("provider-secret")
 
     monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
     local = TraceLogger(tmp_path / "agent-final-failure.jsonl")
     monkeypatch.setattr(harness_module, "tracer", local)
     trace = local.start_trace(
@@ -360,7 +716,7 @@ def test_total_deadline_cancels_planning_without_saving_partial_history(
 
     async def plan(messages, max_tokens=None):
         await asyncio.sleep(1)
-        return _answer_plan("too late")
+        return _answer_plan()
 
     monkeypatch.setattr(harness, "_plan_async", plan)
 
@@ -384,7 +740,7 @@ def test_token_budget_stops_before_provider_or_tool_side_effect(
     async def plan(messages, max_tokens=None):
         nonlocal planner_called
         planner_called = True
-        return _answer_plan("unreachable")
+        return _answer_plan()
 
     monkeypatch.setattr(harness, "_plan_async", plan)
 
@@ -397,6 +753,71 @@ def test_token_budget_stops_before_provider_or_tool_side_effect(
     assert not planner_called
     assert tools.calls == []
     assert memory.load_history("tokens") == []
+
+
+def test_final_request_input_is_charged_to_json_run_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.agent.harness import AgentConfig
+    from src.core.agent_runtime import AgentEventKind
+    from src.llm import llm_client
+
+    session_id = "json-final-input-budget"
+    user_message = "question"
+    harness, memory, _ = _runtime(tmp_path)
+    initial_messages = memory.build_messages(
+        session_id,
+        harness._build_planner_prompt(),
+        user_message,
+    )
+    initial_input_cost = len(
+        json.dumps(initial_messages, ensure_ascii=False, default=str)
+    )
+    final_messages = harness._build_final_answer_messages(
+        initial_messages,
+        step_limit_reached=False,
+    )
+    final_input_cost = len(
+        json.dumps(final_messages, ensure_ascii=False, default=str)
+    )
+    harness.config = AgentConfig(
+        verbose=False,
+        max_token_budget=(
+            initial_input_cost
+            + harness.config.planner_max_tokens
+            + final_input_cost
+            - 1
+        ),
+    )
+    planner_called = False
+    stream_called = False
+
+    async def plan(*_args: object, **_kwargs: object) -> object:
+        nonlocal planner_called
+        planner_called = True
+        return _answer_plan()
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        nonlocal stream_called
+        stream_called = True
+        yield "must not run"
+
+    monkeypatch.setattr(harness, "_plan_async", plan)
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    async def consume():
+        return [
+            event
+            async for event in harness.events(session_id, user_message)
+        ]
+
+    events = asyncio.run(consume())
+
+    assert planner_called is True
+    assert stream_called is False
+    assert events[-1].kind is AgentEventKind.ERROR
+    assert events[-1].error_code == "agent_token_budget_exceeded"
+    assert memory.load_history(session_id) == []
 
 
 def test_registry_rejects_undeclared_params_before_execution() -> None:
@@ -491,7 +912,7 @@ def test_agent_memory_compression_keeps_event_loop_responsive(
     timeline: dict[str, float] = {}
 
     async def chat_async(*_args: object, **_kwargs: object) -> str:
-        return json.dumps({"action": "final_answer", "answer": "complete"})
+        return json.dumps({"action": "final_answer"})
 
     def chat(*_args: object, **_kwargs: object) -> str:
         compression_started.set()
@@ -501,6 +922,7 @@ def test_agent_memory_compression_keeps_event_loop_responsive(
 
     monkeypatch.setattr(llm_client, "chat_async", chat_async)
     monkeypatch.setattr(llm_client, "chat", chat)
+    _set_answer_stream(monkeypatch, "complete")
 
     async def collect_events() -> list[AgentEvent]:
         return [

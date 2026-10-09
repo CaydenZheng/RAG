@@ -199,3 +199,118 @@ def test_disconnect_closes_generation_without_persisting_partial_answer(
     assert events == ["retry: 3000\n\n"]
     assert provider_closed is True
     assert persisted is False
+
+
+def test_agent_http_sse_and_memory_share_the_complete_streamed_answer(
+    isolated_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app as api
+    from src.agent.harness import AgentConfig, AgentHarness
+    from src.agent.hooks import HookPipeline
+    from src.agent.memory import MemoryConfig, MemoryManager
+    from src.agent.tools import ToolRegistry
+    from src.infra.session_store import SessionStore
+    from src.llm import llm_client
+
+    memory = MemoryManager(
+        str(isolated_runtime / "agent-stream-memory"),
+        config=MemoryConfig(compress_trigger_turns=100),
+        store=SessionStore(str(isolated_runtime / "agent-stream.db")),
+    )
+    harness = AgentHarness(
+        config=AgentConfig(verbose=False),
+        memory=memory,
+        tools=ToolRegistry(dedup_window=0),
+        hooks=HookPipeline(),
+    )
+    storage_ids: list[str] = []
+
+    class Runtime:
+        async def execute(self, session_id: str, message: str):
+            storage_ids.append(session_id)
+            return await harness.execute(session_id, message)
+
+        def events(self, session_id: str, message: str):
+            storage_ids.append(session_id)
+            return harness.events(session_id, message)
+
+        def reset_session(self, session_id: str) -> bool:
+            return harness.reset_session(session_id)
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return json.dumps({"action": "final_answer"})
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "shared"
+        yield " answer"
+
+    monkeypatch.setattr(api, "agent_runtime", Runtime())
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    client = TestClient(api.app)
+    try:
+        ordinary = client.post(
+            "/agent/chat",
+            json={"message": "question", "session_id": "ordinary"},
+        )
+        streamed = client.post(
+            "/agent/chat/stream",
+            json={"message": "question", "session_id": "streamed"},
+        )
+    finally:
+        client.close()
+
+    stream_events = _data_events(streamed.text)
+    chunks = [event["chunk"] for event in stream_events if "chunk" in event]
+    completed = stream_events[-1]
+
+    assert ordinary.status_code == 200
+    assert streamed.status_code == 200
+    assert ordinary.json()["answer"] == "shared answer"
+    assert "".join(chunks) == completed["answer"] == "shared answer"
+    assert completed["done"] is True
+    assert completed["session_id"] == "streamed"
+    assert len(storage_ids) == 2
+    assert all(storage_id not in {"ordinary", "streamed"} for storage_id in storage_ids)
+    assert [
+        memory.load_history(storage_id)[-1].content for storage_id in storage_ids
+    ] == ["shared answer", "shared answer"]
+
+
+def test_agent_disconnect_closes_runtime_stream_without_terminal_event() -> None:
+    from src.api.streaming import iter_agent_sse
+    from src.core.agent_runtime import AgentEvent, AgentEventKind
+
+    runtime_closed = False
+
+    class Runtime:
+        async def events(self, session_id: str, message: str):
+            nonlocal runtime_closed
+            try:
+                yield AgentEvent(AgentEventKind.CHUNK, chunk="partial")
+                await asyncio.Event().wait()
+            finally:
+                runtime_closed = True
+
+    class DisconnectedRequest:
+        async def is_disconnected(self) -> bool:
+            return True
+
+    async def consume() -> list[str]:
+        return [
+            event
+            async for event in iter_agent_sse(
+                request=DisconnectedRequest(),
+                runtime=Runtime(),
+                storage_session_id="private-session",
+                public_session_id="public-session",
+                message="question",
+            )
+        ]
+
+    events = asyncio.run(consume())
+
+    assert events == ["retry: 3000\n\n"]
+    assert runtime_closed is True

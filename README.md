@@ -147,7 +147,7 @@ uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 | `MAX_CONTEXT_TOKENS`、`SYSTEM_RESERVE_RATIO`、`CONTEXT_BUFFER_RATIO` | 上下文 Token 预算 |
 | `MAX_CONCURRENT_QUERIES`、`REQUEST_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES` | 请求容量、总时限和 Provider 重试 |
 | `ADMIN_API_KEY`、`ALLOW_UNAUTHENTICATED_ADMIN` | 索引管理密钥及仅限本地开发的显式免认证开关 |
-| `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算 |
+| `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算；Token 预算按每次模型请求的完整输入字符估算与预留最大输出累计 |
 | `AGENT_PLANNER_MODE` | `json` 为兼容默认；`native` 使用 OpenAI-compatible 原生 Tool Calling |
 | `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算 |
 | `AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS` | Graylist 工具等待调用方批准的时限，默认 25 秒 |
@@ -219,7 +219,7 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `POST` | `/agent/chat` | 普通 Agent 对话 |
-| `POST` | `/agent/chat/stream` | `planning → tool_call → tool_done → chunk → done` 事件流；答案完整生成后分块发送，不是 Provider 首 Token 流式 |
+| `POST` | `/agent/chat/stream` | `planning → tool_call → tool_done → chunk → done` 事件流；Planner 确认无需继续调用工具后，答案按 Provider 增量实时发送 |
 | `GET` | `/agent/elicitation/{session_id}` | 查询当前客户端 Agent session 的待处理 MCP Elicitation |
 | `POST` | `/agent/elicitation/{session_id}/{elicitation_id}` | 提交 `accept`、`decline` 或 `cancel`；成功响应不回显表单内容 |
 | `POST` | `/agent/reset?session_id=...` | 清除当前客户端的 Agent 会话 |

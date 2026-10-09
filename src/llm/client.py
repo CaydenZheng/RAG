@@ -370,6 +370,8 @@ class LLMClient:
                      model, len(messages), max_tokens)
         response_chars = 0
         usage = None
+        stream = None
+        completed = False
         try:
             stream = await self._async_chat_client.chat.completions.create(**kwargs)
             async for chunk in stream:
@@ -377,8 +379,22 @@ class LLMClient:
                     usage = chunk.usage
                 if not chunk.choices:
                     continue
-                delta = chunk.choices[0].delta
-                if delta is None or not delta.content:
+                choice = chunk.choices[0]
+                finish_reason = getattr(choice, "finish_reason", None)
+                if finish_reason not in (None, "stop"):
+                    raise RuntimeError(
+                        "LLM text stream ended without a complete response"
+                    )
+                delta = choice.delta
+                if delta is None:
+                    completed = finish_reason == "stop" or completed
+                    continue
+                if getattr(delta, "tool_calls", None):
+                    raise RuntimeError(
+                        "Unexpected tool call delta in text stream"
+                    )
+                if not delta.content:
+                    completed = finish_reason == "stop" or completed
                     continue
                 response_chars += len(delta.content)
                 # 拆成逐词/逐空白：保留所有空白字符，让前端逐词渲染
@@ -386,6 +402,11 @@ class LLMClient:
                 for word in words:
                     if word:
                         yield word
+                completed = finish_reason == "stop" or completed
+            if not completed:
+                raise RuntimeError(
+                    "LLM text stream ended without a complete response"
+                )
         except (asyncio.CancelledError, GeneratorExit):
             self._record_chat_span(
                 started_at, model, cache_hit=False,
@@ -405,6 +426,14 @@ class LLMClient:
                 started_at, model, cache_hit=False,
                 response_chars=response_chars, usage=usage,
             )
+        finally:
+            if stream is not None:
+                try:
+                    await stream.close()
+                except Exception as exc:
+                    logger.warning(
+                        "LLM stream close failed: {}", type(exc).__name__
+                    )
 
     # ================================================================
     # Embedding
