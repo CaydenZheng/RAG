@@ -123,11 +123,16 @@ uv run --no-sync python scripts/build_index.py
 uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
+启动后访问：
+
 - RAG 页面：<http://127.0.0.1:8000/>
 - Agent 页面：<http://127.0.0.1:8000/agent>
-- OpenAPI：<http://127.0.0.1:8000/docs>
-- 存活检查：<http://127.0.0.1:8000/health>
-- 就绪检查：<http://127.0.0.1:8000/ready>
+- OpenAPI 文档：<http://127.0.0.1:8000/docs>
+
+运行状态接口（供脚本或部署检查）：
+
+- 存活检查：`GET /health`
+- 就绪检查：`GET /ready`
 
 启动后由一个后台线程按 Embedding → 活跃向量索引／BM25 → 可选 Reranker 的顺序预热，避免多个模型并发加载造成瞬时内存峰值。`/health` 只表示 HTTP 进程存活；`/ready` 在 Embedding 或索引尚未就绪／加载失败时返回 503，必需组件就绪但 BM25 或 Reranker 降级时返回 200 和 `degraded`。低内存机器可设置 `STARTUP_PRELOAD_RERANKER=false`，让精排模型在首次使用 `hybrid+rerank` 时按需加载。
 
@@ -391,6 +396,10 @@ Reranker 权重未缓存、模型路径错误、资源不足或超时。准备�
 - 原生 Tool Calling 当前每个模型响应只接受一个工具调用；多个调用会稳定拒绝。模型若不支持完整工具 Schema，应显式切回 `AGENT_PLANNER_MODE=json`；系统不会静默改写 MCP 原始 Schema。
 - MCP OAuth Token 与 Elicitation pending 状态默认只保存在当前进程内存；尚未接入企业 Secret Store、企业 SSO、远端 Token Revocation、多租户、高可用或持久化 HITL。
 
+## 参与项目
+
+提交修改前请阅读[贡献指南](CONTRIBUTING.md)和[行为准则](CODE_OF_CONDUCT.md)。安全漏洞请按照[安全策略](SECURITY.md)私密报告，不要创建公开 Issue。
+
 ## License
 
-MIT
+[MIT](LICENSE)
