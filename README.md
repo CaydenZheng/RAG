@@ -396,6 +396,10 @@ Reranker 权重未缓存、模型路径错误、资源不足或超时。准备�
 - 原生 Tool Calling 当前每个模型响应只接受一个工具调用；多个调用会稳定拒绝。模型若不支持完整工具 Schema，应显式切回 `AGENT_PLANNER_MODE=json`；系统不会静默改写 MCP 原始 Schema。
 - MCP OAuth Token 与 Elicitation pending 状态默认只保存在当前进程内存；尚未接入企业 Secret Store、企业 SSO、远端 Token Revocation、多租户、高可用或持久化 HITL。
 
+## 参与项目
+
+提交修改前请阅读[贡献指南](CONTRIBUTING.md)和[行为准则](CODE_OF_CONDUCT.md)。安全漏洞请按照[安全策略](SECURITY.md)私密报告，不要创建公开 Issue。
+
 ## License
 
-MIT
+[MIT](LICENSE)

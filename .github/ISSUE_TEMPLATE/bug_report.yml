@@ -1,0 +1,75 @@
+name: Bug report
+description: 报告可复现的功能缺陷
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。安全漏洞、密钥或个人数据请勿提交到公开 Issue，请改用仓库 Security 页面的私密报告入口。
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      options:
+        - RAG 页面或接口
+        - Agent 页面或接口
+        - MCP 或工具调用
+        - 索引或检索
+        - 评测或测试
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 请说明实际发生了什么。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请提供最小、稳定且不包含敏感数据的复现步骤。
+      placeholder: |
+        1. 使用配置……
+        2. 调用……
+        3. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: 版本或提交
+      description: 例如 commit SHA 或分支名称。
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 补充信息
+      description: 可提供已脱敏的日志、截图或最小示例；不要粘贴密钥、Token、查询参数或个人数据。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，且没有公开任何敏感信息。
+          required: true

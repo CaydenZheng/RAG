@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/CaydenZheng/RAG/security/policy
+    about: 请通过 Security 页面私密报告漏洞，不要创建公开 Issue。
