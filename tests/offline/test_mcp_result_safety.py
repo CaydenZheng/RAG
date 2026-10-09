@@ -763,6 +763,7 @@ def test_mcp_text_uses_existing_untrusted_wrapper_and_result_limit(
     from src.agent.memory import MemoryConfig, MemoryManager
     from src.agent.tools import ToolRegistry
     from src.infra.session_store import SessionStore
+    from src.llm import llm_client
 
     client = AsyncMock(spec=Client)
     client.list_tools.return_value = ListToolsResult(
@@ -824,7 +825,7 @@ def test_mcp_text_uses_existing_untrusted_wrapper_and_result_limit(
                 name="mcp__remote__inspect",
                 params={"query": "value"},
             ),
-            _FinalAnswerPlan(answer="finished"),
+            _FinalAnswerPlan(),
         ]
     )
     planner_messages: list[list[dict[str, Any]]] = []
@@ -838,6 +839,11 @@ def test_mcp_text_uses_existing_untrusted_wrapper_and_result_limit(
         return next(plans)
 
     monkeypatch.setattr(harness, "_plan_async", plan)
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "finished"
+
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
 
     async def exercise() -> None:
         await manager.start(registry)

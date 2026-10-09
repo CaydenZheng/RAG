@@ -335,6 +335,113 @@ def test_llm_client_returns_native_tool_calls_from_openai_compatible_sdk() -> No
     )
 
 
+def test_llm_text_stream_closes_provider_when_consumer_stops() -> None:
+    from src.llm.client import LLMClient
+
+    class ProviderStream:
+        def __init__(self) -> None:
+            self.closed = False
+            self.sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                await asyncio.Event().wait()
+            self.sent = True
+            return SimpleNamespace(
+                usage=None,
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="first")
+                    )
+                ],
+            )
+
+        async def close(self) -> None:
+            self.closed = True
+
+    provider_stream = ProviderStream()
+    sdk = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(return_value=provider_stream)
+            )
+        )
+    )
+    client = object.__new__(LLMClient)
+    client._async_chat_client = sdk
+    client._chat_model = "test-model"
+
+    async def exercise() -> None:
+        output = client.chat_stream_async(
+            [{"role": "user", "content": "question"}]
+        )
+        assert await anext(output) == "first"
+        await output.aclose()
+
+    asyncio.run(exercise())
+
+    assert provider_stream.closed is True
+
+
+def test_llm_text_stream_rejects_mixed_tool_delta_before_content() -> None:
+    from src.llm.client import LLMClient
+
+    class ProviderStream:
+        def __init__(self) -> None:
+            self.closed = False
+            self.sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return SimpleNamespace(
+                usage=None,
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="must-not-be-emitted",
+                            tool_calls=[SimpleNamespace(id="unexpected")],
+                        )
+                    )
+                ],
+            )
+
+        async def close(self) -> None:
+            self.closed = True
+
+    provider_stream = ProviderStream()
+    sdk = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(return_value=provider_stream)
+            )
+        )
+    )
+    client = object.__new__(LLMClient)
+    client._async_chat_client = sdk
+    client._chat_model = "test-model"
+
+    async def consume() -> list[str]:
+        return [
+            chunk
+            async for chunk in client.chat_stream_async(
+                [{"role": "user", "content": "question"}]
+            )
+        ]
+
+    with pytest.raises(RuntimeError, match="Unexpected tool call delta"):
+        asyncio.run(consume())
+
+    assert provider_stream.closed is True
+
+
 def _native_harness(
     tmp_path: Path,
     *,
@@ -398,7 +505,7 @@ def test_native_planner_uses_provider_protocol_and_shared_execution_chain(
                     ),
                 ),
             ),
-            NativeChatResponse(content="final answer"),
+            NativeChatResponse(content="READY_TO_ANSWER"),
         ]
     )
     requests: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
@@ -419,6 +526,11 @@ def test_native_planner_uses_provider_protocol_and_shared_execution_chain(
         chat_with_tools_async,
         raising=False,
     )
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "final answer"
+
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
 
     async def consume() -> list[Any]:
         return [event async for event in harness.events("native", "question")]
@@ -454,6 +566,317 @@ def test_native_planner_uses_provider_protocol_and_shared_execution_chain(
     ]
 
 
+def test_native_planner_requires_answer_ready_marker_before_streaming(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.llm import llm_client
+    from src.llm.client import NativeChatResponse
+
+    harness, memory, calls = _native_harness(tmp_path)
+    stream_called = False
+
+    async def chat_with_tools_async(
+        *_args: object,
+        **_kwargs: object,
+    ) -> NativeChatResponse:
+        return NativeChatResponse(content="already generated answer")
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        nonlocal stream_called
+        stream_called = True
+        yield "unexpected"
+
+    monkeypatch.setattr(
+        llm_client,
+        "chat_with_tools_async",
+        chat_with_tools_async,
+        raising=False,
+    )
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    response = asyncio.run(harness.execute("native-marker", "question"))
+
+    assert response.error_code == "invalid_agent_plan"
+    assert response.error == "Agent planner returned an invalid answer decision."
+    assert stream_called is False
+    assert calls == []
+    assert memory.load_history("native-marker") == []
+
+
+def test_native_answer_chunk_arrives_before_provider_completes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.core.agent_runtime import AgentEventKind
+    from src.llm import llm_client
+    from src.llm.client import NativeChatResponse
+
+    harness, memory, calls = _native_harness(tmp_path)
+    release_provider = asyncio.Event()
+    provider_finished = False
+
+    async def chat_with_tools_async(
+        *_args: object,
+        **_kwargs: object,
+    ) -> NativeChatResponse:
+        return NativeChatResponse(content="READY_TO_ANSWER")
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        nonlocal provider_finished
+        yield "native"
+        await release_provider.wait()
+        yield " answer"
+        provider_finished = True
+
+    monkeypatch.setattr(
+        llm_client,
+        "chat_with_tools_async",
+        chat_with_tools_async,
+        raising=False,
+    )
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    async def exercise() -> list[Any]:
+        events = harness.events("native-stream", "question")
+        planning = await anext(events)
+        first_chunk = await anext(events)
+        assert planning.kind is AgentEventKind.PLANNING
+        assert first_chunk.kind is AgentEventKind.CHUNK
+        assert first_chunk.chunk == "native"
+        assert provider_finished is False
+        assert memory.load_history("native-stream") == []
+        release_provider.set()
+        return [first_chunk, *[event async for event in events]]
+
+    events = asyncio.run(exercise())
+
+    assert provider_finished is True
+    assert calls == []
+    assert events[-1].kind is AgentEventKind.DONE
+    assert events[-1].response is not None
+    assert events[-1].response.answer == "native answer"
+
+
+@pytest.mark.parametrize("planner_mode", ["json", "native"])
+def test_agent_modes_fail_closed_on_invalid_final_stream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    planner_mode: str,
+) -> None:
+    from src.agent.harness import AgentConfig
+    from src.llm import llm_client
+    from src.llm.client import NativeChatResponse
+
+    harness, memory, _ = _native_harness(tmp_path)
+    harness.config = AgentConfig(planner_mode=planner_mode, verbose=False)
+
+    async def chat_async(*_args: object, **_kwargs: object) -> str:
+        return json.dumps({"action": "final_answer"})
+
+    async def chat_with_tools_async(
+        *_args: object, **_kwargs: object
+    ) -> NativeChatResponse:
+        return NativeChatResponse(content="READY_TO_ANSWER")
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        if False:
+            yield ""
+        raise RuntimeError("invalid mixed final delta")
+
+    monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    monkeypatch.setattr(
+        llm_client,
+        "chat_with_tools_async",
+        chat_with_tools_async,
+        raising=False,
+    )
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    response = asyncio.run(
+        harness.execute(f"{planner_mode}-invalid-stream", "question")
+    )
+
+    assert response.error_code == "agent_final_generation_failed"
+    assert response.answer == ""
+    assert memory.load_history(f"{planner_mode}-invalid-stream") == []
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_error"),
+    [("empty", "agent_final_generation_failed"), ("timeout", "agent_timeout")],
+)
+def test_native_final_stream_edges_do_not_persist_partial_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+    expected_error: str,
+) -> None:
+    from src.agent.harness import AgentConfig
+    from src.llm import llm_client
+    from src.llm.client import NativeChatResponse
+
+    harness, memory, _ = _native_harness(tmp_path)
+    harness.config = AgentConfig(
+        planner_mode="native",
+        verbose=False,
+        timeout_seconds=0.05,
+    )
+    provider_closed = False
+
+    async def chat_with_tools_async(
+        *_args: object, **_kwargs: object
+    ) -> NativeChatResponse:
+        return NativeChatResponse(content="READY_TO_ANSWER")
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        nonlocal provider_closed
+        try:
+            if failure_mode == "empty":
+                yield ""
+                return
+            yield "partial"
+            await asyncio.Event().wait()
+        finally:
+            provider_closed = True
+
+    monkeypatch.setattr(
+        llm_client,
+        "chat_with_tools_async",
+        chat_with_tools_async,
+        raising=False,
+    )
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    response = asyncio.run(
+        harness.execute(f"native-{failure_mode}", "question")
+    )
+
+    assert response.error_code == expected_error
+    assert response.answer == ""
+    assert provider_closed is True
+    assert memory.load_history(f"native-{failure_mode}") == []
+
+
+def test_native_token_budget_stops_before_planner_or_final_stream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.agent.harness import AgentConfig
+    from src.llm import llm_client
+
+    harness, memory, calls = _native_harness(tmp_path)
+    harness.config = AgentConfig(
+        planner_mode="native",
+        verbose=False,
+        max_token_budget=20,
+    )
+    planner_called = False
+    stream_called = False
+
+    async def chat_with_tools_async(*_args: object, **_kwargs: object):
+        nonlocal planner_called
+        planner_called = True
+        raise AssertionError("planner must not run after budget exhaustion")
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        nonlocal stream_called
+        stream_called = True
+        yield "unexpected"
+
+    monkeypatch.setattr(
+        llm_client,
+        "chat_with_tools_async",
+        chat_with_tools_async,
+        raising=False,
+    )
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    response = asyncio.run(harness.execute("native-budget", "question"))
+
+    assert response.error_code == "agent_token_budget_exceeded"
+    assert planner_called is False
+    assert stream_called is False
+    assert calls == []
+    assert memory.load_history("native-budget") == []
+
+
+def test_final_request_input_is_charged_to_native_run_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.agent.harness import AgentConfig
+    from src.llm import llm_client
+    from src.llm.client import NativeChatResponse
+
+    session_id = "native-final-input-budget"
+    user_message = "question"
+    harness, memory, calls = _native_harness(tmp_path)
+    initial_messages = memory.build_messages(
+        session_id,
+        harness._build_planner_prompt(),
+        user_message,
+    )
+    initial_input_cost = len(
+        json.dumps(initial_messages, ensure_ascii=False, default=str)
+    )
+    tool_input_cost = len(
+        json.dumps(
+            harness.tools.get_model_tools(),
+            ensure_ascii=False,
+            default=str,
+        )
+    )
+    final_messages = harness._build_final_answer_messages(
+        initial_messages,
+        step_limit_reached=False,
+    )
+    final_input_cost = len(
+        json.dumps(final_messages, ensure_ascii=False, default=str)
+    )
+    harness.config = AgentConfig(
+        planner_mode="native",
+        verbose=False,
+        max_token_budget=(
+            initial_input_cost
+            + tool_input_cost
+            + harness.config.planner_max_tokens
+            + final_input_cost
+            - 1
+        ),
+    )
+    planner_called = False
+    stream_called = False
+
+    async def chat_with_tools_async(
+        *_args: object, **_kwargs: object
+    ) -> NativeChatResponse:
+        nonlocal planner_called
+        planner_called = True
+        return NativeChatResponse(content="READY_TO_ANSWER")
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        nonlocal stream_called
+        stream_called = True
+        yield "must not run"
+
+    monkeypatch.setattr(
+        llm_client,
+        "chat_with_tools_async",
+        chat_with_tools_async,
+        raising=False,
+    )
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
+
+    response = asyncio.run(harness.execute(session_id, user_message))
+
+    assert planner_called is True
+    assert stream_called is False
+    assert response.error_code == "agent_token_budget_exceeded"
+    assert calls == []
+    assert memory.load_history(session_id) == []
+
+
 def test_native_planner_resolves_provider_name_to_registry_tool(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -485,7 +908,7 @@ def test_native_planner_resolves_provider_name_to_registry_tool(
                     ),
                 ),
             )
-        return NativeChatResponse(content="round-trip complete")
+        return NativeChatResponse(content="READY_TO_ANSWER")
 
     monkeypatch.setattr(
         llm_client,
@@ -493,6 +916,11 @@ def test_native_planner_resolves_provider_name_to_registry_tool(
         chat_with_tools_async,
         raising=False,
     )
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "round-trip complete"
+
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
 
     response = asyncio.run(harness.execute("provider-name", "question"))
 
@@ -518,12 +946,16 @@ def test_json_planner_mode_keeps_the_existing_text_contract(
         *_args: object,
         **_kwargs: object,
     ) -> str:
-        return json.dumps({"action": "final_answer", "answer": "json answer"})
+        return json.dumps({"action": "final_answer"})
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "json answer"
 
     async def reject_native(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("native planner must not run in json mode")
 
     monkeypatch.setattr(llm_client, "chat_async", chat_async)
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
     monkeypatch.setattr(
         llm_client,
         "chat_with_tools_async",

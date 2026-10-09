@@ -1,4 +1,4 @@
-"""SSE transport for RAG answers."""
+"""SSE transport for RAG answers and Agent events."""
 
 import asyncio
 import json
@@ -9,6 +9,7 @@ from loguru import logger
 from starlette.requests import Request
 
 from src.api.public_errors import public_error
+from src.core.agent_runtime import AgentRuntime
 from src.core.generation import AnswerInput, AnswerService
 from src.infra.tracer import tracer
 
@@ -32,6 +33,34 @@ def answer_event(
         "done": done,
         **payload,
     }
+
+
+async def iter_agent_sse(
+    *,
+    request: Request,
+    runtime: AgentRuntime,
+    storage_session_id: str,
+    public_session_id: str,
+    message: str,
+) -> AsyncIterator[str]:
+    """Transport one Agent event stream and close it on disconnect."""
+    yield "retry: 3000\n\n"
+    events = runtime.events(storage_session_id, message)
+    try:
+        async for event in events:
+            if await request.is_disconnected():
+                tracer.record_outcome("cancelled", "client_disconnected")
+                logger.info("Agent stream disconnected; cancelling execution")
+                return
+            payload = event.to_dict()
+            if payload.get("done"):
+                payload["session_id"] = public_session_id
+            yield encode_sse_event(payload)
+            await asyncio.sleep(0)
+    finally:
+        close = getattr(events, "aclose", None)
+        if close is not None:
+            await close()
 
 
 async def iter_answer_sse(

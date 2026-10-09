@@ -25,12 +25,10 @@ FastAPI 服务入口。
     uvicorn app:app --host 0.0.0.0 --port 8000
 """
 
-import json
 import logging
 import sys
 import time
 import uuid
-from collections.abc import AsyncIterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -84,7 +82,7 @@ from src.api.schemas import (
     parse_metadata_filter_json,
 )
 from src.api.startup import runtime_readiness, warm_up_runtime
-from src.api.streaming import iter_answer_sse
+from src.api.streaming import iter_agent_sse, iter_answer_sse
 from src.core.agent_runtime import AgentRuntime
 from src.core.generation import AnswerInput, answer_service
 from src.core.index_jobs import (
@@ -656,35 +654,27 @@ async def agent_chat_stream(
     """
     Agent 流式对话端点（SSE）。
 
-    实时推送 Agent 执行事件；最终答案完整生成后按词发送 chunk。
+    实时推送 Agent 执行事件；Planner 决策完成后转发 Provider 答案增量。
 
     输出格式:
       data: {"step": "planning", "iteration": 1}
       data: {"step": "tool_call", "tool": "search_knowledge_base", "params": {...}}
       data: {"step": "tool_done", "tool": "search_knowledge_base", "success": true}
-      data: {"chunk": "..."}          ← 最终答案逐词输出
+      data: {"chunk": "..."}          ← Provider 最终答案增量
       data: {"done": true, ...}
     """
     session = scope_request_session(
         request, req.session_id or uuid.uuid4().hex, "agent"
     )
 
-    async def event_stream() -> AsyncIterator[str]:
-        yield "retry: 3000\n\n"
-        async for event in agent_runtime.events(
-            session.storage_id, req.message
-        ):
-            payload = event.to_dict()
-            if payload.get("done"):
-                payload["session_id"] = session.public_id
-            yield (
-                "data: "
-                + json.dumps(payload, ensure_ascii=False)
-                + "\n\n"
-            )
-
     return StreamingResponse(
-        event_stream(),
+        iter_agent_sse(
+            request=request,
+            runtime=agent_runtime,
+            storage_session_id=session.storage_id,
+            public_session_id=session.public_id,
+            message=req.message,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",

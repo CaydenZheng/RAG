@@ -114,9 +114,7 @@ def test_harness_planners_cannot_escape_default_calculator(
                         "tool_params": {"expression": _CALCULATOR_ESCAPE},
                     }
                 ),
-                json.dumps(
-                    {"action": "final_answer", "answer": "safe result"}
-                ),
+                json.dumps({"action": "final_answer"}),
             ]
         )
         method = "chat_async"
@@ -135,7 +133,7 @@ def test_harness_planners_cannot_escape_default_calculator(
                         ),
                     ),
                 ),
-                NativeChatResponse(content="safe result"),
+                NativeChatResponse(content="READY_TO_ANSWER"),
             ]
         )
         method = "chat_with_tools_async"
@@ -150,6 +148,11 @@ def test_harness_planners_cannot_escape_default_calculator(
         return next(responses)
 
     monkeypatch.setattr(llm_client, method, chat)
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "safe result"
+
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
     harness = AgentHarness(
         config=AgentConfig(planner_mode=planner_mode, verbose=False),
         tools=create_default_registry(),
@@ -217,7 +220,7 @@ def test_harness_passes_its_tool_call_identity_into_registry(
                     "tool_params": {},
                 }
             ),
-            json.dumps({"action": "final_answer", "answer": "done"}),
+            json.dumps({"action": "final_answer"}),
         ]
     )
 
@@ -225,6 +228,11 @@ def test_harness_passes_its_tool_call_identity_into_registry(
         return next(responses)
 
     monkeypatch.setattr(llm_client, "chat_async", chat)
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "done"
+
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
     harness = AgentHarness(
         config=AgentConfig(planner_mode="json", verbose=False),
         tools=registry,

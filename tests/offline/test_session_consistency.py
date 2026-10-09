@@ -122,6 +122,7 @@ def test_agent_preserves_original_user_and_tool_roles(
     from src.agent.hooks import HookPipeline
     from src.agent.memory import MemoryConfig, MemoryManager
     from src.infra.session_store import SessionStore
+    from src.llm import llm_client
 
     store = SessionStore(str(tmp_path / "sessions.db"))
     memory = MemoryManager(
@@ -138,13 +139,18 @@ def test_agent_preserves_original_user_and_tool_roles(
     plans = iter(
         [
             _ToolCallPlan(name="lookup", params={"key": "value"}),
-            _FinalAnswerPlan(answer="final answer"),
+            _FinalAnswerPlan(),
         ]
     )
     async def next_plan(messages, max_tokens=None):
         return next(plans)
 
     monkeypatch.setattr(harness, "_plan_async", next_plan)
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "final answer"
+
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
 
     response = harness.run("agent-session", "original user message")
 
@@ -182,6 +188,7 @@ def test_streaming_agent_saves_one_complete_exchange(
     from src.agent.hooks import HookPipeline
     from src.agent.memory import MemoryConfig, MemoryManager
     from src.infra.session_store import SessionStore
+    from src.llm import llm_client
 
     store = SessionStore(str(tmp_path / "sessions.db"))
     memory = MemoryManager(
@@ -199,9 +206,14 @@ def test_streaming_agent_saves_one_complete_exchange(
     async def final_plan(
         messages: list[dict[str, str]], max_tokens=None
     ) -> object:
-        return _FinalAnswerPlan(answer="stream answer")
+        return _FinalAnswerPlan()
 
     monkeypatch.setattr(harness, "_plan_async", final_plan)
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "stream answer"
+
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
 
     async def consume():
         return [

@@ -950,6 +950,7 @@ def test_agent_loop_waits_for_graylist_approval_before_side_effect(
     from src.agent.tools import SafetyLevel, ToolDef, ToolParam, ToolRegistry
     from src.core.agent_runtime import ToolResult
     from src.infra.session_store import SessionStore
+    from src.llm import llm_client
 
     approvals = ToolApprovalManager(timeout_seconds=1)
     registry = ToolRegistry(dedup_window=0, approval_manager=approvals)
@@ -984,7 +985,7 @@ def test_agent_loop_waits_for_graylist_approval_before_side_effect(
                 name="send_message",
                 params={"message": "hello"},
             ),
-            _FinalAnswerPlan(answer="sent"),
+            _FinalAnswerPlan(),
         ]
     )
 
@@ -993,6 +994,11 @@ def test_agent_loop_waits_for_graylist_approval_before_side_effect(
         return next(plans)
 
     monkeypatch.setattr(harness, "_plan_async", plan)
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "sent"
+
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
 
     async def exercise() -> object:
         run = asyncio.create_task(harness.execute("agent-session", "send it"))

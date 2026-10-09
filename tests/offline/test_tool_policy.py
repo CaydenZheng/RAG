@@ -335,6 +335,7 @@ def test_agent_policy_and_overlapping_hook_outcomes_are_audited(
     from src.agent.tools import SafetyLevel, ToolDef, ToolParam, ToolRegistry
     from src.core.agent_runtime import AgentEventKind, ToolResult
     from src.infra.session_store import SessionStore
+    from src.llm import llm_client
 
     calls: list[dict[str, Any]] = []
     policy = (
@@ -372,7 +373,7 @@ def test_agent_policy_and_overlapping_hook_outcomes_are_audited(
                 name="execute_code",
                 params={"value": "synthetic-sensitive-value"},
             ),
-            harness_module._FinalAnswerPlan(answer="blocked safely"),
+            harness_module._FinalAnswerPlan(),
         ]
     )
 
@@ -383,6 +384,11 @@ def test_agent_policy_and_overlapping_hook_outcomes_are_audited(
         return next(plans)
 
     monkeypatch.setattr(harness, "_plan_async", plan)
+
+    async def chat_stream_async(*_args: object, **_kwargs: object):
+        yield "blocked safely"
+
+    monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
 
     async def consume() -> list[object]:
         return [
