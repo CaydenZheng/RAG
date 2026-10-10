@@ -12,6 +12,11 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+*.tsbuildinfo
+
+# Frontend build and dependencies
+/frontend/node_modules/
+/src/web/dist/
 
 # 本地数据
 data/sessions.db

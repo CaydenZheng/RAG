@@ -1,4 +1,4 @@
-"""Regression coverage for browser pages and output-rendering policy."""
+"""Regression coverage for the built browser application and page policy."""
 
 from html.parser import HTMLParser
 from pathlib import Path
@@ -7,18 +7,17 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-FORBIDDEN_JS_SINKS = (
+FRONTEND_SOURCE_DIR = Path(__file__).parents[2] / "frontend" / "src"
+FORBIDDEN_SOURCE_SINKS = (
     ".innerHTML",
     ".outerHTML",
     "insertAdjacentHTML",
     "document.write",
+    "dangerouslySetInnerHTML",
+    "rehypeRaw",
     "eval(",
     "new Function",
 )
-PAGE_ASSETS = {
-    "/": ("/static/common.css", "/static/search.css", "/static/rendering.js", "/static/search.js"),
-    "/agent": ("/static/common.css", "/static/agent.css", "/static/rendering.js", "/static/agent.js"),
-}
 
 
 class PageMarkupAudit(HTMLParser):
@@ -28,16 +27,28 @@ class PageMarkupAudit(HTMLParser):
         self.inline_styles: list[str] = []
         self.inline_script_count = 0
         self.inline_style_count = 0
+        self.asset_paths: list[str] = []
+        self.root_count = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
         self.inline_handlers.extend(name for name in attributes if name.startswith("on"))
         if "style" in attributes:
             self.inline_styles.append(attributes["style"] or "")
-        if tag == "script" and "src" not in attributes:
-            self.inline_script_count += 1
+        if tag == "script":
+            source = attributes.get("src")
+            if source:
+                self.asset_paths.append(source)
+            else:
+                self.inline_script_count += 1
+        if tag == "link" and attributes.get("rel") == "stylesheet":
+            href = attributes.get("href")
+            if href:
+                self.asset_paths.append(href)
         if tag == "style":
             self.inline_style_count += 1
+        if tag == "div" and attributes.get("id") == "root":
+            self.root_count += 1
 
 
 @pytest.fixture
@@ -57,59 +68,42 @@ def web_client(
     return TestClient(api.app)
 
 
-def test_browser_pages_and_assets_are_available(web_client: TestClient) -> None:
-    try:
-        for page_path, asset_paths in PAGE_ASSETS.items():
-            page = web_client.get(page_path)
-            assert page.status_code == 200
-            assert page.headers["content-type"].startswith("text/html")
-            for asset_path in asset_paths:
-                assert asset_path in page.text
-                asset = web_client.get(asset_path)
-                assert asset.status_code == 200
-    finally:
-        web_client.close()
+def _audit_page(page_text: str) -> PageMarkupAudit:
+    audit = PageMarkupAudit()
+    audit.feed(page_text)
+    return audit
 
 
-def test_pages_expose_accessible_application_shell(web_client: TestClient) -> None:
-    page_markers = {
-        "/": ('for="queryInput"', 'id="searchForm"', 'id="warningList"'),
-        "/agent": ('for="msgInput"', 'id="agentForm"', 'id="processPanel"'),
-    }
-
-    try:
-        for page_path, markers in page_markers.items():
-            page = web_client.get(page_path)
-            assert page.status_code == 200
-            assert '<a class="skip-link" href="#mainContent">' in page.text
-            assert '<main id="mainContent"' in page.text
-            assert 'id="serviceStatus"' in page.text
-            assert 'aria-live="polite"' in page.text
-            assert 'href="/docs"' in page.text
-            assert all(marker in page.text for marker in markers)
-    finally:
-        web_client.close()
-
-
-def test_browser_scripts_use_readiness_and_real_session_resets(
+def test_browser_pages_discover_and_serve_built_assets(
     web_client: TestClient,
 ) -> None:
     try:
-        rendering = web_client.get("/static/rendering.js")
-        search = web_client.get("/static/search.js")
-        agent = web_client.get("/static/agent.js")
+        page_bodies: list[str] = []
+        for page_path in ("/", "/agent"):
+            page = web_client.get(page_path)
+            assert page.status_code == 200
+            assert page.headers["content-type"].startswith("text/html")
+            audit = _audit_page(page.text)
+            assert audit.root_count == 1
+            assert len(audit.asset_paths) >= 2
+            assert all(
+                path.startswith("/static/app/") for path in audit.asset_paths
+            )
+            for asset_path in audit.asset_paths:
+                asset = web_client.get(asset_path)
+                assert asset.status_code == 200
+            page_bodies.append(page.text)
 
-        assert 'fetch("/ready"' in rendering.text
-        assert '"/session/reset?session_id="' in search.text
-        assert '"/agent/reset?session_id="' in agent.text
-        assert 'aria-expanded' in agent.text
+        assert page_bodies[0] == page_bodies[1]
     finally:
         web_client.close()
 
 
-def test_pages_enforce_external_only_active_content(web_client: TestClient) -> None:
+def test_pages_enforce_external_only_active_content(
+    web_client: TestClient,
+) -> None:
     try:
-        for page_path in PAGE_ASSETS:
+        for page_path in ("/", "/agent"):
             response = web_client.get(page_path)
             policy = response.headers["content-security-policy"]
             assert "script-src 'self'" in policy
@@ -118,11 +112,11 @@ def test_pages_enforce_external_only_active_content(web_client: TestClient) -> N
             assert "base-uri 'none'" in policy
             assert "frame-ancestors 'none'" in policy
             assert "'unsafe-inline'" not in policy
+            assert "'unsafe-eval'" not in policy
             assert response.headers["referrer-policy"] == "no-referrer"
             assert response.headers["x-content-type-options"] == "nosniff"
 
-            audit = PageMarkupAudit()
-            audit.feed(response.text)
+            audit = _audit_page(response.text)
             assert audit.inline_handlers == []
             assert audit.inline_styles == []
             assert audit.inline_script_count == 0
@@ -131,19 +125,35 @@ def test_pages_enforce_external_only_active_content(web_client: TestClient) -> N
         web_client.close()
 
 
-def test_browser_scripts_do_not_use_html_injection_sinks(
+def test_frontend_source_has_no_html_injection_sinks() -> None:
+    source_files = sorted(
+        path
+        for path in FRONTEND_SOURCE_DIR.rglob("*")
+        if path.suffix in {".ts", ".tsx"} and "test" not in path.parts
+    )
+    assert source_files
+    for source_file in source_files:
+        source = source_file.read_text(encoding="utf-8")
+        assert not any(sink in source for sink in FORBIDDEN_SOURCE_SINKS)
+
+
+def test_missing_build_returns_503_without_breaking_business_routes(
     web_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    import src.web.pages as pages
+
+    monkeypatch.setattr(pages, "APP_INDEX_PATH", tmp_path / "missing.html")
     try:
-        script_paths = sorted(
-            path
-            for asset_paths in PAGE_ASSETS.values()
-            for path in asset_paths
-            if path.endswith(".js")
-        )
-        for script_path in script_paths:
-            script = web_client.get(script_path)
-            assert script.status_code == 200
-            assert not any(sink in script.text for sink in FORBIDDEN_JS_SINKS)
+        assert web_client.get("/health").status_code == 200
+        for page_path in ("/", "/agent"):
+            response = web_client.get(page_path)
+            assert response.status_code == 503
+            assert "npm ci" in response.text
+            assert "npm run build" in response.text
+            assert "'unsafe-inline'" not in response.headers[
+                "content-security-policy"
+            ]
     finally:
         web_client.close()

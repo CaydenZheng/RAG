@@ -1,10 +1,12 @@
-"""Load browser resources relative to this module."""
+"""Serve the built browser application without making it a startup dependency."""
 
 from pathlib import Path
 
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+
 _WEB_DIR = Path(__file__).parent
-_PAGES_DIR = _WEB_DIR / "pages"
-STATIC_DIR = _WEB_DIR / "static"
+APP_DIST_DIR = _WEB_DIR / "dist"
+APP_INDEX_PATH = APP_DIST_DIR / "index.html"
 
 PAGE_SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -20,12 +22,23 @@ PAGE_SECURITY_HEADERS = {
     ),
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "no-store",
 }
 
+WEB_BUILD_INSTRUCTIONS = (
+    "Web application is not built. Run `cd frontend`, `npm ci`, and "
+    "`npm run build`, then refresh this page."
+)
 
-def _load_page(filename: str) -> str:
-    return (_PAGES_DIR / filename).read_text(encoding="utf-8")
 
-
-SEARCH_PAGE_HTML = _load_page("search.html")
-AGENT_PAGE_HTML = _load_page("agent.html")
+def web_entrypoint_response() -> Response:
+    """Return the Vite entrypoint or a recoverable build instruction."""
+    try:
+        html = APP_INDEX_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return PlainTextResponse(
+            WEB_BUILD_INSTRUCTIONS,
+            status_code=503,
+            headers=PAGE_SECURITY_HEADERS,
+        )
+    return HTMLResponse(html, headers=PAGE_SECURITY_HEADERS)
