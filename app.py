@@ -104,10 +104,8 @@ from src.orchestration.rag import (
     get_retrieval_flow,
 )
 from src.web.pages import (
-    AGENT_PAGE_HTML,
-    PAGE_SECURITY_HEADERS,
-    SEARCH_PAGE_HTML,
-    STATIC_DIR,
+    APP_DIST_DIR,
+    web_entrypoint_response,
 )
 
 
@@ -167,7 +165,11 @@ app.add_middleware(RAGRequestReliabilityMiddleware)
 app.add_middleware(ClientIdentityMiddleware)
 app.add_middleware(RequestTracingMiddleware)
 app.add_middleware(AdminAuthMiddleware)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount(
+    "/static/app",
+    StaticFiles(directory=APP_DIST_DIR, check_dir=False),
+    name="web-app",
+)
 app.router.add_event_handler("startup", warm_up_runtime)
 app.router.add_event_handler(
     "startup", tool_approval_module.open_tool_approval_manager
@@ -186,12 +188,12 @@ app.router.add_event_handler("shutdown", close_chroma_clients)
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return HTMLResponse(SEARCH_PAGE_HTML, headers=PAGE_SECURITY_HEADERS)
+    return web_entrypoint_response()
 
 
 @app.get("/agent", response_class=HTMLResponse)
 def agent_page():
-    return HTMLResponse(AGENT_PAGE_HTML, headers=PAGE_SECURITY_HEADERS)
+    return web_entrypoint_response()
 
 
 # ================================================================

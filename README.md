@@ -55,6 +55,7 @@ PocketFlow 只保留离线索引和 RAG 顶层编排。架构决策见 [ADR 0001
 ```text
 ragrag/
 ├── app.py                    # FastAPI 入口与 HTTP 路由
+├── frontend/                 # React + TypeScript + Vite 前端源码与测试
 ├── config/settings.py        # 环境配置及类型校验
 ├── prompts/                  # 版本化 Prompt
 ├── scripts/                  # 索引、数据和评测命令
@@ -68,7 +69,7 @@ ragrag/
 │   ├── orchestration/        # PocketFlow 顶层编排
 │   ├── security/             # 会话标识与安全校验
 │   ├── utils/                # RRF、BM25 和 Token 工具
-│   └── web/                  # 页面、样式和前端脚本
+│   └── web/                  # FastAPI Web 入口与本地构建产物目录
 ├── data/testset/             # 版本化评测数据和审核说明
 └── tests/                    # 默认离线测试与显式真实模型检查
 ```
@@ -79,11 +80,14 @@ ragrag/
 
 ### 1. 安装
 
-要求 Python 3.13 和 uv 0.12.11 或更高版本。
+要求 Python 3.13、uv 0.12.11 或更高版本，以及 Node.js 22.12～24。
 
 ```powershell
 uv sync --locked --no-default-groups --group dev
 Copy-Item .env.example .env
+Set-Location frontend
+npm ci
+Set-Location ..
 ```
 
 如果多个项目共用虚拟环境，可以显式指定环境，不必在仓库内创建 `.venv`：
@@ -120,14 +124,26 @@ uv run --no-sync python scripts/build_index.py
 ### 3. 启动
 
 ```powershell
+Set-Location frontend
+npm run build
+Set-Location ..
 uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
 ```
+
+Vite 构建输出到被 Git 忽略的 `src/web/dist`。缺少构建产物时，业务
+接口仍可启动，`/` 和 `/agent` 会返回包含上述构建命令的 503。前端开发
+时可在 `frontend` 中运行 `npm run dev`，Vite 会把同源 API 路径代理到
+`127.0.0.1:8000`。
 
 启动后访问：
 
 - RAG 页面：<http://127.0.0.1:8000/>
 - Agent 页面：<http://127.0.0.1:8000/agent>
 - OpenAPI 文档：<http://127.0.0.1:8000/docs>
+
+当前 Web 工作台只面向本地单用户使用。浏览器 `localStorage` 中的公开
+session ID 仅用于定位当前对话，不是用户身份或登录凭据；账号登录与数据
+隔离完成前，不要将站点作为多用户公网服务开放。
 
 运行状态接口（供脚本或部署检查）：
 
@@ -347,6 +363,12 @@ Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relev
 默认测试全部离线，不调用真实模型、浏览器或 Ragas。MCP 测试仅使用真实本地子进程和数值型 loopback Server，不访问外部 MCP 服务：
 
 ```powershell
+Set-Location frontend
+npm ci
+npm run typecheck
+npm run test
+npm run build
+Set-Location ..
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
 uv lock --check --offline
 uv run --no-sync --offline --no-env-file python -B -m pytest -q
