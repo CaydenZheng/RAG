@@ -1,24 +1,29 @@
 import { ArrowUp, Paperclip, Square } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
-import type { ConversationStatus, WorkspaceMode } from "../api/types";
+import { isConversationActive, type ConversationStatus, type WorkspaceMode } from "../api/types";
 
 interface ComposerProps {
   mode: WorkspaceMode;
   status: ConversationStatus;
   resetting: boolean;
+  value: string;
+  onValueChange: (value: string) => void;
   onSend: (message: string) => Promise<void>;
   onStop: () => void;
 }
 
-function isRunning(status: ConversationStatus): boolean {
-  return status === "connecting" || status === "streaming";
-}
-
-export function Composer({ mode, status, resetting, onSend, onStop }: ComposerProps) {
-  const [value, setValue] = useState("");
+export function Composer({
+  mode,
+  status,
+  resetting,
+  value,
+  onValueChange,
+  onSend,
+  onStop,
+}: ComposerProps) {
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const running = isRunning(status);
+  const running = isConversationActive(status);
   const blocked = running || resetting;
 
   useEffect(() => {
@@ -59,7 +64,7 @@ export function Composer({ mode, status, resetting, onSend, onStop }: ComposerPr
               ? "向知识库提问，Enter 发送，Shift + Enter 换行"
               : "描述需要 Agent 完成的任务，Enter 发送"
           }
-          onChange={(event) => setValue(event.target.value)}
+          onChange={(event) => onValueChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
