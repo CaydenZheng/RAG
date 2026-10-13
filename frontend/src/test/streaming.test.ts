@@ -57,11 +57,12 @@ describe("SSE framing", () => {
 });
 
 describe("RAG stream", () => {
-  it("exposes chunks and accepts one matching DONE terminal", async () => {
+  it("ignores unknown events, exposes chunks, and accepts one matching DONE terminal", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
         sseResponse([
+          'data: {"unknown":"ignored"}\n\n',
           'data: {"event":"chunk","done":false,"chunk":"答"}\n\n',
           'data: {"event":"chunk","done":false,"chunk":"案"}\n\n',
           'data: {"event":"done","done":true,"answer":"答案","sources":[],"warnings":[],"index_version":"v1","latency_ms":12}\n\n',
@@ -147,6 +148,7 @@ describe("Agent stream", () => {
           'data: {"step":"tool_done","iteration":1,"tool":"calculator","call_id":"c1","success":true}\n\n',
           'data: {"chunk":"2"}\n\n',
           'data: {"done":true,"answer":"2","iterations":1,"latency_ms":8}\n\n',
+          'data: {"done":true,"answer":"late"}\n\n',
         ]),
       ),
     );
@@ -171,5 +173,55 @@ describe("Agent stream", () => {
     controller.abort();
     await expect(result).rejects.toBeInstanceOf(PublicClientError);
     expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [422, "输入内容不符合要求，请检查后重试。"],
+    [503, "服务尚未就绪，请稍后重试。"],
+  ])("handles HTTP %s before reading an Agent stream", async (status, message) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status })));
+    await expect(
+      streamAgentAnswer("任务", "agent-1", new AbortController().signal, vi.fn()),
+    ).rejects.toMatchObject({ message });
+  });
+
+  it("rejects an Agent ERROR without returning a successful answer", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        sseResponse([
+          'data: {"chunk":"半截"}\n\n',
+          'data: {"error":{"code":"agent_failed","message":"internal"}}\n\n',
+        ]),
+      ),
+    );
+    await expect(
+      streamAgentAnswer("任务", "agent-1", new AbortController().signal, vi.fn()),
+    ).rejects.toMatchObject({ code: "terminal_error" });
+  });
+
+  it("rejects an Agent disconnect without a terminal event", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(sseResponse(['data: {"chunk":"半截"}\n\n'])),
+    );
+    await expect(
+      streamAgentAnswer("任务", "agent-1", new AbortController().signal, vi.fn()),
+    ).rejects.toMatchObject({ code: "disconnected" });
+  });
+
+  it("rejects Agent DONE when chunks do not match the final answer", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        sseResponse([
+          'data: {"chunk":"A"}\n\n',
+          'data: {"done":true,"answer":"B"}\n\n',
+        ]),
+      ),
+    );
+    await expect(
+      streamAgentAnswer("任务", "agent-1", new AbortController().signal, vi.fn()),
+    ).rejects.toMatchObject({ code: "protocol" });
   });
 });

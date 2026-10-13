@@ -1,4 +1,5 @@
 import { Bot, BookOpen, Database, History, Plus, Settings2 } from "lucide-react";
+import type { MouseEvent } from "react";
 
 import type { WorkspaceMode } from "../api/types";
 import type { ServiceState } from "../app/useServiceStatus";
@@ -9,12 +10,19 @@ interface SidebarProps {
   serviceState: ServiceState;
   resetting: boolean;
   onReset: () => void;
+  onNavigate: (mode: WorkspaceMode) => void;
 }
 
-export function Sidebar({ mode, serviceState, resetting, onReset }: SidebarProps) {
+export function Sidebar({ mode, serviceState, resetting, onReset, onNavigate }: SidebarProps) {
+  function navigate(event: MouseEvent<HTMLAnchorElement>, nextMode: WorkspaceMode): void {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    onNavigate(nextMode);
+  }
+
   return (
     <aside className="sidebar" aria-label="工作台导航">
-      <a className="brand" href="/" aria-label="RAGFlow 首页">
+      <a className="brand" href="/" aria-label="RAGFlow 首页" onClick={(event) => navigate(event, "rag")}>
         <span className="brand-mark" aria-hidden="true">R</span>
         <span className="brand-copy">
           <strong>RAGFlow</strong>
@@ -28,11 +36,11 @@ export function Sidebar({ mode, serviceState, resetting, onReset }: SidebarProps
       </button>
 
       <nav className="mode-nav" aria-label="对话模式">
-        <a className="mode-link" data-active={mode === "rag"} href="/" aria-current={mode === "rag" ? "page" : undefined}>
+        <a className="mode-link" data-active={mode === "rag"} href="/" aria-current={mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
           <BookOpen size={19} aria-hidden="true" />
           <span>知识问答</span>
         </a>
-        <a className="mode-link" data-active={mode === "agent"} href="/agent" aria-current={mode === "agent" ? "page" : undefined}>
+        <a className="mode-link" data-active={mode === "agent"} href="/agent" aria-current={mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
           <Bot size={19} aria-hidden="true" />
           <span>Agent</span>
         </a>
