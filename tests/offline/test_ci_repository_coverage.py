@@ -1,6 +1,9 @@
 from pathlib import Path
 
 WORKFLOW_PATH = Path(__file__).parents[2] / ".github" / "workflows" / "offline-checks.yml"
+PRODUCTION_PLAYWRIGHT_CONFIG_PATH = (
+    Path(__file__).parents[2] / "frontend" / "playwright.production.config.ts"
+)
 RUFF_COMMAND = "uv run --no-sync --offline --no-env-file ruff check ."
 
 
@@ -18,3 +21,9 @@ def test_frontend_browser_tests_run_in_an_independent_job() -> None:
     assert "run: npx playwright install --with-deps chromium" in workflow
     assert "run: npm run test:e2e" in workflow
     assert "run: npm run test:e2e:production" in workflow
+
+
+def test_production_browser_server_has_isolated_required_settings() -> None:
+    config = PRODUCTION_PLAYWRIGHT_CONFIG_PATH.read_text(encoding="utf-8")
+
+    assert 'OPENAI_API_KEY: "playwright-production-fixture-key"' in config
