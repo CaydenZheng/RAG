@@ -21,13 +21,15 @@ export function Composer({
   onValueChange,
   onSend,
   onStop,
-}: ComposerProps) {
+}: ComposerProps): React.JSX.Element {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const running = isConversationActive(status);
   const blocked = running || resetting;
+  const wasBlocked = useRef(blocked);
 
   useEffect(() => {
-    if (!blocked) textarea.current?.focus();
+    if (wasBlocked.current && !blocked) textarea.current?.focus();
+    wasBlocked.current = blocked;
   }, [blocked]);
 
   const submit = (): void => {
@@ -72,7 +74,6 @@ export function Composer({
             }
             if (event.key === "Escape" && running) onStop();
           }}
-          autoFocus
         />
         <div className="composer-actions">
           <div className="composer-placeholders">

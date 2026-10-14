@@ -123,6 +123,8 @@ uv run --no-sync python scripts/build_index.py
 
 ### 3. 启动
 
+生产式本地启动先构建前端，再启动 FastAPI：
+
 ```powershell
 Set-Location frontend
 npm run build
@@ -134,6 +136,24 @@ Vite 构建输出到被 Git 忽略的 `src/web/dist`。缺少构建产物时，�
 接口仍可启动，`/` 和 `/agent` 会返回包含上述构建命令的 503。前端开发
 时可在 `frontend` 中运行 `npm run dev`，Vite 会把同源 API 路径代理到
 `127.0.0.1:8000`。
+
+前端开发使用两个终端。先在仓库根目录启动后端：
+
+```powershell
+uv run --no-sync uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+再启动 Vite：
+
+```powershell
+Set-Location frontend
+npm run dev -- --host 127.0.0.1
+```
+
+开发入口为 <http://127.0.0.1:5173/> 和
+<http://127.0.0.1:5173/agent>；Vite 只把真实 API 路径代理到 FastAPI，
+`/agent` 页面本身仍由 Vite 提供热更新。页面支持跟随系统、浅色和深色主题，
+主题偏好只保存在本地浏览器中。
 
 启动后访问：
 
@@ -368,6 +388,9 @@ npm ci
 npm run typecheck
 npm run test
 npm run build
+npx playwright install chromium
+npm run test:e2e
+npm run test:e2e:production
 Set-Location ..
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
 uv lock --check --offline
@@ -381,7 +404,15 @@ uv run --no-sync --offline --no-env-file python tests/test_smoke.py
 uv run --no-sync --offline --no-env-file python tests/test_agent.py
 ```
 
-Ragas 依赖位于 `eval` 组，不进入默认 CI。Windows 与 Linux 的离线检查定义在 [`.github/workflows/offline-checks.yml`](.github/workflows/offline-checks.yml)。
+Playwright 首次运行需要安装 Chromium。默认浏览器套件会自行启动仅监听回环地址的
+Vite 和本地假后端，覆盖分段 SSE、停止、错误、引用、工具过程、Approval、
+form/URL Elicitation、主题、键盘与响应式布局；不读取用户文件、不连接真实 Provider
+或外部服务。`test:e2e:production` 复用已构建资源，以禁用 lifespan 的本地 FastAPI
+进程验证 `/`、`/agent`、生产资源和严格 CSP，不发送真实问答请求。若本机设置了代理，
+测试配置会让 `127.0.0.1` 和 `localhost` 保持直连。
+
+Ragas 依赖位于 `eval` 组，不进入默认 CI。Windows 与 Linux 的离线检查以及独立的
+Chromium E2E job 定义在 [`.github/workflows/offline-checks.yml`](.github/workflows/offline-checks.yml)。
 
 ## 排障
 

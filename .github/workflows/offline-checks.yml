@@ -15,6 +15,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  frontend-e2e:
+    name: Frontend E2E / chromium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run frontend browser tests
+        working-directory: frontend
+        run: npm run test:e2e
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.11"
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install backend runtime for production browser smoke tests
+        run: uv sync --locked --no-default-groups --group dev
+      - name: Build production frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Run production FastAPI browser smoke tests
+        working-directory: frontend
+        run: npm run test:e2e:production
+      - name: Upload browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-e2e-evidence
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
   offline-linux:
     name: Offline / ubuntu-24.04 / Python 3.13
     runs-on: ubuntu-24.04

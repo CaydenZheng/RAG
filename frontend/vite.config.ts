@@ -46,6 +46,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
+    include: ["src/test/**/*.test.{ts,tsx}", "vite-routing.test.ts"],
     clearMocks: true,
   },
 });

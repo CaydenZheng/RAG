@@ -28,6 +28,85 @@ describe("App shell", () => {
     await waitFor(() => expect(screen.getByText("服务可用")).toBeVisible());
   });
 
+  it("applies and persists an explicit theme without treating it as identity", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "ready" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "外观主题" }), "dark");
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    expect(document.documentElement).toHaveAttribute("data-theme-preference", "dark");
+    expect(localStorage.getItem("ragflow_theme")).toBe("dark");
+  });
+
+  it("follows system theme changes while the system preference is selected", async () => {
+    let dark = true;
+    let themeListener: (() => void) | undefined;
+    vi.stubGlobal("matchMedia", vi.fn().mockImplementation((query: string) => ({
+      get matches() { return query === "(prefers-color-scheme: dark)" ? dark : false; },
+      addEventListener: (_type: string, nextListener: () => void) => {
+        if (query === "(prefers-color-scheme: dark)") themeListener = nextListener;
+      },
+      removeEventListener: vi.fn(),
+    })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "ready" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })),
+    );
+    render(<App />);
+
+    expect(screen.getByRole("combobox", { name: "外观主题" })).toHaveValue("system");
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+
+    dark = false;
+    act(() => themeListener?.());
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+  });
+
+  it("moves focus to the workspace after an in-app route change", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "ready" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "Agent" }));
+
+    expect(screen.getByRole("main")).toHaveFocus();
+    expect(screen.getByRole("heading", { name: "Agent 工作台" })).toBeVisible();
+  });
+
+  it("keeps the skip link first in the initial keyboard focus order", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "ready" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.tab();
+
+    expect(screen.getByRole("link", { name: "跳到主要内容" })).toHaveFocus();
+  });
+
   it("fills a suggested question without sending it automatically", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ status: "ready" }), {
