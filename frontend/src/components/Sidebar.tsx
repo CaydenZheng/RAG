@@ -1,19 +1,33 @@
-import { Bot, BookOpen, Database, History, Plus, Settings2 } from "lucide-react";
-import type { MouseEvent } from "react";
+import { Bot, BookOpen, Database, History, Plus, Settings2, X } from "lucide-react";
+import { useEffect, useRef, type MouseEvent } from "react";
 
 import type { WorkspaceMode } from "../api/types";
-import type { ServiceState } from "../app/useServiceStatus";
-import { ServiceStatus } from "./ServiceStatus";
 
 interface SidebarProps {
   mode: WorkspaceMode;
-  serviceState: ServiceState;
   resetting: boolean;
+  compact: boolean;
+  open: boolean;
   onReset: () => void;
   onNavigate: (mode: WorkspaceMode) => void;
+  onClose: () => void;
 }
 
-export function Sidebar({ mode, serviceState, resetting, onReset, onNavigate }: SidebarProps) {
+export function Sidebar({
+  mode,
+  resetting,
+  compact,
+  open,
+  onReset,
+  onNavigate,
+  onClose,
+}: SidebarProps): React.JSX.Element {
+  const closeButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (compact && open) closeButton.current?.focus();
+  }, [compact, open]);
+
   function navigate(event: MouseEvent<HTMLAnchorElement>, nextMode: WorkspaceMode): void {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
@@ -21,14 +35,26 @@ export function Sidebar({ mode, serviceState, resetting, onReset, onNavigate }: 
   }
 
   return (
-    <aside className="sidebar" aria-label="工作台导航">
-      <a className="brand" href="/" aria-label="RAGFlow 首页" onClick={(event) => navigate(event, "rag")}>
-        <span className="brand-mark" aria-hidden="true">R</span>
-        <span className="brand-copy">
-          <strong>RAGFlow</strong>
-          <small>本地 AI 工作台</small>
-        </span>
-      </a>
+    <aside
+      className="sidebar"
+      id="workspaceNavigation"
+      aria-label="工作台导航"
+      aria-hidden={compact && !open ? true : undefined}
+      data-open={open}
+      inert={compact && !open ? true : undefined}
+    >
+      <div className="sidebar-header">
+        <a className="brand" href="/" aria-label="RAGFlow 首页" onClick={(event) => navigate(event, "rag")}>
+          <span className="brand-mark" aria-hidden="true">R</span>
+          <span className="brand-copy">
+            <strong>RAGFlow</strong>
+            <small>本地 AI 工作台</small>
+          </span>
+        </a>
+        <button ref={closeButton} className="sidebar-close" type="button" onClick={onClose} aria-label="关闭导航">
+          <X size={20} aria-hidden="true" />
+        </button>
+      </div>
 
       <button className="new-chat-button" type="button" onClick={onReset} disabled={resetting}>
         <Plus size={18} aria-hidden="true" />
@@ -65,7 +91,6 @@ export function Sidebar({ mode, serviceState, resetting, onReset, onNavigate }: 
         <Settings2 size={18} aria-hidden="true" />
         <span>API 文档</span>
       </a>
-      <ServiceStatus state={serviceState} />
       <p className="local-only-note">仅供本地单用户使用；会话 ID 不是登录身份。</p>
     </aside>
   );

@@ -45,9 +45,9 @@ function EmptyConversation({
         {mode === "rag" ? <ChevronRight size={28} /> : <Bot size={28} />}
       </div>
       <p className="eyebrow">{mode === "rag" ? "知识问答" : "Agent"}</p>
-      <h1 id="welcomeTitle">
+      <h2 id="welcomeTitle">
         {mode === "rag" ? "从知识库中找到可信答案" : "让 Agent 帮你完成多步任务"}
-      </h1>
+      </h2>
       <p>
         {mode === "rag"
           ? "问题会经过检索与生成，并在完成后提供可核对的引用。"

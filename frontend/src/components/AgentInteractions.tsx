@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ExternalLink, ShieldCheck } from "lucide-react";
 
 import { safeExternalUrl } from "../api/safeUrls";
@@ -27,14 +27,14 @@ const STATUS_LABELS = Object.freeze({
   outcome_unknown: "结果未知",
 });
 
-function InteractionFrame({ interaction, children }: InteractionProps & { children: React.ReactNode }) {
+function InteractionFrame({ interaction, children }: InteractionProps & { children: React.ReactNode }): React.JSX.Element {
   const headingId = `interaction-${interaction.kind}-${interaction.id}`;
   return (
     <section className="interaction-card" aria-labelledby={headingId}>
       <div className="interaction-heading">
-        <h3 id={headingId}>
+        <h2 id={headingId}>
           {interaction.kind === "approval" ? "需要工具审批" : "需要你的输入"}
-        </h3>
+        </h2>
         <span data-status={interaction.status}>{STATUS_LABELS[interaction.status]}</span>
       </div>
       {children}
@@ -43,7 +43,7 @@ function InteractionFrame({ interaction, children }: InteractionProps & { childr
   );
 }
 
-function ApprovalCard(props: InteractionProps & { interaction: Extract<AgentInteraction, { kind: "approval" }> }) {
+function ApprovalCard(props: InteractionProps & { interaction: Extract<AgentInteraction, { kind: "approval" }> }): React.JSX.Element {
   const { interaction, onDecision } = props;
   const locked = interaction.status !== "pending";
   return (
@@ -98,12 +98,17 @@ function formFields(interaction: FormElicitationInteraction): FormField[] | null
   return fields;
 }
 
-function FormCard(props: InteractionProps & { interaction: FormElicitationInteraction }) {
+function FormCard(props: InteractionProps & { interaction: FormElicitationInteraction }): React.JSX.Element {
   const { interaction, onDecision } = props;
   const fields = useMemo(() => formFields(interaction), [interaction]);
   const [values, setValues] = useState<Record<string, string | boolean>>({});
   const [validation, setValidation] = useState<Record<string, string>>({});
+  const errorSummary = useRef<HTMLParagraphElement>(null);
   const locked = interaction.status !== "pending";
+
+  useEffect(() => {
+    if (Object.keys(validation).length > 0) errorSummary.current?.focus();
+  }, [validation]);
 
   function submit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -150,7 +155,9 @@ function FormCard(props: InteractionProps & { interaction: FormElicitationIntera
       ) : (
         <form className="elicitation-form" onSubmit={submit} noValidate>
           {Object.keys(validation).length > 0 && (
-            <p className="interaction-error" role="alert">请检查表单中标出的字段。</p>
+            <p className="interaction-error" role="alert" tabIndex={-1} ref={errorSummary}>
+              请检查表单中标出的字段。
+            </p>
           )}
           {fields.map((field) => {
             const errorId = `${interaction.id}-${field.name}-error`;
@@ -211,7 +218,7 @@ function FormCard(props: InteractionProps & { interaction: FormElicitationIntera
   );
 }
 
-function UrlCard(props: InteractionProps & { interaction: Extract<AgentInteraction, { kind: "url" }> }) {
+function UrlCard(props: InteractionProps & { interaction: Extract<AgentInteraction, { kind: "url" }> }): React.JSX.Element {
   const { interaction, onDecision } = props;
   const safeUrl = safeExternalUrl(interaction.url);
   const locked = interaction.status !== "pending";
@@ -242,7 +249,7 @@ function UrlCard(props: InteractionProps & { interaction: Extract<AgentInteracti
 export function AgentInteractions({ interactions, onDecision }: {
   interactions: AgentInteraction[];
   onDecision: (decision: InteractionDecision) => Promise<void>;
-}) {
+}): React.JSX.Element | null {
   if (!interactions.length) return null;
   return (
     <div className="agent-interactions" aria-label="Agent 待处理请求">

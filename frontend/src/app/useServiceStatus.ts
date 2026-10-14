@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { isRecord } from "../api/sse";
 
@@ -11,8 +11,19 @@ const SERVICE_STATES = new Set<ServiceState>([
   "unavailable",
 ]);
 
-export function useServiceStatus(): ServiceState {
+interface ServiceStatusController {
+  state: ServiceState;
+  refresh: () => void;
+}
+
+export function useServiceStatus(): ServiceStatusController {
   const [serviceState, setServiceState] = useState<ServiceState>("checking");
+  const [requestSequence, setRequestSequence] = useState(0);
+
+  const refresh = useCallback((): void => {
+    setServiceState("checking");
+    setRequestSequence((current) => current + 1);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -24,6 +35,7 @@ export function useServiceStatus(): ServiceState {
           signal: controller.signal,
         });
         const body: unknown = await response.json().catch(() => null);
+        if (controller.signal.aborted) return;
         const reported = isRecord(body) && typeof body.status === "string" ? body.status : "";
         if (SERVICE_STATES.has(reported as ServiceState)) {
           setServiceState(reported as ServiceState);
@@ -35,7 +47,7 @@ export function useServiceStatus(): ServiceState {
       }
     })();
     return () => controller.abort();
-  }, []);
+  }, [requestSequence]);
 
-  return serviceState;
+  return { state: serviceState, refresh };
 }

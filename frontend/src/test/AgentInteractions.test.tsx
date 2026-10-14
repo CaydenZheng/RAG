@@ -57,6 +57,7 @@ describe("Agent Elicitation", () => {
 
     await user.click(screen.getByRole("button", { name: "提交并继续" }));
     expect(screen.getAllByText("此项为必填项。")).toHaveLength(2);
+    expect(screen.getByText("请检查表单中标出的字段。")).toHaveFocus();
     expect(onDecision).not.toHaveBeenCalled();
 
     await user.type(screen.getByRole("textbox", { name: /Answer/ }), "yes");

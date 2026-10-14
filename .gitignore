@@ -16,6 +16,8 @@ htmlcov/
 
 # Frontend build and dependencies
 /frontend/node_modules/
+/frontend/playwright-report/
+/frontend/test-results/
 /src/web/dist/
 
 # 本地数据
