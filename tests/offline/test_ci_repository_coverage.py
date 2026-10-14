@@ -27,3 +27,4 @@ def test_production_browser_server_has_isolated_required_settings() -> None:
     config = PRODUCTION_PLAYWRIGHT_CONFIG_PATH.read_text(encoding="utf-8")
 
     assert 'OPENAI_API_KEY: "playwright-production-fixture-key"' in config
+    assert 'ADMIN_API_KEY: "playwright-production-admin-fixture-key"' in config

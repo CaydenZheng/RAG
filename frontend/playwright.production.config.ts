@@ -28,6 +28,7 @@ export default defineConfig({
     command: "uv run --no-sync --offline --no-env-file uvicorn app:app --host 127.0.0.1 --port 8001 --lifespan off",
     cwd: "..",
     env: {
+      ADMIN_API_KEY: "playwright-production-admin-fixture-key",
       OPENAI_API_KEY: "playwright-production-fixture-key",
     },
     url: "http://127.0.0.1:8001/health",
