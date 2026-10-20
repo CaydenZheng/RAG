@@ -21,6 +21,7 @@ from typing import Any, AsyncGenerator, List, Optional
 
 from loguru import logger
 from openai import AsyncOpenAI, OpenAI, Timeout
+from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from sentence_transformers import SentenceTransformer
 
 from config.settings import settings
@@ -89,7 +90,28 @@ class LLMClient:
             "identity_scope": current_cache_identity(),
             "index_version": index_version,
             "prompt_version": settings.prompt_version,
+            "generation_parameters": {"completion_contract": "validated-v1"},
         }
+
+    @staticmethod
+    def _completed_message(
+        response: ChatCompletion, *, allow_tools: bool = False,
+    ) -> ChatCompletionMessage:
+        """Reject truncated or unconfirmed outputs before caching or tool planning."""
+        if response.choices:
+            choice = response.choices[0]
+            message = choice.message
+            tool_calls = message.tool_calls
+            if (
+                choice.finish_reason == "stop"
+                and not tool_calls
+                and message.content
+                and message.content.strip()
+            ) or (
+                allow_tools and choice.finish_reason == "tool_calls" and tool_calls
+            ):
+                return message
+        raise RuntimeError("LLM completion ended without a complete response")
 
     @staticmethod
     def _record_chat_span(
@@ -167,13 +189,13 @@ class LLMClient:
         logger.debug("LLM chat → model={} messages={}", kwargs["model"], len(messages))
         try:
             resp = self._chat_client.chat.completions.create(**kwargs)
+            content: str = self._completed_message(resp).content or ""
         except Exception:
             self._record_chat_span(
                 started_at, model, cache_hit=False, status="error",
                 error_code="llm_call_failed",
             )
             raise
-        content = resp.choices[0].message.content or ""
         self._record_chat_span(
             started_at, model, cache_hit=False, response_chars=len(content),
             usage=resp.usage,
@@ -239,13 +261,13 @@ class LLMClient:
         logger.debug("LLM chat_async → model={} messages={}", kwargs["model"], len(messages))
         try:
             resp = await self._async_chat_client.chat.completions.create(**kwargs)
+            content: str = self._completed_message(resp).content or ""
         except Exception:
             self._record_chat_span(
                 started_at, model, cache_hit=False, status="error",
                 error_code="llm_call_failed",
             )
             raise
-        content = resp.choices[0].message.content or ""
         self._record_chat_span(
             started_at, model, cache_hit=False, response_chars=len(content),
             usage=resp.usage,
@@ -298,6 +320,9 @@ class LLMClient:
             response = await self._async_chat_client.chat.completions.create(
                 **kwargs
             )
+            message: ChatCompletionMessage = self._completed_message(
+                response, allow_tools=bool(tools),
+            )
         except Exception:
             self._record_chat_span(
                 started_at,
@@ -308,7 +333,6 @@ class LLMClient:
             )
             raise
 
-        message = response.choices[0].message
         content = message.content or ""
         tool_calls = tuple(
             NativeToolCall(

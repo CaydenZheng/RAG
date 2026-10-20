@@ -81,7 +81,8 @@ def test_llm_client_reuses_one_complete_cache_context(
     response = SimpleNamespace(
         choices=[
             SimpleNamespace(
-                message=SimpleNamespace(content="provider answer")
+                finish_reason="stop",
+                message=SimpleNamespace(content="provider answer", tool_calls=None),
             )
         ],
         usage=None,
