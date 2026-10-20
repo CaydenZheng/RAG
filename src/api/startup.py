@@ -111,6 +111,12 @@ def _failure_details(component: str, error: Exception) -> tuple[str, str]:
             f"{component} could not be loaded within available memory; "
             "free memory or use a smaller model",
         )
+    if component == "index":
+        return (
+            "index_unavailable",
+            "active index could not be read; verify index storage, "
+            "then restore a backup or rebuild from source documents",
+        )
     return (
         f"{component}_unavailable",
         f"{component} warm-up failed; check model files and configuration",

@@ -252,6 +252,7 @@ def test_llm_client_returns_native_tool_calls_from_openai_compatible_sdk() -> No
         return_value=SimpleNamespace(
             choices=[
                 SimpleNamespace(
+                    finish_reason="tool_calls",
                     message=SimpleNamespace(
                         content=None,
                         tool_calls=[
@@ -314,7 +315,8 @@ def test_llm_client_returns_native_tool_calls_from_openai_compatible_sdk() -> No
     sdk.chat.completions.create.return_value = SimpleNamespace(
         choices=[
             SimpleNamespace(
-                message=SimpleNamespace(content="plain answer", tool_calls=None)
+                finish_reason="stop",
+                message=SimpleNamespace(content="plain answer", tool_calls=None),
             )
         ],
         usage=None,

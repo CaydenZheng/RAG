@@ -209,7 +209,10 @@ def test_llm_span_records_cache_hit_and_reported_usage(
     )
     response = SimpleNamespace(
         choices=[
-            SimpleNamespace(message=SimpleNamespace(content="generated answer"))
+            SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content="generated answer", tool_calls=None),
+            )
         ],
         usage=usage,
     )

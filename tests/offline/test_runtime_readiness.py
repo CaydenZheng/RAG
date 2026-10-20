@@ -193,6 +193,30 @@ def test_optional_reranker_preload_can_be_skipped(
     assert snapshot["components"]["reranker"]["status"] == "skipped"
 
 
+def test_unreadable_index_reports_storage_recovery_without_exception_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.api import startup
+
+    def count() -> int:
+        raise RuntimeError("private-storage-path-and-provider-token")
+
+    collection = SimpleNamespace(count=count)
+    monkeypatch.setattr(startup, "get_chroma_client", lambda: SimpleNamespace(
+        get_collection=lambda name: collection,
+    ))
+    startup.runtime_readiness.reset()
+
+    assert startup._prepare_index() is False
+
+    snapshot = startup.runtime_readiness.snapshot()
+    assert snapshot["status"] == "unavailable"
+    assert snapshot["components"]["index"]["code"] == "index_unavailable"
+    assert "restore a backup or rebuild from source documents" in snapshot["components"]["index"]["message"]
+    assert "private-storage-path-and-provider-token" not in str(snapshot)
+    assert snapshot["components"]["bm25"]["status"] == "skipped"
+
+
 def test_readiness_endpoint_requires_embedding_and_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

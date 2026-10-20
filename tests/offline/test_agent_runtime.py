@@ -84,6 +84,46 @@ def _set_answer_stream(
     monkeypatch.setattr(llm_client, "chat_stream_async", chat_stream_async)
 
 
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter", None])
+def test_incomplete_planner_cannot_execute_tools_or_save_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, finish_reason: str | None,
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.core.agent_runtime import AgentEvent, AgentEventKind
+    from src.llm import llm_client
+
+    harness, memory, tools = _runtime(tmp_path)
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(
+            finish_reason=finish_reason,
+            message=SimpleNamespace(
+                content=json.dumps({
+                    "action": "tool_call", "tool_name": "lookup", "params": {"key": "value"},
+                }),
+                tool_calls=None,
+            ),
+        )],
+        usage=None,
+    )
+    monkeypatch.setattr(
+        llm_client._async_chat_client.chat.completions,
+        "create", AsyncMock(return_value=response),
+    )
+
+    async def consume() -> list[AgentEvent]:
+        return [event async for event in harness.events("incomplete-plan", "question")]
+
+    events = asyncio.run(consume())
+
+    assert events[-1].kind is AgentEventKind.ERROR
+    assert sum(event.kind is AgentEventKind.ERROR for event in events) == 1
+    assert all(event.kind not in {AgentEventKind.DONE, AgentEventKind.CHUNK} for event in events)
+    assert tools.calls == []
+    assert memory.load_history("incomplete-plan") == []
+
+
 def test_typed_events_share_one_async_execution_core(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
