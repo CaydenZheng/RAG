@@ -38,6 +38,10 @@ class QueryRewriterNode(AsyncNode):
     始终保留原始 query，避免改写负向效果。
     """
 
+    MAX_VARIANTS = 5  # Includes the original question.
+    MAX_VARIANT_CHARS = 2000
+    MAX_RESPONSE_CHARS = MAX_VARIANTS * MAX_VARIANT_CHARS * 2
+
     async def prep_async(self, shared: dict) -> str:
         return shared.get("query", "")
 
@@ -58,6 +62,8 @@ class QueryRewriterNode(AsyncNode):
 
             with tracer.stage("query_rewrite_llm"):
                 resp = await llm_client.chat_async(messages, temperature=0.2)
+            if len(resp) > self.MAX_RESPONSE_CHARS:
+                raise ValueError("rewrite response exceeds limit")
 
             # 解析 YAML — 兼容两种格式
             if "```yaml" in resp:
@@ -74,15 +80,26 @@ class QueryRewriterNode(AsyncNode):
             else:
                 rewritten = [query]
 
+            if (
+                not isinstance(rewritten, list)
+                or not 1 <= len(rewritten) <= self.MAX_VARIANTS
+                or any(
+                    not isinstance(item, str)
+                    or not item.strip()
+                    or len(item) > self.MAX_VARIANT_CHARS
+                    for item in rewritten
+                )
+            ):
+                raise ValueError("invalid rewrite variants")
+            rewritten = list(dict.fromkeys([query, *(item.strip() for item in rewritten)]))
+            if len(rewritten) > self.MAX_VARIANTS:
+                raise ValueError("too many rewrite variants")
+
         except Exception as exc:
             logger.warning(
                 "Query rewrite failed: {}; using original", type(exc).__name__
             )
             rewritten = [query]
-
-        # 始终保留原 query 作为兜底
-        if query not in rewritten:
-            rewritten.insert(0, query)
 
         logger.info("  → {} query variants", len(rewritten))
         return rewritten

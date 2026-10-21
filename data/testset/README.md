@@ -31,8 +31,10 @@
 1. 打开所有 source_documents，确认 SHA 未变化，问题可由指定语料回答；对无来源拒答样本，确认答案确实不在冻结语料中。
 2. 检查 evidence_quotes 是充分证据，答案没有遗漏、歧义或语料外知识。
 3. 检查 task_types；`multi_fact` 必须是单文档组合事实，`multi_hop` 必须需要至少两个不同来源；无答案样本必须使用 expected_behavior: abstain 和 ground_truth: null。
-4. 将通过的样本复制到 final_v1.json，把 split 改为 final，并填写真实的 reviewer 与 reviewed_at，状态改为 human_verified。
-5. 重新计算数据和 catalog 版本并运行校验。任何未经人工确认的记录都会被 final 规则拒绝。
+4. 先确定样本用途，再将通过的记录分配到 development、独立 calibration 或 final；同一问题/样本不能同时保留在多个划分中。已经用于开发或调参的问题，不晋级充当盲测 final。填写真实的 reviewer 与 reviewed_at，状态改为 human_verified。
+5. 重新计算数据和 catalog 版本并运行校验。calibration 和 final 均拒绝未经人工确认的记录；校准器只接受 calibration 报告，拒绝 final 报告。当前尚无 calibration 样本，final 仍为 0；这不是质量验收通过。
+
+详细标注、划分和冻结要求见 [人工核验与质量验收指南](annotation-guide.md)。自动化只能检查格式和明显重复，不能替代人工审核或证明答案质量。
 
 自动检查验证结构、哈希、证据存在性、版本、划分以及 `multi_fact`/`multi_hop` 的来源数量约束。它不会判断问题是否自然、是否真的需要组合事实、答案是否完整，也不等同于人工审核。
 

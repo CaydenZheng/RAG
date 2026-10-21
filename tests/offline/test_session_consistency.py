@@ -744,6 +744,7 @@ def test_compression_reuses_summary_after_cas_conflict(
             turns: list[SessionTurn],
             *,
             compression_owner: str | None = None,
+            can_commit: Callable[[], bool] | None = None,
         ) -> bool:
             self.cas_attempts += 1
             if self.cas_attempts == 1:
@@ -756,6 +757,7 @@ def test_compression_reuses_summary_after_cas_conflict(
                 expected_revision,
                 turns,
                 compression_owner=compression_owner,
+                can_commit=can_commit,
             )
 
     store: ConflictInjectingStore = ConflictInjectingStore(

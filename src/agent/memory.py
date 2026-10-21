@@ -13,9 +13,10 @@ sessions.db   — RAG／Agent 共用的有序短期历史，达到阈值时 LLM 
 import asyncio
 import json
 import re
+import threading
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -266,8 +267,14 @@ class MemoryManager:
             ],
         )
 
+    def session_epoch(self, session_id: str) -> int:
+        """Capture reset identity before a request starts using history."""
+        return self._store.read_snapshot(session_id).revision[0]
+
     def add_turns(
-        self, session_id: str, new_turns: Iterable[MemoryTurn]
+        self, session_id: str, new_turns: Iterable[MemoryTurn], *,
+        expected_epoch: int | None = None,
+        can_commit: Callable[[], bool] | None = None,
     ) -> MemoryUpdateStatus:
         """Append one complete Agent interaction as an atomic history update."""
         session_id = validate_storage_session_id(session_id)
@@ -276,6 +283,10 @@ class MemoryManager:
             return MemoryUpdateStatus.UNCHANGED
 
         snapshot: HistorySnapshot = self._store.read_snapshot(session_id)
+        if (
+            expected_epoch is not None and snapshot.revision[0] != expected_epoch
+        ) or (can_commit is not None and not can_commit()):
+            return MemoryUpdateStatus.STALE_DISCARDED
         turns: list[MemoryTurn] = [
             self._as_memory_turn(turn) for turn in snapshot.turns
         ]
@@ -285,7 +296,8 @@ class MemoryManager:
         ]
         if len(turns) < self.config.compress_trigger_turns:
             if self._store.append_turns_if_epoch(
-                session_id, snapshot.revision[0], pending_turns
+                session_id, snapshot.revision[0], pending_turns,
+                can_commit=can_commit,
             ):
                 return MemoryUpdateStatus.APPENDED
             return MemoryUpdateStatus.STALE_DISCARDED
@@ -298,7 +310,8 @@ class MemoryManager:
             ttl_seconds=_COMPRESSION_CLAIM_TTL_SECONDS,
         ):
             if self._store.append_turns_if_epoch(
-                session_id, snapshot.revision[0], pending_turns
+                session_id, snapshot.revision[0], pending_turns,
+                can_commit=can_commit,
             ):
                 return MemoryUpdateStatus.APPENDED
             return MemoryUpdateStatus.STALE_DISCARDED
@@ -311,7 +324,8 @@ class MemoryManager:
             )
             if status is MemoryUpdateStatus.APPENDED:
                 if self._store.append_turns_if_epoch(
-                    session_id, snapshot.revision[0], pending_turns
+                    session_id, snapshot.revision[0], pending_turns,
+                    can_commit=can_commit,
                 ):
                     return status
                 return MemoryUpdateStatus.STALE_DISCARDED
@@ -321,6 +335,8 @@ class MemoryManager:
                 for turn in compressed[: -len(pending)]
             ]
             for _attempt in range(_COMPRESSION_CAS_ATTEMPTS):
+                if can_commit is not None and not can_commit():
+                    return MemoryUpdateStatus.STALE_DISCARDED
                 current: HistorySnapshot = self._store.read_snapshot(session_id)
                 if current.revision[0] != snapshot.revision[0]:
                     return MemoryUpdateStatus.STALE_DISCARDED
@@ -329,7 +345,8 @@ class MemoryManager:
                         "Memory compression discarded after history replacement"
                     )
                     if self._store.append_turns_if_epoch(
-                        session_id, snapshot.revision[0], pending_turns
+                        session_id, snapshot.revision[0], pending_turns,
+                        can_commit=can_commit,
                     ):
                         return MemoryUpdateStatus.APPENDED
                     return MemoryUpdateStatus.STALE_DISCARDED
@@ -343,12 +360,14 @@ class MemoryManager:
                     current.revision,
                     replacement,
                     compression_owner=owner_id,
+                    can_commit=can_commit,
                 ):
                     return status
 
             logger.warning("Memory compression CAS retries exhausted")
             if self._store.append_turns_if_epoch(
-                session_id, snapshot.revision[0], pending_turns
+                session_id, snapshot.revision[0], pending_turns,
+                can_commit=can_commit,
             ):
                 return MemoryUpdateStatus.APPENDED
             return MemoryUpdateStatus.STALE_DISCARDED
@@ -356,13 +375,30 @@ class MemoryManager:
             self._store.release_compression_claim(session_id, owner_id)
 
     async def add_turns_async(
-        self, session_id: str, new_turns: Iterable[MemoryTurn]
+        self, session_id: str, new_turns: Iterable[MemoryTurn], *,
+        expected_epoch: int | None = None,
+        deadline: float | None = None,
     ) -> MemoryUpdateStatus:
         """Append one Agent interaction without blocking the event loop."""
         pending: list[MemoryTurn] = list(new_turns)
         if not pending:
             return MemoryUpdateStatus.UNCHANGED
-        return await asyncio.to_thread(self.add_turns, session_id, pending)
+        cancelled: threading.Event = threading.Event()
+
+        def can_commit() -> bool:
+            return not cancelled.is_set() and (
+                deadline is None or time.monotonic() < deadline
+            )
+
+        try:
+            return await asyncio.to_thread(
+                self.add_turns, session_id, pending,
+                expected_epoch=expected_epoch, can_commit=can_commit,
+            )
+        finally:
+            # A cancelled to_thread await does not stop the worker. Revoke its
+            # commit permission; the transaction checks again before commit.
+            cancelled.set()
 
     def clear_session(self, session_id: str) -> bool:
         """Clear shared and legacy history without allowing stale migration."""

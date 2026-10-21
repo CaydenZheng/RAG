@@ -355,6 +355,7 @@ def test_final_evaluation_requires_clean_committed_code(
 ) -> None:
     sample = _sample()
     sample["split"] = "final"
+    sample["review"] = {"status": "human_verified", "reviewer": "fixture-reviewer", "reviewed_at": "2026-10-20"}
     catalog = DatasetCatalog(
         path=tmp_path / "manifest.json",
         datasets=(

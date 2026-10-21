@@ -271,6 +271,7 @@ class AgentHarness:
         iterations = 0
 
         try:
+            session_epoch: int = self.memory.session_epoch(session_id)
             if not user_message.strip():
                 raise _AgentExecutionError(
                     "invalid_agent_message",
@@ -517,9 +518,7 @@ class AgentHarness:
                 json.dumps(answer_messages, ensure_ascii=False, default=str)
             )
             answer_max_tokens = budget.reserve_output(
-                self.config.planner_max_tokens
-                if final_answer_requested
-                else self.config.final_max_tokens
+                self.config.final_max_tokens
             )
             answer_chunks: list[str] = []
             from src.llm import llm_client
@@ -567,10 +566,20 @@ class AgentHarness:
 
             memory_started: float = time.monotonic()
             memory_status: MemoryUpdateStatus = (
-                await self.memory.add_turns_async(
-                    session_id, turns
+                await self._await_with_budget(
+                    self.memory.add_turns_async(
+                        session_id, turns,
+                        expected_epoch=session_epoch,
+                        deadline=time.monotonic() + budget.remaining_seconds(),
+                    ),
+                    budget,
                 )
             )
+            budget.remaining_seconds()
+            if memory_status is MemoryUpdateStatus.STALE_DISCARDED:
+                raise _AgentExecutionError(
+                    "agent_session_reset", "Agent session changed during execution.",
+                )
             tracer.add_span(
                 None,
                 "agent_memory_persist",

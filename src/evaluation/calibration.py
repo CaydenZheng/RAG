@@ -1,4 +1,4 @@
-"""Calibrate evidence-score thresholds from a human-verified final report."""
+"""Calibrate thresholds without using the held-out final acceptance report."""
 
 from __future__ import annotations
 
@@ -114,13 +114,21 @@ def calibrate_mode(
 
 
 def calibrate_report(report: dict[str, Any]) -> dict[str, Any]:
-    """Build auditable runtime thresholds from a final-split evaluation report."""
+    """Build auditable thresholds exclusively from human-reviewed calibration data."""
     reproducibility = report.get("reproducibility") or {}
     data = reproducibility.get("data") or {}
-    if data.get("split") != "final":
-        raise ValueError("calibration requires a human-verified final report")
+    if data.get("split") != "calibration":
+        raise ValueError("calibration requires a human-verified calibration report")
 
     mode_results = report.get("modes") or {}
+    if any(
+        sample.get("review", {}).get("status") != "human_verified"
+        or not sample.get("review", {}).get("reviewer")
+        or not sample.get("review", {}).get("reviewed_at")
+        for mode_result in mode_results.values()
+        for sample in (mode_result.get("samples") or [])
+    ):
+        raise ValueError("calibration samples require human verification")
     failed_samples = [
         sample
         for mode_result in mode_results.values()
@@ -152,6 +160,7 @@ def calibrate_report(report: dict[str, Any]) -> dict[str, Any]:
     calibration_id = "sha256:" + hashlib.sha256(canonical_report).hexdigest()
     return {
         "schema_version": 1,
+        "source_split": "calibration",
         "calibration_id": calibration_id,
         "catalog_version": data.get("catalog_version", "unavailable"),
         "models": reproducibility.get("models") or {},

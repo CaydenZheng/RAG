@@ -16,6 +16,7 @@ from src.evaluation.datasets import (
     EvaluationDataset,
     load_dataset,
     load_dataset_catalog,
+    validate_split_isolation,
     write_dataset,
 )
 
@@ -132,14 +133,15 @@ def test_source_hash_tampering_is_rejected(tmp_path: Path) -> None:
         write_dataset(path, tampered, repository_root=REPOSITORY_ROOT)
 
 
-def test_unverified_sample_cannot_enter_final_split(tmp_path: Path) -> None:
+@pytest.mark.parametrize("split", ["calibration", "final"])
+def test_unverified_sample_cannot_enter_protected_split(tmp_path: Path, split: str) -> None:
     source = json.loads(
         (REPOSITORY_ROOT / "data/testset/generated_test.json").read_text(encoding="utf-8")
     )
     unverified = [copy.deepcopy(source[0])]
-    unverified[0]["split"] = "final"
+    unverified[0]["split"] = split
     path = tmp_path / "final.json"
-    with pytest.raises(DatasetValidationError, match="final samples must be human_verified"):
+    with pytest.raises(DatasetValidationError, match=f"{split} samples must be human_verified"):
         write_dataset(path, unverified, repository_root=REPOSITORY_ROOT)
 
 
@@ -203,3 +205,21 @@ def test_source_hashes_are_independent_of_platform_newlines(tmp_path: Path) -> N
     )
 
     assert len(dataset.records) == 1
+
+
+@pytest.mark.parametrize("same_identity", [False, True])
+def test_calibration_and_final_cannot_share_questions_or_sample_ids(
+    tmp_path: Path, same_identity: bool,
+) -> None:
+    calibration = {"id": "sample-001", "question": "A question?", "split": "calibration"}
+    final = {
+        "id": "sample-001" if same_identity else "sample-002",
+        "question": "Different question?" if same_identity else "  a   QUESTION? ",
+        "split": "final",
+    }
+    datasets = tuple(
+        EvaluationDataset(tmp_path / f"{sample['split']}.json", (sample,), "version")
+        for sample in (calibration, final)
+    )
+    with pytest.raises(DatasetValidationError, match="multiple datasets|overlaps evaluation splits"):
+        validate_split_isolation(datasets)

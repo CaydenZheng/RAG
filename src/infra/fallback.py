@@ -20,19 +20,21 @@ from src.llm import llm_client
 def _chat_with_ollama(
     messages: List[dict],
     temperature: float,
+    max_tokens: int | None = None,
 ) -> str:
-    client = OpenAI(
+    with OpenAI(
         base_url=settings.ollama_base_url,
         api_key="ollama",
         timeout=30,
         max_retries=0,
-    )
-    response = client.chat.completions.create(
-        model="llama3.2",
-        messages=messages,
-        temperature=temperature,
-    )
-    return response.choices[0].message.content or ""
+    ) as client:
+        response = client.chat.completions.create(
+            model="llama3.2",
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return llm_client._completed_message(response).content or ""
 
 
 async def chat_with_fallback_async(
@@ -66,6 +68,7 @@ async def chat_with_fallback_async(
                 _chat_with_ollama,
                 messages,
                 temperature,
+                max_tokens,
             )
             logger.info("Ollama fallback succeeded")
             return answer

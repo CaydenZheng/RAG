@@ -117,7 +117,8 @@ async def iter_answer_sse(
             return
 
         answer = "".join(answer_chunks)
-        service.persist(answer_input, answer)
+        if service.persist(answer_input, answer) is False:
+            raise RuntimeError("Session changed during answer generation")
     except asyncio.CancelledError:
         logger.info("RAG stream {} cancelled by server", query_id)
         raise

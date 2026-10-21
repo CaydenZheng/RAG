@@ -28,7 +28,8 @@ ALLOWED_TASK_TYPES = frozenset(
         "adversarial",
     }
 )
-ALLOWED_SPLITS = frozenset({"development", "final"})
+ALLOWED_SPLITS = frozenset({"development", "calibration", "final"})
+HUMAN_REVIEWED_SPLITS = frozenset({"calibration", "final"})
 ALLOWED_REVIEW_STATUSES = frozenset({"unverified", "ai_screened", "human_verified", "rejected"})
 REQUIRED_PROVENANCE_FIELDS = (
     "origin",
@@ -236,8 +237,8 @@ def _validate_record(record: Any, *, index: int, repository_root: Path) -> None:
         raise DatasetValidationError(
             f"{label}.review cannot claim a reviewer before human verification"
         )
-    if split == "final" and review["status"] != "human_verified":
-        raise DatasetValidationError(f"{label}: final samples must be human_verified")
+    if split in HUMAN_REVIEWED_SPLITS and review["status"] != "human_verified":
+        raise DatasetValidationError(f"{label}: {split} samples must be human_verified")
 
     sources = record.get("source_documents")
     if not isinstance(sources, list):
@@ -346,6 +347,26 @@ def _catalog_version(manifest: dict[str, Any]) -> str:
     return f"sha256:{digest}"
 
 
+def validate_split_isolation(datasets: tuple[EvaluationDataset, ...]) -> None:
+    """Reject repeated identities and normalized questions across splits.
+
+    Semantic paraphrases and evidence-family overlap still require human review.
+    Sharing a source corpus does not itself constitute evaluation leakage.
+    """
+    sample_ids: set[str] = set()
+    question_splits: dict[str, str] = {}
+    for dataset in datasets:
+        for record in dataset.records:
+            if record["id"] in sample_ids:
+                raise DatasetValidationError("sample identity occurs in multiple datasets")
+            sample_ids.add(record["id"])
+            question: str = " ".join(record["question"].split()).casefold()
+            split: str = record["split"]
+            if question in question_splits and question_splits[question] != split:
+                raise DatasetValidationError("question overlaps evaluation splits")
+            question_splits[question] = split
+
+
 def load_dataset_catalog(
     path: str | Path, *, repository_root: str | Path | None = None
 ) -> DatasetCatalog:
@@ -407,8 +428,8 @@ def load_dataset_catalog(
         review_policy = _required_text(entry, "review_status", label)
         if review_policy not in {"unverified", "human_verified_only"}:
             raise DatasetValidationError(f"{label}.review_status is invalid")
-        if split == "final" and review_policy != "human_verified_only":
-            raise DatasetValidationError(f"{label}: final data requires human_verified_only")
+        if split in HUMAN_REVIEWED_SPLITS and review_policy != "human_verified_only":
+            raise DatasetValidationError(f"{label}: {split} data requires human_verified_only")
 
         dataset = load_dataset(
             dataset_path,
@@ -439,4 +460,5 @@ def load_dataset_catalog(
     if missing_types:
         raise DatasetValidationError(f"catalog is missing task coverage: {sorted(missing_types)}")
 
+    validate_split_isolation(tuple(datasets))
     return DatasetCatalog(manifest_path, tuple(datasets), version)

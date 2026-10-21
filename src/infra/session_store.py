@@ -4,7 +4,7 @@ import json
 import sqlite3
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -13,6 +13,8 @@ from loguru import logger
 
 from config.settings import settings
 from src.security.session_ids import validate_storage_session_id
+
+_COMMIT_RETRY_INTERVAL_SECONDS: float = 0.005
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,39 @@ class SessionStore:
         )
         return HistorySnapshot(turns=turns, revision=revision)
 
+    @staticmethod
+    def _commit_if_permitted(
+        connection: sqlite3.Connection,
+        can_commit: Callable[[], bool] | None,
+    ) -> bool:
+        """Never wait inside COMMIT after checking a cancellable write guard."""
+        if can_commit is None:
+            connection.commit()
+            return True
+
+        busy_timeout_ms: int = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+        retry_deadline: float = time.monotonic() + busy_timeout_ms / 1000
+        # A reader may hold COMMIT's lock upgrade past the request deadline.
+        # Make each attempt non-blocking, then recheck the guard (which owns
+        # cancellation/deadline) before every retry. Keep SQLite's wait cap.
+        connection.execute("PRAGMA busy_timeout = 0")
+        try:
+            while True:
+                if not can_commit():
+                    connection.rollback()
+                    return False
+                try:
+                    connection.commit()
+                    return True
+                except sqlite3.OperationalError as exc:
+                    error_code: int = getattr(exc, "sqlite_errorcode", 0)
+                    remaining: float = retry_deadline - time.monotonic()
+                    if error_code & 0xFF != sqlite3.SQLITE_BUSY or remaining <= 0:
+                        raise
+                    time.sleep(min(_COMMIT_RETRY_INTERVAL_SECONDS, remaining))
+        finally:
+            connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+
     def replace_history_if_revision(
         self,
         session_id: str,
@@ -250,6 +285,7 @@ class SessionStore:
         turns: Iterable[SessionTurn],
         *,
         compression_owner: str | None = None,
+        can_commit: Callable[[], bool] | None = None,
     ) -> bool:
         """Replace history only when its revision and claim are unchanged."""
         session_id = validate_storage_session_id(session_id)
@@ -275,14 +311,15 @@ class SessionStore:
                 "DELETE FROM sessions WHERE session_id = ?", (session_id,)
             )
             self._insert_turns(connection, session_id, replacement)
-            connection.commit()
-        return True
+            return self._commit_if_permitted(connection, can_commit)
 
     def append_turns_if_epoch(
         self,
         session_id: str,
         expected_epoch: int,
         turns: Iterable[SessionTurn],
+        *,
+        can_commit: Callable[[], bool] | None = None,
     ) -> bool:
         """Append only while the session has not been cleared or replaced."""
         session_id = validate_storage_session_id(session_id)
@@ -298,8 +335,7 @@ class SessionStore:
                 connection.rollback()
                 return False
             self._insert_turns(connection, session_id, pending)
-            connection.commit()
-        return True
+            return self._commit_if_permitted(connection, can_commit)
 
     def try_claim_compression(
         self,

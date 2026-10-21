@@ -18,6 +18,7 @@ from src.core.knowledge import (
     RetrievalResult,
     knowledge_system,
 )
+from src.infra.session_store import session_store
 
 # ================================================================
 # 离线索引 Flow
@@ -47,6 +48,9 @@ class KnowledgeRetrievalNode(AsyncNode):
         self._system = system or knowledge_system
 
     async def prep_async(self, shared: dict) -> tuple:
+        session_id: str = shared.get("session_id", "")
+        if session_id and "session_epoch" not in shared:
+            shared["session_epoch"] = session_store.read_snapshot(session_id).revision[0]
         return (
             shared.get("query", ""),
             shared.get("top_k", DEFAULT_RETRIEVAL_TOP_K),

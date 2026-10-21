@@ -1,4 +1,4 @@
-"""Derive auditable abstention thresholds from a final evaluation report."""
+"""Derive thresholds from calibration data, never from final acceptance data."""
 
 from __future__ import annotations
 

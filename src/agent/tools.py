@@ -17,8 +17,9 @@ import hashlib
 import json
 import math
 import re
+import threading
 import time
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
@@ -143,6 +144,14 @@ class ModelToolCatalog:
         return self._registry_names.get(provider_name)
 
 
+@dataclass
+class _ToolCallClaim:
+    """One in-process reservation, retained while a sync worker is running."""
+
+    worker_running: bool = False
+    finished: bool = False
+
+
 def tool_params_from_schema(
     schema: dict[str, Any],
 ) -> tuple[List[ToolParam], tuple[str, ...]]:
@@ -244,6 +253,8 @@ class ToolRegistry:
             raise ValueError("max_sessions must be at least 1")
         self._tools: Dict[str, ToolDef] = {}
         self._dedup_cache: Dict[str, Dict[str, float]] = {}
+        self._dedup_lock = threading.RLock()
+        self._active_calls: dict[tuple[str, str], _ToolCallClaim] = {}
         self._dedup_window = dedup_window
         self._max_sessions = max_sessions
         self._approval_manager = approval_manager
@@ -491,6 +502,21 @@ class ToolRegistry:
                 start,
             )
         tool, call_hash = prepared
+        claim = self._claim_call(session_id, call_hash, tool_name)
+        if isinstance(claim, ToolResult):
+            return self._complete_preparation_failure(
+                tool_name, params, claim, session_id, start,
+            )
+        try:
+            return self._execute_prepared(tool, params, session_id, call_hash, start)
+        finally:
+            self._finish_call(session_id, call_hash, claim)
+
+    def _execute_prepared(
+        self, tool: ToolDef, params: dict, session_id: str,
+        call_hash: str, start: float,
+    ) -> ToolResult:
+        tool_name: str = tool.name
         if (
             tool.safety_level == SafetyLevel.GRAYLIST
             and self._approval_manager is not None
@@ -557,6 +583,23 @@ class ToolRegistry:
                 call_id=call_id,
             )
         tool, call_hash = prepared
+        claim = self._claim_call(session_id, call_hash, tool_name)
+        if isinstance(claim, ToolResult):
+            return self._complete_preparation_failure(
+                tool_name, params, claim, session_id, start, call_id=call_id,
+            )
+        try:
+            return await self._execute_prepared_async(
+                tool, params, session_id, call_hash, start, claim, call_id=call_id,
+            )
+        finally:
+            self._finish_call(session_id, call_hash, claim)
+
+    async def _execute_prepared_async(
+        self, tool: ToolDef, params: dict, session_id: str,
+        call_hash: str, start: float, claim: _ToolCallClaim, *, call_id: str,
+    ) -> ToolResult:
+        tool_name: str = tool.name
         if (
             tool.safety_level == SafetyLevel.GRAYLIST
             and self._approval_manager is not None
@@ -587,6 +630,15 @@ class ToolRegistry:
                     force_audit=True,
                 )
                 raise
+            except Exception:
+                return self._complete(
+                    tool, params,
+                    ToolResult(
+                        success=False, error="Tool approval is unavailable",
+                        error_code="tool_approval_unavailable", tool_name=tool_name,
+                    ),
+                    session_id, call_hash, start, call_id=call_id,
+                )
             if decision.outcome != "approved":
                 error_by_outcome = {
                     "rejected": (
@@ -681,7 +733,23 @@ class ToolRegistry:
                 if tool.execute_async_fn is not None:
                     result = await tool.execute_async_fn(params)
                 else:
-                    result = await asyncio.to_thread(tool.execute_fn, params)
+                    with self._dedup_lock:
+                        claim.worker_running = True
+                    # Shield the actual worker from cancellation of its waiter.
+                    # Only the worker may release its in-flight reservation.
+                    try:
+                        worker = asyncio.get_running_loop().run_in_executor(
+                            None, copy_context().run, self._invoke_sync,
+                            tool, params, session_id, call_hash, claim,
+                        )
+                    except Exception:
+                        with self._dedup_lock:
+                            claim.worker_running = False
+                        raise
+                    worker.add_done_callback(
+                        lambda done: None if done.cancelled() else done.exception()
+                    )
+                    result = await asyncio.shield(worker)
                 return self._complete(
                     tool,
                     params,
@@ -782,13 +850,6 @@ class ToolRegistry:
                 tool_name=tool_name,
             )
         call_hash = self._hash_call(tool_name, params)
-        if self._is_duplicate(session_id, call_hash):
-            return ToolResult(
-                success=False,
-                error="Duplicate tool call",
-                error_code="duplicate_tool_call",
-                tool_name=tool_name,
-            )
         return tool, call_hash
 
     def _complete(
@@ -809,7 +870,6 @@ class ToolRegistry:
         result.latency_ms = (time.time() - start) * 1000
         if not result.success and not result.error_code:
             result.error_code = "tool_failed"
-        self._record_call(session_id, call_hash)
         if (
             force_audit
             or tool.safety_level == SafetyLevel.GRAYLIST
@@ -843,8 +903,7 @@ class ToolRegistry:
             tool is not None and self._policy.configured
         )
         graylist_validation = (
-            result.error_code == "invalid_tool_parameters"
-            and tool is not None
+            tool is not None
             and tool.safety_level == SafetyLevel.GRAYLIST
         )
         if configured_policy_failure or graylist_validation:
@@ -961,6 +1020,49 @@ class ToolRegistry:
             last_time is not None
             and (now - last_time) < self._dedup_window
         )
+
+    def _claim_call(
+        self, session_id: str, call_hash: str, tool_name: str,
+    ) -> _ToolCallClaim | ToolResult:
+        with self._dedup_lock:
+            if (session_id, call_hash) in self._active_calls or self._is_duplicate(session_id, call_hash):
+                return ToolResult(
+                    success=False, error="Duplicate tool call",
+                    error_code="duplicate_tool_call", tool_name=tool_name,
+                )
+            # ponytail: one process-local cap; use durable idempotency only if
+            # cross-process/failure recovery becomes a requirement.
+            if len(self._active_calls) >= self._max_sessions:
+                return ToolResult(
+                    success=False, error="Tool execution capacity is exhausted",
+                    error_code="tool_capacity_exceeded", tool_name=tool_name,
+                )
+            claim = _ToolCallClaim()
+            self._active_calls[(session_id, call_hash)] = claim
+            return claim
+
+    def _finish_call(
+        self, session_id: str, call_hash: str, claim: _ToolCallClaim,
+    ) -> None:
+        with self._dedup_lock:
+            claim.finished = True
+            if claim.worker_running:
+                return
+            if self._active_calls.get((session_id, call_hash)) is claim:
+                self._record_call(session_id, call_hash)
+                del self._active_calls[(session_id, call_hash)]
+
+    def _invoke_sync(
+        self, tool: ToolDef, params: dict, session_id: str,
+        call_hash: str, claim: _ToolCallClaim,
+    ) -> ToolResult:
+        try:
+            return tool.execute_fn(params)
+        finally:
+            with self._dedup_lock:
+                claim.worker_running = False
+                if claim.finished:
+                    self._finish_call(session_id, call_hash, claim)
 
     def _record_call(self, session_id: str, call_hash: str) -> None:
         """记录调用时间戳并保持 session 状态有界。"""
