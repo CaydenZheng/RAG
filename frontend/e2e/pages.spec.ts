@@ -15,6 +15,7 @@ test("static assets, CSP and RAG streaming work without any backend", async ({ p
   page.on("response", (response) => { if (response.status() >= 400) errors.push(`HTTP ${response.status()}`); });
   await page.reload();
   await expect(page.getByLabel("模拟演示说明")).toBeVisible();
+  await expect(page.getByText("静态模拟演示 · 非真实 AI 服务", { exact: true })).toBeInViewport({ ratio: 1 });
   await expect(page.getByText("模拟模式 · 无后端")).toBeVisible();
   const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute("content");
   expect(policy).toContain("connect-src 'none'");
@@ -103,4 +104,23 @@ test("theme persists and narrow drawer restores focus", async ({ page }) => {
   await page.getByRole("link", { name: "知识问答", exact: true }).click();
   await expect(open).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("reset restores auto-follow after scrolling a long conversation", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await page.getByRole("textbox").fill("预设回答");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(page.getByText("引用来源 · 2")).toBeVisible();
+  const region = page.getByRole("region", { name: "对话内容" });
+  await region.evaluate((element) => { element.scrollTop = 0; });
+  await expect(page.getByRole("button", { name: "回到最新" })).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "新建对话", exact: true }).click();
+  await expect(page.getByText("静态模拟演示 · 非真实 AI 服务", { exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("button", { name: "回到最新" })).toHaveCount(0);
+  await page.getByRole("textbox").fill("新会话回答");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(page.getByText("引用来源 · 2")).toBeVisible();
+  await expect.poll(() => region.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(80);
+  await expect(page.getByRole("button", { name: "回到最新" })).toHaveCount(0);
 });

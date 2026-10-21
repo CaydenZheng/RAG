@@ -121,6 +121,12 @@ export function App(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    if (state.turns.length === 0) {
+      followingLatest.current = true;
+      setShowLatest(false);
+      if (scrollRegion.current) scrollRegion.current.scrollTop = 0;
+      return;
+    }
     if (followingLatest.current) scrollToLatest();
   }, [state, scrollToLatest]);
 
@@ -134,6 +140,7 @@ export function App(): React.JSX.Element {
   }, [mode]);
 
   function handleConversationScroll(): void {
+    if (state.turns.length === 0) return;
     const region = scrollRegion.current;
     if (!region) return;
     const atBottom = region.scrollHeight - region.scrollTop - region.clientHeight <= AUTO_FOLLOW_THRESHOLD_PX;
