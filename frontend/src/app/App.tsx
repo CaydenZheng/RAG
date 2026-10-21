@@ -10,16 +10,13 @@ import { ThemeControl } from "../components/ThemeControl";
 import { useConversation } from "./useConversation";
 import { useServiceStatus } from "./useServiceStatus";
 import { useTheme } from "./useTheme";
-
-function currentMode(pathname: string): WorkspaceMode {
-  return pathname === "/agent" ? "agent" : "rag";
-}
+import { currentMode, IS_PAGES_DEMO, modeHref } from "./runtime";
 
 const AUTO_FOLLOW_THRESHOLD_PX = 80;
 const COMPACT_NAVIGATION_QUERY = "(max-width: 899px)";
 
 export function App(): React.JSX.Element {
-  const [mode, setMode] = useState(() => currentMode(window.location.pathname));
+  const [mode, setMode] = useState(currentMode);
   const [compactNavigation, setCompactNavigation] = useState(() => (
     window.matchMedia?.(COMPACT_NAVIGATION_QUERY).matches ?? false
   ));
@@ -48,10 +45,10 @@ export function App(): React.JSX.Element {
     setDraft,
   } = activeConversation;
 
-  const navigate = useCallback((nextMode: WorkspaceMode) => {
+  const navigate = useCallback((nextMode: WorkspaceMode): void => {
     if (nextMode === mode) return;
     activeConversation.stop(true);
-    window.history.pushState({}, "", nextMode === "agent" ? "/agent" : "/");
+    window.history.pushState({}, "", modeHref(nextMode));
     setMode(nextMode);
   }, [activeConversation, mode]);
 
@@ -105,9 +102,9 @@ export function App(): React.JSX.Element {
   }, [closeNavigation, compactNavigation, navigationOpen]);
 
   useEffect(() => {
-    const handlePopState = () => {
+    const handlePopState = (): void => {
       activeConversation.stop(true);
-      setMode(currentMode(window.location.pathname));
+      setMode(currentMode());
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -201,7 +198,7 @@ export function App(): React.JSX.Element {
             <h1>{mode === "rag" ? "知识问答工作台" : "Agent 工作台"}</h1>
           </div>
           <div className="header-actions">
-            <span className="mode-context">本地单用户模式</span>
+            <span className="mode-context">{IS_PAGES_DEMO ? "公开模拟演示" : "本地单用户模式"}</span>
             <ServiceStatus state={serviceState.state} onRefresh={serviceState.refresh} />
             <ThemeControl
               preference={theme.preference}
@@ -216,6 +213,13 @@ export function App(): React.JSX.Element {
           ref={scrollRegion}
           onScroll={handleConversationScroll}
         >
+          {IS_PAGES_DEMO && (
+            <aside className="demo-notice" aria-label="模拟演示说明">
+              <strong>静态模拟演示 · 非真实 AI 服务</strong>
+              <p>回答、引用、工具与审批均为预设示例，不连接模型、索引或 MCP，不执行工具。输入仅在当前页面内存中使用，请勿输入敏感信息。刷新会清空对话。</p>
+              {mode === "agent" && <p>输入“审批”“表单”“URL”“超时”或“错误”可体验对应流程；其他任务展示模拟工具过程。</p>}
+            </aside>
+          )}
           {notice && <div className="page-error" role="alert">{notice}</div>}
           <ConversationView
             mode={mode}

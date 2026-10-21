@@ -6,6 +6,7 @@ import { safeHttpUrl } from "../api/safeUrls";
 import type { ConversationState, ConversationTurn } from "../app/conversationState";
 import { MarkdownContent } from "./MarkdownContent";
 import { AgentInteractions } from "./AgentInteractions";
+import { IS_PAGES_DEMO } from "../app/runtime";
 
 const WARNING_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
   bm25_unavailable: "关键词检索暂不可用，当前结果仅使用向量检索。",
@@ -49,7 +50,7 @@ function EmptyConversation({
         {mode === "rag" ? "从知识库中找到可信答案" : "让 Agent 帮你完成多步任务"}
       </h2>
       <p>
-        {mode === "rag"
+        {IS_PAGES_DEMO ? "体验预设流式回答、引用与工具交互；这里不进行真实检索或模型推理。" : mode === "rag"
           ? "问题会经过检索与生成，并在完成后提供可核对的引用。"
           : "Agent 会规划步骤、调用后端允许的工具，并展示执行过程。"}
       </p>
@@ -190,7 +191,7 @@ export function ConversationView({
             <article className="message message-assistant">
               <div className="message-avatar" aria-hidden="true"><Bot size={18} /></div>
               <div className="assistant-content">
-                <p className="message-author">RAGFlow</p>
+                <p className="message-author">{IS_PAGES_DEMO ? "RAGFlow · 模拟回答" : "RAGFlow"}</p>
                 {turn.answer ? (
                   <MarkdownContent value={turn.answer} />
                 ) : active ? (

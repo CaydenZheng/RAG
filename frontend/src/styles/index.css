@@ -504,10 +504,25 @@ button:active:not(:disabled),
 
 .empty-conversation,
 .conversation,
+.demo-notice,
 .page-error {
   width: min(100%, 800px);
   margin-right: auto;
   margin-left: auto;
+}
+
+.demo-notice {
+  margin-bottom: 24px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.demo-notice p {
+  margin: 8px 0 0;
 }
 
 .empty-conversation {

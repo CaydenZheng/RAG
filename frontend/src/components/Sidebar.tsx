@@ -2,6 +2,7 @@ import { Bot, BookOpen, Database, History, Plus, Settings2, X } from "lucide-rea
 import { useEffect, useRef, type MouseEvent } from "react";
 
 import type { WorkspaceMode } from "../api/types";
+import { IS_PAGES_DEMO, modeHref } from "../app/runtime";
 
 interface SidebarProps {
   mode: WorkspaceMode;
@@ -44,11 +45,11 @@ export function Sidebar({
       inert={compact && !open ? true : undefined}
     >
       <div className="sidebar-header">
-        <a className="brand" href="/" aria-label="RAGFlow 首页" onClick={(event) => navigate(event, "rag")}>
+        <a className="brand" href={modeHref("rag")} aria-label="RAGFlow 首页" onClick={(event) => navigate(event, "rag")}>
           <span className="brand-mark" aria-hidden="true">R</span>
           <span className="brand-copy">
             <strong>RAGFlow</strong>
-            <small>本地 AI 工作台</small>
+            <small>{IS_PAGES_DEMO ? "公开模拟演示" : "本地 AI 工作台"}</small>
           </span>
         </a>
         <button ref={closeButton} className="sidebar-close" type="button" onClick={onClose} aria-label="关闭导航">
@@ -62,11 +63,11 @@ export function Sidebar({
       </button>
 
       <nav className="mode-nav" aria-label="对话模式">
-        <a className="mode-link" data-active={mode === "rag"} href="/" aria-current={mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
+        <a className="mode-link" data-active={mode === "rag"} href={modeHref("rag")} aria-current={mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
           <BookOpen size={19} aria-hidden="true" />
           <span>知识问答</span>
         </a>
-        <a className="mode-link" data-active={mode === "agent"} href="/agent" aria-current={mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
+        <a className="mode-link" data-active={mode === "agent"} href={modeHref("agent")} aria-current={mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
           <Bot size={19} aria-hidden="true" />
           <span>Agent</span>
         </a>
@@ -87,11 +88,11 @@ export function Sidebar({
         <span>知识库管理</span>
         <span className="soon-badge" id="knowledgeHint">即将支持</span>
       </button>
-      <a className="sidebar-link" href="/docs">
+      <a className="sidebar-link" href={IS_PAGES_DEMO ? "https://github.com/CaydenZheng/RAG" : "/docs"}>
         <Settings2 size={18} aria-hidden="true" />
-        <span>API 文档</span>
+        <span>{IS_PAGES_DEMO ? "源码与部署说明" : "API 文档"}</span>
       </a>
-      <p className="local-only-note">仅供本地单用户使用；会话 ID 不是登录身份。</p>
+      <p className="local-only-note">{IS_PAGES_DEMO ? "仅演示界面，不提供真实 AI 服务。真实后端仅供本地单用户使用。" : "仅供本地单用户使用；会话 ID 不是登录身份。"}</p>
     </aside>
   );
 }

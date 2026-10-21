@@ -19,6 +19,7 @@ htmlcov/
 /frontend/playwright-report/
 /frontend/test-results/
 /src/web/dist/
+/pages-dist/
 
 # 本地数据
 data/sessions.db

@@ -11,6 +11,9 @@
     "typecheck": "tsc -b",
     "test": "vitest run",
     "build": "tsc -b && vite build",
+    "build:pages": "tsc -b && vite build --config vite.pages.config.ts --mode pages",
+    "preview:pages": "vite preview --config vite.pages.config.ts --host 127.0.0.1 --port 4175 --strictPort",
+    "test:e2e:pages": "playwright test --config playwright.pages.config.ts",
     "test:e2e": "playwright test",
     "test:e2e:production": "playwright test --config=playwright.production.config.ts"
   },
