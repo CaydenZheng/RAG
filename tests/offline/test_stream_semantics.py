@@ -168,6 +168,8 @@ def test_disconnect_closes_generation_without_persisting_partial_answer(
         "session_store",
         SimpleNamespace(
             append_exchange=append_exchange,
+            read_snapshot=lambda _session_id: SimpleNamespace(revision=(0, 0, 0)),
+            append_turns_if_epoch=append_exchange,
             history_count=lambda session_id: 1,
         ),
     )

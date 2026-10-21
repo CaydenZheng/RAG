@@ -18,7 +18,7 @@ from pocketflow import AsyncNode, Node
 from config.settings import settings
 from src.core.index_versions import LEGACY_INDEX_VERSION
 from src.infra.prompt_manager import prompt_manager
-from src.infra.session_store import session_store
+from src.infra.session_store import SessionTurn, session_store
 from src.infra.tracer import tracer
 from src.llm import llm_client
 from src.utils.token_counter import count_tokens
@@ -132,6 +132,14 @@ class AnswerInput:
     valid_citation_refs: frozenset[int]
     index_version: str = LEGACY_INDEX_VERSION
     abstain_reason: str = ""
+    session_epoch: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.session_id and self.session_epoch is None:
+            object.__setattr__(
+                self, "session_epoch",
+                session_store.read_snapshot(self.session_id).revision[0],
+            )
 
     @classmethod
     def from_shared(cls, shared: dict) -> "AnswerInput":
@@ -145,6 +153,7 @@ class AnswerInput:
             ),
             index_version=shared.get("index_version", LEGACY_INDEX_VERSION),
             abstain_reason=shared.get("abstain_reason", ""),
+            session_epoch=shared.get("session_epoch"),
         )
 
 
@@ -233,18 +242,25 @@ class AnswerService:
             yield tail
 
     @staticmethod
-    def persist(answer_input: AnswerInput, answer: str) -> None:
+    def persist(answer_input: AnswerInput, answer: str) -> bool:
         if not answer_input.session_id:
-            return
-        session_store.append_exchange(
+            return True
+        saved: bool = session_store.append_turns_if_epoch(
             answer_input.session_id,
-            answer_input.query,
-            answer,
+            answer_input.session_epoch,
+            [
+                SessionTurn(role="user", content=answer_input.query),
+                SessionTurn(role="assistant", content=answer),
+            ],
         )
+        if not saved:
+            logger.info("Stale answer discarded after session changed")
+            return False
         logger.info(
             "Session exchange saved: {} turns total",
             session_store.history_count(answer_input.session_id),
         )
+        return True
 
 
 answer_service = AnswerService()
@@ -475,7 +491,8 @@ class GeneratorNode(AsyncNode):
         prep_res: AnswerInput,
         exec_res: str,
     ) -> str:
+        if not answer_service.persist(prep_res, exec_res):
+            raise RuntimeError("Session changed during answer generation")
         shared["answer"] = exec_res
-        answer_service.persist(prep_res, exec_res)
         logger.info("✅ Answer generated: {} chars", len(exec_res))
         return "default"

@@ -271,12 +271,13 @@ def test_abstention_thresholds_require_a_calibration_id() -> None:
     assert configured.abstention_thresholds == {"hybrid+rerank": 0.5}
 
 
-def test_calibration_uses_human_verified_final_report() -> None:
+def test_calibration_uses_human_verified_calibration_report() -> None:
     from src.evaluation.calibration import calibrate_report
 
     samples = [
         {
             "expected_behavior": behavior,
+            "review": {"status": "human_verified", "reviewer": "fixture-reviewer", "reviewed_at": "2026-10-20"},
             "retrieval_candidates": [_chunk(score)],
         }
         for behavior, score in (
@@ -290,7 +291,7 @@ def test_calibration_uses_human_verified_final_report() -> None:
     report = {
         "reproducibility": {
             "data": {
-                "split": "final",
+                "split": "calibration",
                 "catalog_version": "sha256:catalog",
             },
             "models": {
@@ -313,11 +314,16 @@ def test_calibration_uses_human_verified_final_report() -> None:
     assert calibration["modes"]["hybrid+rerank"]["hard_answer_rate"] == 0.0
     assert calibration["calibration_id"].startswith("sha256:")
 
-    report["reproducibility"]["data"]["split"] = "development"
-    with pytest.raises(ValueError, match="human-verified final"):
-        calibrate_report(report)
+    for split in ("development", "final"):
+        report["reproducibility"]["data"]["split"] = split
+        with pytest.raises(ValueError, match="human-verified calibration"):
+            calibrate_report(report)
 
-    report["reproducibility"]["data"]["split"] = "final"
+    report["reproducibility"]["data"]["split"] = "calibration"
+    samples[0]["review"]["status"] = "unverified"
+    with pytest.raises(ValueError, match="human verification"):
+        calibrate_report(report)
+    samples[0]["review"]["status"] = "human_verified"
     samples[0]["error_code"] = "evaluation_sample_failed"
     with pytest.raises(ValueError, match="failed samples"):
         calibrate_report(report)

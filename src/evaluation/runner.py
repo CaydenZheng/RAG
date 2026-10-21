@@ -29,7 +29,12 @@ from src.core.knowledge import (
     validate_retrieval_mode,
     validate_retrieval_top_k,
 )
-from src.evaluation.datasets import DatasetCatalog
+from src.evaluation.datasets import (
+    ALLOWED_SPLITS,
+    HUMAN_REVIEWED_SPLITS,
+    DatasetCatalog,
+    validate_split_isolation,
+)
 from src.evaluation.metrics import score_sample, summarize_results
 from src.infra.index_catalog import index_catalog
 from src.infra.tracer import tracer
@@ -52,8 +57,8 @@ class EvaluationConfig:
     output_cost_per_million: float | None = None
 
     def __post_init__(self) -> None:
-        if self.split not in {"development", "final"}:
-            raise ValueError("split must be development or final")
+        if self.split not in ALLOWED_SPLITS:
+            raise ValueError("split must be development, calibration or final")
         if not self.modes or len(self.modes) != len(set(self.modes)):
             raise ValueError("modes must be non-empty and unique")
         for mode in self.modes:
@@ -338,12 +343,20 @@ class EvaluationRunner:
         catalog: DatasetCatalog,
         config: EvaluationConfig,
     ) -> dict[str, Any]:
+        validate_split_isolation(catalog.datasets)
         records = list(catalog.records_for(config.split))
         if not records:
             raise ValueError(
                 f"evaluation split {config.split!r} has no samples; "
                 "complete human review before running it"
             )
+        if config.split in HUMAN_REVIEWED_SPLITS and any(
+            sample.get("review", {}).get("status") != "human_verified"
+            or not sample.get("review", {}).get("reviewer")
+            or not sample.get("review", {}).get("reviewed_at")
+            for sample in records
+        ):
+            raise ValueError("evaluation split requires human verification")
         rng = random.Random(config.seed)
         if config.sample_limit is not None and config.sample_limit < len(records):
             rng.shuffle(records)
@@ -355,12 +368,12 @@ class EvaluationRunner:
             self._project_root,
         )
         code_metadata = reproducibility.get("code") or {}
-        if config.split == "final" and (
+        if config.split in HUMAN_REVIEWED_SPLITS and (
             code_metadata.get("git_commit") in {None, "", "unavailable"}
             or code_metadata.get("dirty") is not False
         ):
             raise ValueError(
-                "final evaluation requires a clean working tree and a committed code SHA"
+                f"{config.split} evaluation requires a clean working tree and a committed code SHA"
             )
 
         run_id = f"eval-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
@@ -482,6 +495,7 @@ class EvaluationRunner:
             "ground_truth": sample.get("ground_truth"),
             "expected_behavior": sample["expected_behavior"],
             "task_types": list(sample["task_types"]),
+            "review": _json_safe(sample.get("review", {})),
             "source_documents": _json_safe(sample["source_documents"]),
             "mode": mode,
             "answer": answer,

@@ -44,8 +44,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--split",
         required=True,
-        choices=("development", "final"),
-        help="Development data is exploratory; final requires human verification.",
+        choices=("development", "calibration", "final"),
+        help="Development is exploratory; calibration and final require separate human-reviewed data.",
     )
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     strategy = parser.add_mutually_exclusive_group()

@@ -184,7 +184,7 @@ session ID 仅用于定位当前对话，不是用户身份或登录凭据；账
 | `CHROMA_PERSIST_DIR` | Chroma 持久化目录 |
 | `CACHE_DB_PATH`、`CACHE_MAX_ENTRIES` | 精确 LLM 缓存 SQLite 文件及最大记录数 |
 | `VECTOR_TOP_K`、`BM25_TOP_K`、`RRF_K`、`RERANK_TOP_K` | 候选召回、融合和精排预算 |
-| `ABSTENTION_THRESHOLDS`、`ABSTENTION_CALIBRATION_ID`、`ABSTENTION_CALIBRATION_MODELS` | 人工核验 final 报告校准的分模式阈值、报告哈希及模型绑定 |
+| `ABSTENTION_THRESHOLDS`、`ABSTENTION_CALIBRATION_ID`、`ABSTENTION_CALIBRATION_MODELS` | 独立人工核验 calibration 报告校准的分模式阈值、报告哈希及模型绑定 |
 | `MAX_CONTEXT_TOKENS`、`SYSTEM_RESERVE_RATIO`、`CONTEXT_BUFFER_RATIO` | 上下文 Token 预算 |
 | `MAX_CONCURRENT_QUERIES`、`REQUEST_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES` | 请求容量、总时限和 Provider 重试 |
 | `ADMIN_API_KEY`、`ALLOW_UNAUTHENTICATED_ADMIN` | 索引管理密钥及仅限本地开发的显式免认证开关 |
@@ -271,6 +271,10 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 `AGENT_TOOL_ALLOWLIST` 与 `AGENT_TOOL_DENYLIST` 使用工具在 Registry 中的精确名称，例如 `["calculator","mcp__clock__get_current_time"]`。allowlist 为空时保持默认兼容；非空时只有列出的工具可见和可执行，denylist 在重叠时优先。策略同时作用于原生和 MCP 工具、JSON 与 native Planner 目录以及同步/异步 Registry 调用。启用任一列表后，允许、拒绝及后续 Hook 阻断结果都会进入有界 `logs/audit.jsonl`，只记录参数名和稳定策略原因，不记录参数值。参数名最多记录 32 个、单名 128 UTF-8 bytes、合计 256 bytes；任何编码后无法容纳在单文件上限内的 JSONL 记录都会在写入和轮转前安全丢弃并告警，不会突破配置的文件大小。它是单进程 Host 基础策略，不是角色、租户或资源级授权系统。
 
 若强制最终回答生成失败，Agent 返回 `agent_final_generation_failed`，记录失败 Trace，且不写入本轮历史。
+
+RAG 与 Agent 在请求开始使用历史前捕获 session epoch；reset 后旧请求失去写入资格，不能重建清空的历史。Agent 的规划使用 `AGENT_PLANNER_MAX_TOKENS`，最终回答始终使用 `AGENT_FINAL_MAX_TOKENS`，并共同受整体预算限制。总时限包含记忆保存与压缩；同步摘要不能被强制终止，但取消或过期后的事务不得提交迟到历史。带资格守卫的 SQLite 提交不会在 SQLite 内部等待读锁：忙锁时短周期重试，每次检查取消/deadline，失效回滚；原连接的等待上限和 busy_timeout 配置仍保留。Ollama 降级也必须确认完整完成，不能将截断文本当成成功回答。
+
+Registry 在审批/执行前原子声明同会话、同工具、同参数指纹的执行中占位；重复调用返回 `duplicate_tool_call`，不发起第二次审批或执行。实际退出后，无论成功、失败、拒绝、取消或超时，均沿用配置的去重冷却窗口（默认 30 秒），窗口后可重试；`dedup_window=0` 只关闭完成后的冷却，不关闭执行中保护。取消同步工具的等待不会终止线程，占位保留到线程真正退出，再开始冷却。`max_sessions` 同时限制完成缓存的会话数和执行中声明总数，后者满载返回 `tool_capacity_exceeded`，不驱逐仍运行的声明。这是单 Registry 实例内同步/异步调用共享的进程内去重，不保证多实例、进程重启或远端副作用的严格幂等；未知执行结果的重试仍需要工具侧幂等键或人工确认。
 
 示例：
 
@@ -365,18 +369,19 @@ uv run --no-sync --offline --no-env-file python scripts/run_eval.py --split deve
 ### 完整评测
 
 ```powershell
-# 四模式消融；只对人工核验后的 final 数据执行
-uv run --no-sync --offline --no-env-file python scripts/run_eval.py --split final --ablation
-
-# 从同一份人工核验 final 报告生成拒答阈值建议
+# 先用独立人工核验 calibration 集校准，不使用 final 调参
+uv run --no-sync --offline --no-env-file python scripts/run_eval.py --split calibration --ablation
 uv run --no-sync --offline --no-env-file python scripts/calibrate_abstention.py data/eval-runs/<report>.json
+
+# 固定阈值与配置后，用独立人工核验 final 做最终验收
+uv run --no-sync --offline --no-env-file python scripts/run_eval.py --split final --ablation
 
 # Ragas Faithfulness / Relevancy；先安装 eval 依赖，再执行模型评判
 uv sync --locked --no-default-groups --group eval
 uv run --no-sync --offline --no-env-file --group eval python scripts/run_eval.py --split final --with-ragas
 ```
 
-Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relevancy 只有显式启用 Ragas 才计算。报告同时给出正确拒答率、错误拒答率和应拒答样本的硬答率。development 指标只能用于调试，不能作为发布门槛；对外引用指标时必须同时提供可访问的报告 artifact 或附件及其 run_id，不引用缺少复现信息的历史数值。阈值校准器拒绝非 final 报告，输出的 thresholds、calibration_id 与 models 必须一起配置，且模型必须与运行时一致。未配置阈值时，系统只对空检索结果确定性拒答，不根据任意固定分数拒答。
+Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relevancy 只有显式启用 Ragas 才计算。报告同时给出正确拒答率、错误拒答率和应拒答样本的硬答率。development 指标只能用于调试，不能作为发布门槛；对外引用指标时必须同时提供可访问的报告 artifact 或附件及其 run_id，不引用缺少复现信息的历史数值。阈值校准器仅接受独立人工核验 calibration 报告，拒绝 development/final 报告；输出的 thresholds、calibration_id 与 models 必须一起配置，且模型必须与运行时一致。当前尚无 calibration 样本，final 为 0，质量验收仍受阻；标注、隔离与冻结流程见 [人工核验指南](data/testset/annotation-guide.md)。未配置阈值时，系统只对空检索结果确定性拒答，不根据任意固定分数拒答。
 
 ## 测试与 CI
 

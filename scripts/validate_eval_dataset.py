@@ -18,11 +18,14 @@ DEFAULT_MANIFEST = PROJECT_ROOT / "data/testset/manifest.json"
 def main(manifest: Path = DEFAULT_MANIFEST) -> int:
     catalog = load_dataset_catalog(manifest, repository_root=PROJECT_ROOT)
     development = catalog.records_for("development")
+    calibration = catalog.records_for("calibration")
     final = catalog.records_for("final")
     print(f"catalog_version={catalog.version}")
     print(f"development_samples={len(development)}")
+    print(f"calibration_samples={len(calibration)}")
     print(f"final_samples={len(final)}")
     print("status=valid")
+    print("quality_acceptance=" + ("not_evaluated" if final else "blocked_empty_final"))
     return 0
 
 
