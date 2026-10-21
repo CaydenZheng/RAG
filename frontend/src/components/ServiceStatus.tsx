@@ -1,6 +1,7 @@
 import type { ServiceState } from "../app/useServiceStatus";
 
 const LABELS: Readonly<Record<ServiceState, string>> = Object.freeze({
+  demo: "模拟模式 · 无后端",
   checking: "检查服务",
   ready: "服务可用",
   degraded: "部分能力降级",

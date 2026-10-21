@@ -9,6 +9,7 @@ import type {
   InteractionDecision,
 } from "../api/types";
 import { agentInteractionKey } from "../api/types";
+import { IS_PAGES_DEMO } from "../app/runtime";
 
 interface InteractionProps {
   interaction: AgentInteraction;
@@ -253,7 +254,7 @@ export function AgentInteractions({ interactions, onDecision }: {
   if (!interactions.length) return null;
   return (
     <div className="agent-interactions" aria-label="Agent 待处理请求">
-      <div className="interaction-intro"><ShieldCheck size={18} aria-hidden="true" />所有工具仍由后端策略、Schema、审批与审计链控制。</div>
+      <div className="interaction-intro"><ShieldCheck size={18} aria-hidden="true" />{IS_PAGES_DEMO ? "模拟交互：不执行工具、不提交信息，也不进行真实授权。" : "所有工具仍由后端策略、Schema、审批与审计链控制。"}</div>
       {interactions.map((interaction) => {
         const props = { interaction, onDecision };
         const key = agentInteractionKey(interaction);

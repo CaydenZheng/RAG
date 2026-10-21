@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { isRecord } from "../api/sse";
+import { IS_PAGES_DEMO } from "./runtime";
 
-export type ServiceState = "checking" | "ready" | "degraded" | "starting" | "unavailable";
+export type ServiceState = "checking" | "ready" | "degraded" | "starting" | "unavailable" | "demo";
 
 const SERVICE_STATES = new Set<ServiceState>([
   "ready",
@@ -17,7 +18,7 @@ interface ServiceStatusController {
 }
 
 export function useServiceStatus(): ServiceStatusController {
-  const [serviceState, setServiceState] = useState<ServiceState>("checking");
+  const [serviceState, setServiceState] = useState<ServiceState>(IS_PAGES_DEMO ? "demo" : "checking");
   const [requestSequence, setRequestSequence] = useState(0);
 
   const refresh = useCallback((): void => {
@@ -26,6 +27,7 @@ export function useServiceStatus(): ServiceStatusController {
   }, []);
 
   useEffect(() => {
+    if (IS_PAGES_DEMO) return undefined;
     const controller = new AbortController();
     void (async () => {
       try {

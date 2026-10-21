@@ -383,6 +383,14 @@ uv run --no-sync --offline --no-env-file --group eval python scripts/run_eval.py
 
 Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relevancy 只有显式启用 Ragas 才计算。报告同时给出正确拒答率、错误拒答率和应拒答样本的硬答率。development 指标只能用于调试，不能作为发布门槛；对外引用指标时必须同时提供可访问的报告 artifact 或附件及其 run_id，不引用缺少复现信息的历史数值。阈值校准器仅接受独立人工核验 calibration 报告，拒绝 development/final 报告；输出的 thresholds、calibration_id 与 models 必须一起配置，且模型必须与运行时一致。当前尚无 calibration 样本，final 为 0，质量验收仍受阻；标注、隔离与冻结流程见 [人工核验指南](data/testset/annotation-guide.md)。未配置阈值时，系统只对空检索结果确定性拒答，不根据任意固定分数拒答。
 
+## 公开网页演示
+
+[打开 GitHub Pages 演示](https://caydenzheng.github.io/RAG/)：无需登录或安装，
+可体验对话工作台、主题、模拟流式回答、引用、工具过程与审批交互。
+**这是明确标注的静态模拟，不调用真实模型、索引或 MCP，不执行工具。**
+真实后端仍只面向本地单用户，登录与数据隔离完成前不可作为多用户公网服务开放。
+构建、自动部署与能力边界见 [GitHub Pages 说明](docs/github-pages.md)。
+
 ## 测试与 CI
 
 默认测试全部离线，不调用真实模型、浏览器或 Ragas。MCP 测试仅使用真实本地子进程和数值型 loopback Server，不访问外部 MCP 服务：

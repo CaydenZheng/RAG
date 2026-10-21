@@ -6,7 +6,7 @@ process.env.no_proxy = process.env.NO_PROXY;
 
 export default defineConfig({
   testDir: "./e2e",
-  testIgnore: "production.spec.ts",
+  testIgnore: ["production.spec.ts", "pages.spec.ts"],
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,
