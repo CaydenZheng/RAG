@@ -9,7 +9,7 @@ import asyncio
 import re
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List
 
 from loguru import logger
@@ -17,8 +17,9 @@ from pocketflow import AsyncNode, Node
 
 from config.settings import settings
 from src.core.index_versions import LEGACY_INDEX_VERSION
+from src.infra.exchange_context import completed_model, exchange_context, safe_sources
 from src.infra.prompt_manager import prompt_manager
-from src.infra.session_store import SessionTurn, session_store
+from src.infra.session_store import CommitPermit, SessionTurn, session_store
 from src.infra.tracer import tracer
 from src.llm import llm_client
 from src.utils.token_counter import count_tokens
@@ -133,6 +134,9 @@ class AnswerInput:
     index_version: str = LEGACY_INDEX_VERSION
     abstain_reason: str = ""
     session_epoch: int | None = None
+    sources: tuple[dict, ...] = ()
+    warnings: tuple[str, ...] = ()
+    commit_permit: CommitPermit | None = None
 
     def __post_init__(self) -> None:
         if self.session_id and self.session_epoch is None:
@@ -154,6 +158,11 @@ class AnswerInput:
             index_version=shared.get("index_version", LEGACY_INDEX_VERSION),
             abstain_reason=shared.get("abstain_reason", ""),
             session_epoch=shared.get("session_epoch"),
+            sources=safe_sources(shared.get("sources", [])),
+            warnings=tuple(warning for warning in shared.get("warnings", []) if warning in {
+                "rerank_timeout", "rerank_unavailable", "insufficient_evidence", "evidence_score_unavailable",
+                "bm25_unavailable", "bm25_version_mismatch",
+            }),
         )
 
 
@@ -187,6 +196,7 @@ class AnswerService:
 
     async def generate(self, answer_input: AnswerInput) -> str:
         if self._must_abstain(answer_input):
+            completed_model.set(None)
             self._record_abstention(answer_input)
             return INSUFFICIENT_EVIDENCE_ANSWER
 
@@ -208,6 +218,7 @@ class AnswerService:
 
     async def stream(self, answer_input: AnswerInput) -> AsyncIterator[str]:
         if self._must_abstain(answer_input):
+            completed_model.set(None)
             self._record_abstention(answer_input)
             yield INSUFFICIENT_EVIDENCE_ANSWER
             return
@@ -245,14 +256,20 @@ class AnswerService:
     def persist(answer_input: AnswerInput, answer: str) -> bool:
         if not answer_input.session_id:
             return True
-        saved: bool = session_store.append_turns_if_epoch(
-            answer_input.session_id,
-            answer_input.session_epoch,
-            [
-                SessionTurn(role="user", content=answer_input.query),
-                SessionTurn(role="assistant", content=answer),
-            ],
-        )
+        context = exchange_context.get()
+        token = exchange_context.set(replace(context, sources=answer_input.sources,
+                                             index_version=answer_input.index_version,
+                                             used_model=completed_model.get(), warnings=answer_input.warnings) if context else None)
+        try:
+            saved: bool = session_store.append_turns_if_epoch(
+                answer_input.session_id,
+                answer_input.session_epoch,
+                [SessionTurn(role="user", content=answer_input.query),
+                 SessionTurn(role="assistant", content=answer)],
+                can_commit=answer_input.commit_permit,
+            )
+        finally:
+            exchange_context.reset(token)
         if not saved:
             logger.info("Stale answer discarded after session changed")
             return False
@@ -264,6 +281,15 @@ class AnswerService:
 
 
 answer_service = AnswerService()
+
+
+async def persist_completed_answer(service: AnswerService, answer_input: AnswerInput, answer: str) -> bool:
+    """Cancellation acknowledgement orders against the actual worker COMMIT."""
+    permit: CommitPermit = CommitPermit()
+    try:
+        return await asyncio.to_thread(service.persist, replace(answer_input,commit_permit=permit), answer)
+    finally:
+        permit.revoke()
 
 
 class ContextBuilderNode(Node):
@@ -491,7 +517,7 @@ class GeneratorNode(AsyncNode):
         prep_res: AnswerInput,
         exec_res: str,
     ) -> str:
-        if not answer_service.persist(prep_res, exec_res):
+        if not await persist_completed_answer(answer_service, prep_res, exec_res):
             raise RuntimeError("Session changed during answer generation")
         shared["answer"] = exec_res
         logger.info("✅ Answer generated: {} chars", len(exec_res))

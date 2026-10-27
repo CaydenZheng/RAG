@@ -45,6 +45,7 @@ export async function* readSseEvents(
 
       let boundary = findEventBoundary(buffer);
       while (boundary) {
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
         const block = buffer.slice(0, boundary.index);
         buffer = buffer.slice(boundary.index + boundary.length);
         const event = parseDataBlock(block);

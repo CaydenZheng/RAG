@@ -30,6 +30,11 @@ def _requires_admin_access(scope: Scope) -> bool:
         and path.endswith("/callback")
         and len(path.split("/")) == 5
     )
+    if settings.auth_enabled and (
+        path in {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
+        or path.startswith("/index/jobs/")
+    ):
+        return True
     if path.startswith("/agent/oauth/") and not oauth_callback:
         return True
     return (method, path) in _PROTECTED_INDEX_MUTATIONS or (
@@ -96,5 +101,6 @@ class AdminAuthMiddleware:
         response: JSONResponse = JSONResponse(
             status_code=401,
             content={"detail": public_error("admin_auth_required")},
+            headers={"Cache-Control":"no-store"},
         )
         await response(scope, receive, send)

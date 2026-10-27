@@ -196,6 +196,19 @@ class Settings(BaseSettings):
         default=False, alias="ALLOW_UNAUTHENTICATED_ADMIN"
     )
 
+    # Account authentication is an opt-in foundation, NOT data isolation yet.
+    auth_enabled: bool = Field(default=False, alias="AUTH_ENABLED")
+    auth_db_path: str = Field(default="./data/auth.db", alias="AUTH_DB_PATH")
+    auth_allowed_origins: tuple[str, ...] = Field(default=(), alias="AUTH_ALLOWED_ORIGINS")
+    auth_allow_loopback_http: bool = Field(default=False, alias="AUTH_ALLOW_LOOPBACK_HTTP")
+    account_requests_per_minute: int = Field(default=30, ge=1, le=10000, alias="ACCOUNT_REQUESTS_PER_MINUTE")
+    source_requests_per_minute: int = Field(default=120, ge=1, le=10000, alias="SOURCE_REQUESTS_PER_MINUTE")
+    account_max_concurrent: int = Field(default=2, ge=1, le=32, alias="ACCOUNT_MAX_CONCURRENT")
+    source_max_concurrent: int = Field(default=8, ge=1, le=64, alias="SOURCE_MAX_CONCURRENT")
+    account_daily_model_units: int = Field(default=200000, ge=1, alias="ACCOUNT_DAILY_MODEL_UNITS")
+    source_daily_model_units: int = Field(default=1000000, ge=1, alias="SOURCE_DAILY_MODEL_UNITS")
+    member_mcp_allowlist: tuple[str, ...] = Field(default=(), alias="MEMBER_MCP_ALLOWLIST")
+
     # ================================================================
     # 多 Provider 降级
     # ================================================================
@@ -299,7 +312,7 @@ class Settings(BaseSettings):
         default=512, ge=64, le=4096, alias="AGENT_PLANNER_MAX_TOKENS"
     )
     agent_final_max_tokens: int = Field(
-        default=1024, ge=64, le=8192, alias="AGENT_FINAL_MAX_TOKENS"
+        default=4096, ge=64, le=8192, alias="AGENT_FINAL_MAX_TOKENS"
     )
     agent_max_tool_result_length: int = Field(
         default=1000, ge=128, le=20000, alias="AGENT_MAX_TOOL_RESULT_LENGTH"
@@ -366,7 +379,7 @@ class Settings(BaseSettings):
             raise ValueError(f"LOG_LEVEL must be one of {sorted(allowed)}")
         return normalized
 
-    @field_validator("agent_tool_allowlist", "agent_tool_denylist")
+    @field_validator("agent_tool_allowlist", "agent_tool_denylist", "member_mcp_allowlist")
     @classmethod
     def validate_tool_policy_names(
         cls, value: tuple[str, ...]
@@ -385,6 +398,17 @@ class Settings(BaseSettings):
             if len(name) > MAX_TOOL_POLICY_NAME_LENGTH:
                 raise ValueError("tool policy name is too long")
         return value
+
+    @model_validator(mode="after")
+    def validate_user_auth(self) -> Self:
+        from src.security.auth_origin import validate_origins
+
+        validate_origins(self.auth_allowed_origins, self.auth_allow_loopback_http)
+        if self.auth_enabled and not self.auth_allowed_origins:
+            raise ValueError("AUTH_ALLOWED_ORIGINS is required when AUTH_ENABLED=true")
+        if not self.auth_db_path.strip():
+            raise ValueError("AUTH_DB_PATH must not be blank")
+        return self
 
     @model_validator(mode="after")
     def validate_admin_auth(self) -> Self:

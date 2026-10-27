@@ -29,6 +29,7 @@ import logging
 import sys
 import time
 import uuid
+from functools import partial
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -43,7 +44,9 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import ValidationError
@@ -66,6 +69,8 @@ from src.agent.mcp_oauth import (
 from src.agent.tool_approval import MAX_TOOL_APPROVAL_RESPONSE_BODY_BYTES
 from src.api.admin_auth import AdminAuthMiddleware
 from src.api.client_identity import ClientIdentityMiddleware, scope_request_session
+from src.api.conversations import begin_exchange
+from src.api.conversations import router as conversations_router
 from src.api.observability import RequestTracingMiddleware
 from src.api.public_errors import public_error
 from src.api.reliability import RAGRequestReliabilityMiddleware
@@ -82,7 +87,9 @@ from src.api.schemas import (
     parse_metadata_filter_json,
 )
 from src.api.startup import runtime_readiness, warm_up_runtime
-from src.api.streaming import iter_agent_sse, iter_answer_sse
+from src.api.streaming import ClosingStreamingResponse, iter_agent_sse, iter_answer_sse
+from src.api.user_auth import UserAuthBoundaryMiddleware, open_user_auth
+from src.api.user_auth import router as user_auth_router
 from src.core.agent_runtime import AgentRuntime
 from src.core.generation import AnswerInput, answer_service
 from src.core.index_jobs import (
@@ -103,6 +110,11 @@ from src.orchestration.rag import (
     get_online_flow,
     get_retrieval_flow,
 )
+from src.security.request_authorization import (
+    AccountLimitExceeded,
+    cancel_session_generation,
+    current_authorization,
+)
 from src.web.pages import (
     APP_DIST_DIR,
     web_entrypoint_response,
@@ -122,13 +134,19 @@ class _SafeOAuthCallbackAccessLogFilter(logging.Filter):
             or record.msg != self._UVICORN_ACCESS_FORMAT
             or not isinstance(record.args, tuple)
             or len(record.args) != 5
-            or record.args[1] != "GET"
             or not isinstance(record.args[2], str)
         ):
             return True
 
         target = record.args[2]
         path, separator, _query = target.partition("?")
+        if separator and (path.endswith("/auth") or "/auth/" in path or path.endswith("/query/stream")):
+            safe_args = list(record.args)
+            safe_args[2] = path
+            record.args = tuple(safe_args)
+            return True
+        if record.args[1] != "GET":
+            return True
         callback_start = path.rfind(self._CALLBACK_PREFIX)
         server_id = path[
             callback_start + len(self._CALLBACK_PREFIX) :
@@ -165,11 +183,23 @@ app.add_middleware(RAGRequestReliabilityMiddleware)
 app.add_middleware(ClientIdentityMiddleware)
 app.add_middleware(RequestTracingMiddleware)
 app.add_middleware(AdminAuthMiddleware)
+app.add_middleware(UserAuthBoundaryMiddleware)
+app.include_router(user_auth_router)
+app.include_router(conversations_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def private_validation(request: Request, exc: RequestValidationError) -> Response:
+    if settings.auth_enabled:
+        return JSONResponse({"detail": public_error("auth_invalid_request")},status_code=422,
+                            headers={"Cache-Control":"no-store"})
+    return await request_validation_exception_handler(request,exc)
 app.mount(
     "/static/app",
     StaticFiles(directory=APP_DIST_DIR, check_dir=False),
     name="web-app",
 )
+app.router.add_event_handler("startup", partial(open_user_auth, app))
 app.router.add_event_handler("startup", warm_up_runtime)
 app.router.add_event_handler(
     "startup", tool_approval_module.open_tool_approval_manager
@@ -205,6 +235,13 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/workspace/config")
+def workspace_config(response: Response) -> dict[str, bool]:
+    """Public feature switch only; a failed auth service never means anonymous."""
+    response.headers["Cache-Control"] = "no-store"
+    return {"auth_enabled": settings.auth_enabled}
+
+
 @app.get("/ready")
 def readiness(response: Response) -> dict[str, object]:
     """Report required dependencies and optional MCP degradation."""
@@ -228,7 +265,15 @@ def readiness(response: Response) -> dict[str, object]:
 def agent_tools(response: Response) -> dict[str, object]:
     """Return public tool metadata and secret-free MCP provider state."""
     response.headers["Cache-Control"] = "no-store"
-    return dict(mcp_runtime_module.mcp_runtime.status_payload())
+    payload = dict(mcp_runtime_module.mcp_runtime.status_payload())
+    authorization = current_authorization()
+    if authorization is not None and authorization.role != "admin":
+        from src.agent.tools import tool_registry
+
+        payload["tools"] = [tool for tool in payload["tools"] if not tool_registry.is_blocked_by_policy(tool["name"])]
+        allowed_providers = {tool["provider"] for tool in payload["tools"] if tool["source"] == "mcp"}
+        payload["mcp_servers"] = [server for server in payload["mcp_servers"] if server["id"] in allowed_providers]
+    return payload
 
 
 @app.get("/agent/oauth/{server_id}")
@@ -366,8 +411,8 @@ async def cancel_mcp_oauth_authorization(
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest, request: Request):
     """检索问答（异步）"""
-    session = scope_request_session(
-        request, req.session_id, "rag", allow_empty=True
+    session = begin_exchange(
+        request, req.session_id, req.conversation_id, req.client_turn_id, "rag", req.query, allow_empty=True
     )
     query_id = request.state.request_id
     started_at = time.perf_counter()
@@ -383,6 +428,8 @@ async def query(req: QueryRequest, request: Request):
     try:
         flow = get_online_flow()
         await flow.run_async(shared)
+    except AccountLimitExceeded:
+        raise
     except Exception as exc:
         from src.infra.tracer import tracer
 
@@ -513,6 +560,8 @@ async def query_stream(
         max_length=USER_INPUT_MAX_LENGTH,
     ),
     session_id: str = "",
+    conversation_id: str | None = None,
+    client_turn_id: str | None = None,
     top_k: int = Query(
         default=DEFAULT_RETRIEVAL_TOP_K,
         ge=1,
@@ -535,8 +584,8 @@ async def query_stream(
     """
     started_at = time.perf_counter()
     query_id = request.state.request_id
-    session = scope_request_session(
-        request, session_id, "rag", allow_empty=True
+    session = begin_exchange(
+        request, session_id, conversation_id, client_turn_id, "rag", query, allow_empty=True
     )
 
     try:
@@ -554,6 +603,8 @@ async def query_stream(
     try:
         retrieval_flow = get_retrieval_flow()
         await retrieval_flow.run_async(shared)
+    except AccountLimitExceeded:
+        raise
     except Exception as exc:
         from src.infra.tracer import tracer
 
@@ -568,7 +619,7 @@ async def query_stream(
     sources = shared.get("sources", [])
     warnings = shared.get("warnings", [])
 
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         iter_answer_sse(
             request=request,
             service=answer_service,
@@ -603,6 +654,8 @@ def session_reset(request: Request, session_id: str):
     from src.infra.session_store import session_store
 
     session = scope_request_session(request, session_id, "rag")
+    if settings.auth_enabled:
+        cancel_session_generation(session.storage_id)
     if not session_store.clear(session.storage_id):
         raise HTTPException(
             status_code=404,
@@ -640,8 +693,9 @@ def session_detail(request: Request, response: Response, session_id: str):
 @app.post("/agent/chat", response_model=AgentChatResponse)
 async def agent_chat(req: AgentChatRequest, request: Request):
     """Run the shared asynchronous Agent runtime."""
-    session = scope_request_session(
-        request, req.session_id or uuid.uuid4().hex, "agent"
+    session = begin_exchange(
+        request, req.session_id or req.conversation_id or uuid.uuid4().hex, req.conversation_id,
+        req.client_turn_id, "agent", req.message
     )
     result = await agent_runtime.execute(session.storage_id, req.message)
     payload = result.to_dict()
@@ -652,7 +706,7 @@ async def agent_chat(req: AgentChatRequest, request: Request):
 @app.post("/agent/chat/stream")
 async def agent_chat_stream(
     req: AgentChatRequest, request: Request
-) -> StreamingResponse:
+) -> ClosingStreamingResponse:
     """
     Agent 流式对话端点（SSE）。
 
@@ -665,11 +719,12 @@ async def agent_chat_stream(
       data: {"chunk": "..."}          ← Provider 最终答案增量
       data: {"done": true, ...}
     """
-    session = scope_request_session(
-        request, req.session_id or uuid.uuid4().hex, "agent"
+    session = begin_exchange(
+        request, req.session_id or req.conversation_id or uuid.uuid4().hex, req.conversation_id,
+        req.client_turn_id, "agent", req.message
     )
 
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         iter_agent_sse(
             request=request,
             runtime=agent_runtime,
@@ -871,6 +926,8 @@ async def respond_to_tool_approval(
 def agent_reset(request: Request, session_id: str) -> dict[str, str]:
     """重置当前客户端的 Agent 会话。"""
     session = scope_request_session(request, session_id, "agent")
+    if settings.auth_enabled:
+        cancel_session_generation(session.storage_id)
     if not agent_runtime.reset_session(session.storage_id):
         raise HTTPException(
             status_code=404,

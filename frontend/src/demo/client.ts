@@ -35,8 +35,12 @@ async function streamText(answer: string, signal: AbortSignal, onUpdate: (update
   }
 }
 
-export function loadOrCreateSessionId(_mode: WorkspaceMode): string {
+export function createSessionId(): string {
   return crypto.randomUUID();
+}
+
+export function loadOrCreateSessionId(_mode: WorkspaceMode): string {
+  return createSessionId();
 }
 
 export async function resetAndRotateSession(
@@ -44,7 +48,7 @@ export async function resetAndRotateSession(
 ): Promise<string> {
   signal?.throwIfAborted();
   pending.delete(oldSessionId);
-  return crypto.randomUUID();
+  return createSessionId();
 }
 
 export async function streamRagAnswer(

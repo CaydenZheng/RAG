@@ -37,6 +37,7 @@ def session_clients(
     import app as api
     from src.agent import memory as memory_module
     from src.agent.memory import MemoryManager
+    from src.core import generation
     from src.core.agent_runtime import (
         AgentEvent,
         AgentEventKind,
@@ -44,6 +45,7 @@ def session_clients(
     )
 
     Path("logs").mkdir(exist_ok=True)
+    monkeypatch.setattr(generation,"session_store",temporary_sessions)
     agent_memory = MemoryManager(str(isolated_runtime / "agent-memory"))
     monkeypatch.setattr(memory_module, "memory_manager", agent_memory)
 

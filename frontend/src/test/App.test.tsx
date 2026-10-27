@@ -151,7 +151,7 @@ describe("App shell", () => {
     await user.click(screen.getByRole("button", { name: /停止/ }));
 
     await waitFor(() => expect(cancel).toHaveBeenCalledOnce());
-    expect(screen.getByText("已停止，本轮未保存为成功回答。")).toBeVisible();
+    expect(screen.getByText("已停止，本轮未确认为成功回答。")).toBeVisible();
   });
 
   it("cancels an active stream when the workspace unmounts", async () => {
@@ -398,7 +398,7 @@ describe("App shell", () => {
     expect(screen.queryByText("不会串到 RAG")).not.toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "Agent" }));
     expect(screen.getByText("不会串到 RAG")).toBeVisible();
-    expect(screen.getByText("已停止，本轮未保存为成功回答。")).toBeVisible();
+    expect(screen.getByText("已停止，本轮未确认为成功回答。")).toBeVisible();
   });
 
   it("does not infer a backend timeout while interactions remain pending", async () => {

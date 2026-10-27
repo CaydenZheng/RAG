@@ -1,4 +1,7 @@
 export type PublicErrorCode =
+  | "auth_required"
+  | "auth_failed"
+  | "history"
   | "aborted"
   | "disconnected"
   | "http"
@@ -25,14 +28,14 @@ export class PublicClientError extends Error {
 
 export const PUBLIC_MESSAGES = Object.freeze({
   agentFailed: "Agent 处理失败，请稍后重试。",
-  disconnected: "连接意外中断，本轮内容未保存为成功回答。",
+  disconnected: "连接意外中断，本轮完成与保存状态尚未确认。",
   invalidRequest: "输入内容不符合要求，请检查后重试。",
   interactionClosed: "请求已结束，无法再次提交。",
   interactionInvalid: "提交内容未通过校验，请检查后重试。",
   interactionOutcomeUnknown: "未收到提交确认，请核对工具执行结果后再继续。",
   interactionTooLarge: "提交内容过大，请精简后重试。",
   interactionUnavailable: "暂时无法提交，请稍后重试。",
-  protocol: "服务返回了无法识别的数据，本轮内容未保存。",
+  protocol: "服务返回了无法识别的数据，本轮完成与保存状态尚未确认。",
   ragFailed: "回答生成失败，请稍后重试。",
   resetFailed: "无法清除当前会话，请稍后重试。",
   serviceUnavailable: "服务尚未就绪，请稍后重试。",

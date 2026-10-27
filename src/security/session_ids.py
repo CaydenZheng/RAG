@@ -14,6 +14,29 @@ PUBLIC_SESSION_ID_PATTERN = re.compile(
 SCOPED_SESSION_ID_PATTERN = re.compile(
     r"(?P<client_scope>[0-9a-f]{32})_[0-9a-f]{32}"
 )
+ACCOUNT_SESSION_ID_PATTERN: re.Pattern[str] = re.compile(r"u_(?P<account_scope>[0-9a-f]{32})_[0-9a-f]{32}")
+
+
+def account_scope(user_id: str) -> str:
+    """Domain-separate authenticated users from old anonymous client scopes."""
+    import uuid
+
+    if str(uuid.UUID(user_id)) != user_id:
+        raise ValueError("invalid account identity")
+    return hashlib.sha256(("user\0" + user_id).encode()).hexdigest()[:32]
+
+
+def account_scoped_session_id(user_id: str, session_id: str, namespace: SessionNamespace) -> str:
+    validate_public_session_id(session_id)
+    if namespace not in {"rag", "agent"}:
+        raise ValueError("invalid session namespace")
+    suffix: str = hashlib.sha256(f"{namespace}\0{session_id}".encode()).hexdigest()[:32]
+    return f"u_{account_scope(user_id)}_{suffix}"
+
+
+def account_scope_from_session(session_id: str) -> str | None:
+    match: re.Match[str] | None = ACCOUNT_SESSION_ID_PATTERN.fullmatch(session_id)
+    return match.group("account_scope") if match else None
 
 
 def validate_client_id(client_id: str) -> str:
@@ -56,7 +79,8 @@ def validate_storage_session_id(session_id: str) -> str:
     """Accept legacy internal IDs and server-generated scoped IDs at storage seams."""
     if (
         isinstance(session_id, str)
-        and SCOPED_SESSION_ID_PATTERN.fullmatch(session_id) is not None
+        and (SCOPED_SESSION_ID_PATTERN.fullmatch(session_id) is not None
+             or ACCOUNT_SESSION_ID_PATTERN.fullmatch(session_id) is not None)
     ):
         return session_id
     return validate_public_session_id(session_id)

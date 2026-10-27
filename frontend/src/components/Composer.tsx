@@ -8,6 +8,7 @@ interface ComposerProps {
   mode: WorkspaceMode;
   status: ConversationStatus;
   resetting: boolean;
+  unconfirmed?: boolean;
   value: string;
   onValueChange: (value: string) => void;
   onSend: (message: string) => Promise<void>;
@@ -18,6 +19,7 @@ export function Composer({
   mode,
   status,
   resetting,
+  unconfirmed = false,
   value,
   onValueChange,
   onSend,
@@ -25,11 +27,17 @@ export function Composer({
 }: ComposerProps): React.JSX.Element {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const running = isConversationActive(status);
-  const blocked = running || resetting;
+  const blocked = running || resetting || unconfirmed;
+  const blockedMessage = unconfirmed
+    ? "本轮保存状态未确认，请先核对历史"
+    : resetting ? "会话操作中，暂不可发送" : "";
   const wasBlocked = useRef(blocked);
 
   useEffect(() => {
-    if (wasBlocked.current && !blocked) textarea.current?.focus();
+    const currentFocus = document.activeElement;
+    const ownsFocus = currentFocus === document.body || currentFocus === null ||
+      textarea.current?.closest("form")?.contains(currentFocus);
+    if (wasBlocked.current && !blocked && ownsFocus) textarea.current?.focus();
     wasBlocked.current = blocked;
   }, [blocked]);
 
@@ -62,6 +70,7 @@ export function Composer({
           maxLength={2000}
           value={value}
           readOnly={blocked}
+          aria-describedby={blockedMessage ? "composerBlockedReason" : undefined}
           placeholder={
             mode === "rag"
               ? "向知识库提问，Enter 发送，Shift + Enter 换行"
@@ -94,13 +103,14 @@ export function Composer({
               停止
             </button>
           ) : (
-            <button className="send-button" type="submit" disabled={resetting || !value.trim()}>
+            <button className="send-button" type="submit" disabled={resetting || unconfirmed || !value.trim()}>
               <ArrowUp size={18} aria-hidden="true" />
-              <span className="sr-only">{resetting ? "正在新建对话，暂不可发送" : "发送"}</span>
+              <span className="sr-only">{blockedMessage || "发送"}</span>
             </button>
           )}
         </div>
       </form>
+      {blockedMessage && <p id="composerBlockedReason" role="status">{blockedMessage}</p>}
       <p className="ai-disclaimer">{IS_PAGES_DEMO ? "预设模拟内容，非真实模型回答；不执行任何工具。" : "内容由 AI 生成，请核对引用与执行结果。"}</p>
     </div>
   );

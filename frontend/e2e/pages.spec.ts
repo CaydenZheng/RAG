@@ -73,7 +73,7 @@ test("stop, error, reset and timeout cannot appear as successful answers", async
   await page.getByRole("textbox").fill("停止演示");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await page.getByRole("button", { name: "停止", exact: true }).click();
-  await expect(page.getByText("已停止，本轮未保存为成功回答。")).toBeVisible();
+  await expect(page.getByText("已停止，本轮未确认为成功回答。")).toBeVisible();
   await page.getByRole("textbox").fill("错误");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("模拟错误终态");

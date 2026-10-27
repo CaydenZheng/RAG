@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { fileURLToPath } from "node:url";
 
 const loopbackNoProxy = "127.0.0.1,localhost";
 process.env.NO_PROXY = [process.env.NO_PROXY, loopbackNoProxy].filter(Boolean).join(",");
@@ -28,6 +29,10 @@ export default defineConfig({
     command: "uv run --no-sync --offline --no-env-file uvicorn app:app --host 127.0.0.1 --port 8001 --lifespan off",
     cwd: "..",
     env: {
+      AUTH_ENABLED: "false",
+      CHROMA_PERSIST_DIR: fileURLToPath(new URL("../.test-tmp/account-history-production/chroma", import.meta.url)),
+      CACHE_DB_PATH: fileURLToPath(new URL("../.test-tmp/account-history-production/cache.db", import.meta.url)),
+      AUTH_DB_PATH: fileURLToPath(new URL("../.test-tmp/account-history-production/auth.db", import.meta.url)),
       ADMIN_API_KEY: "playwright-production-admin-fixture-key",
       OPENAI_API_KEY: "playwright-production-fixture-key",
     },

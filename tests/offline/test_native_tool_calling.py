@@ -272,6 +272,7 @@ def test_llm_client_returns_native_tool_calls_from_openai_compatible_sdk() -> No
         )
     )
     client = object.__new__(LLMClient)
+    client._deepseek_non_thinking = False
     client._async_chat_client = sdk
     client._chat_model = "test-model"
     tools = [
@@ -373,6 +374,7 @@ def test_llm_text_stream_closes_provider_when_consumer_stops() -> None:
         )
     )
     client = object.__new__(LLMClient)
+    client._deepseek_non_thinking = False
     client._async_chat_client = sdk
     client._chat_model = "test-model"
 
@@ -427,6 +429,7 @@ def test_llm_text_stream_rejects_mixed_tool_delta_before_content() -> None:
         )
     )
     client = object.__new__(LLMClient)
+    client._deepseek_non_thinking = False
     client._async_chat_client = sdk
     client._chat_model = "test-model"
 

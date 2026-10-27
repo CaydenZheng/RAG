@@ -1,7 +1,21 @@
 import { PUBLIC_MESSAGES, PublicClientError } from "./errors";
+import { workspaceFetch as fetch } from "./authClient";
+import { AUTH_EXPIRED_EVENT } from "./authClient";
 import { requireEventStream } from "./http";
 import { finiteNumber, isRecord, readSseEvents } from "./sse";
 import type { AgentCompletion, AgentToolStep, StreamUpdate } from "./types";
+
+const AGENT_FAILURE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  account_quota_exceeded: "今日模型使用额度已达上限，请明日再试或联系管理员。",
+  agent_timeout: "任务处理超时，请精简任务后重试。",
+  agent_token_budget_exceeded: "本轮任务已达到处理预算，请拆分任务后重试。",
+  agent_tool_budget_exceeded: "本轮工具调用已达上限，请拆分任务后重试。",
+  agent_repeated_tool_call: "规划持续请求重复工具，已停止本轮任务；请核对已有工具结果后调整任务。",
+  agent_planning_incomplete: "规划输出未完整结束，请精简任务后重试。",
+  agent_planning_upstream_failed: "规划服务暂时不可用，请稍后重试。",
+  agent_final_generation_failed: "回答生成未完成，本轮未保存为成功；请精简任务后重试。",
+  invalid_agent_plan: "规划格式无效，本轮任务未完成，请调整任务后重试。",
+});
 
 function safeParams(value: unknown): Record<string, unknown> | null {
   return isRecord(value) ? value : null;
@@ -33,6 +47,7 @@ export async function streamAgentAnswer(
   sessionId: string,
   signal: AbortSignal,
   onUpdate: (update: StreamUpdate) => void,
+  clientTurnId?: string,
 ): Promise<AgentCompletion> {
   const response = await fetch("/agent/chat/stream", {
     method: "POST",
@@ -40,7 +55,7 @@ export async function streamAgentAnswer(
       Accept: "text/event-stream",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body: JSON.stringify({ message, session_id: sessionId, ...(clientTurnId ? { conversation_id: sessionId, client_turn_id: clientTurnId } : {}) }),
     signal,
   });
   const stream = requireEventStream(response);
@@ -49,8 +64,12 @@ export async function streamAgentAnswer(
 
   for await (const rawEvent of readSseEvents(stream, signal)) {
     if (!isRecord(rawEvent)) continue;
-    if (rawEvent.error !== undefined) {
-      throw new PublicClientError("terminal_error", PUBLIC_MESSAGES.agentFailed);
+    const errorCode = rawEvent.code || (rawEvent.done === true ? rawEvent.error_code : undefined);
+    if ((rawEvent.error !== undefined && rawEvent.error !== "") || errorCode) {
+      if (errorCode === "auth_required") window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+      throw new PublicClientError("terminal_error", typeof errorCode === "string" &&
+        Object.hasOwn(AGENT_FAILURE_MESSAGES, errorCode)
+        ? AGENT_FAILURE_MESSAGES[errorCode] : PUBLIC_MESSAGES.agentFailed);
     }
 
     const step = stepFromEvent(rawEvent, ++stepSequence);

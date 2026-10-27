@@ -97,8 +97,10 @@ def test_default_calculator_rejects_oversized_expression_before_execution() -> N
 def test_harness_planners_cannot_escape_default_calculator(
     planner_mode: str,
     monkeypatch: pytest.MonkeyPatch,
+    temporary_sessions: Any,
 ) -> None:
     from src.agent.harness import AgentConfig, AgentHarness
+    from src.agent.memory import MemoryManager
     from src.agent.tools import create_default_registry
     from src.core.agent_runtime import AgentEventKind
     from src.llm import llm_client
@@ -156,6 +158,7 @@ def test_harness_planners_cannot_escape_default_calculator(
     harness = AgentHarness(
         config=AgentConfig(planner_mode=planner_mode, verbose=False),
         tools=create_default_registry(),
+        memory=MemoryManager(store=temporary_sessions),
     )
 
     async def exercise() -> list[Any]:
@@ -181,8 +184,10 @@ def test_harness_planners_cannot_escape_default_calculator(
 
 def test_harness_passes_its_tool_call_identity_into_registry(
     monkeypatch: pytest.MonkeyPatch,
+    temporary_sessions: Any,
 ) -> None:
     from src.agent.harness import AgentConfig, AgentHarness
+    from src.agent.memory import MemoryManager
     from src.agent.tools import (
         SafetyLevel,
         ToolDef,
@@ -236,6 +241,7 @@ def test_harness_passes_its_tool_call_identity_into_registry(
     harness = AgentHarness(
         config=AgentConfig(planner_mode="json", verbose=False),
         tools=registry,
+        memory=MemoryManager(store=temporary_sessions),
     )
 
     async def exercise() -> list[Any]:

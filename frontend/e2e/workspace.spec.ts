@@ -91,7 +91,7 @@ test("streams RAG chunks before completion, exposes citations, and cancels the u
   await submit(page, /向知识库提问/, "等待停止");
   await expect(page.getByText(/持续生成/)).toBeVisible();
   await page.getByRole("button", { name: "停止" }).click();
-  await expect(page.getByText("已停止，本轮未保存为成功回答。")).toBeVisible();
+  await expect(page.getByText("已停止，本轮未确认为成功回答。")).toBeVisible();
   await expect.poll(async () => (await fakeState(request)).active_streams).toBe(0);
 });
 
@@ -190,7 +190,7 @@ test("remains keyboard-operable at an effective 200 percent zoom viewport", asyn
   await page.getByRole("textbox", { name: /向知识库提问/ }).fill("等待停止");
   await page.getByRole("textbox", { name: /向知识库提问/ }).press("Enter");
   await page.getByRole("button", { name: "停止" }).press("Enter");
-  await expect(page.getByText("已停止，本轮未保存为成功回答。")).toBeVisible();
+  await expect(page.getByText("已停止，本轮未确认为成功回答。")).toBeVisible();
   await submit(page, /向知识库提问/, "流式引用");
   await expect(page.getByText("第一段第二段")).toBeVisible();
   await page.getByRole("button", { name: "复制回答" }).press("Enter");

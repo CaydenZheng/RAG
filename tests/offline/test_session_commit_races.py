@@ -236,6 +236,196 @@ def test_valid_guard_retries_contention_and_then_commits(
                for connection in commit_connections)
 
 
+@pytest.mark.parametrize("replace", [False, True])
+@pytest.mark.parametrize("outcome", ["cancel", "timeout"])
+def test_preempted_memory_commit_serializes_cancellation_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    commit_database: tuple[Any, sqlite3.Connection, threading.Event],
+    replace: bool, outcome: str,
+) -> None:
+    """Keep the original safety assertion, but pause AFTER permission checks."""
+    store, reader, attempted = commit_database
+    reader_released: threading.Event = threading.Event()
+    connection_type = type(store._connect())
+
+    class Reader:
+        def execute(self, *args: Any, **kwargs: Any) -> Any:
+            return reader.execute(*args, **kwargs)
+
+        def rollback(self) -> None:
+            reader.rollback()
+            reader_released.set()
+
+    def paused_commit(connection: Any) -> None:
+        if connection.history_write:
+            attempted.set()
+            # Model preemption immediately before entering SQLite. Bounded so
+            # a correctly serialized cancel can wait for this one attempt, but
+            # must never require the caller to unlock the reader first.
+            reader_released.wait(0.5)
+        sqlite3.Connection.commit(connection)
+
+    monkeypatch.setattr(connection_type, "commit", paused_commit)
+    test_async_memory_has_no_late_commit_after_reader_unlocks(
+        tmp_path, monkeypatch, (store, Reader(), attempted), replace, outcome,
+    )
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_admitted_commit_finishes_before_revocation_is_confirmed(
+    commit_database: tuple[Any, sqlite3.Connection, threading.Event],
+    monkeypatch: pytest.MonkeyPatch, replace: bool,
+) -> None:
+    from src.infra.session_store import CommitPermit, SessionTurn
+
+    store, _, attempted = commit_database
+    original = store.read_snapshot("session")
+    permit: CommitPermit = CommitPermit()
+    resume: threading.Event = threading.Event()
+    committed: threading.Event = threading.Event()
+    revoking: threading.Event = threading.Event()
+    confirmed: threading.Event = threading.Event()
+    connection_type = type(store._connect())
+
+    def paused_commit(connection: Any) -> None:
+        if connection.history_write:
+            attempted.set()
+            assert resume.wait(2)
+        sqlite3.Connection.commit(connection)
+        if connection.history_write:
+            committed.set()
+
+    def save() -> bool:
+        turns = [SessionTurn("assistant", "accepted answer")]
+        if replace:
+            return store.replace_history_if_revision(
+                "session", original.revision, turns, can_commit=permit,
+            )
+        return store.append_turns_if_epoch(
+            "session", original.revision[0], turns, can_commit=permit,
+        )
+
+    def revoke() -> bool:
+        revoking.set()
+        permit.revoke()
+        confirmed.set()
+        return committed.is_set()
+
+    monkeypatch.setattr(connection_type, "commit", paused_commit)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(save)
+        try:
+            assert attempted.wait(1)
+            revoker = executor.submit(revoke)
+            assert revoking.wait(1)
+            assert not confirmed.wait(0.05)
+        finally:
+            resume.set()
+        assert writer.result(timeout=1)
+        assert revoker.result(timeout=1)
+    assert not permit()
+    assert store.get_history("session")[-1]["content"] == "accepted answer"
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_commit_permit_is_released_during_busy_retry_wait(
+    commit_database: tuple[Any, sqlite3.Connection, threading.Event],
+    monkeypatch: pytest.MonkeyPatch, replace: bool,
+) -> None:
+    from src.infra import session_store as storage_module
+    from src.infra.session_store import CommitPermit, SessionTurn
+
+    store, reader, _ = commit_database
+    original = store.read_snapshot("session")
+    permit: CommitPermit = CommitPermit()
+    waiting: threading.Event = threading.Event()
+    resume: threading.Event = threading.Event()
+    wait_expired: threading.Event = threading.Event()
+
+    def retry_wait(_seconds: float) -> None:
+        waiting.set()
+        if not resume.wait(2):
+            wait_expired.set()
+
+    def save() -> bool:
+        turns = [SessionTurn("assistant", "must not save")]
+        if replace:
+            return store.replace_history_if_revision(
+                "session", original.revision, turns, can_commit=permit,
+            )
+        return store.append_turns_if_epoch(
+            "session", original.revision[0], turns, can_commit=permit,
+        )
+
+    monkeypatch.setattr(storage_module.time, "sleep", retry_wait)
+    _hold_reader(reader)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        writer = executor.submit(save)
+        try:
+            assert waiting.wait(1)
+            permit.revoke()
+            assert not wait_expired.is_set(), "revoke waited for retry sleep"
+            resume.set()
+            assert writer.result(timeout=1) is False
+        finally:
+            resume.set()
+            reader.rollback()
+    assert store.read_snapshot("session") == original
+
+
+def test_memory_cancellation_does_not_wait_for_llm_compression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    commit_database: tuple[Any, sqlite3.Connection, threading.Event],
+) -> None:
+    from src.agent.memory import MemoryConfig, MemoryManager, MemoryTurn
+
+    store, _, _ = commit_database
+    original = store.read_snapshot("session")
+    memory = MemoryManager(
+        tmp_path / "memory", store=store,
+        config=MemoryConfig(compress_trigger_turns=3, compress_keep_recent=1),
+    )
+    summarizing: threading.Event = threading.Event()
+    resume: threading.Event = threading.Event()
+    finished: threading.Event = threading.Event()
+    compression_expired: threading.Event = threading.Event()
+    add_turns = memory.add_turns
+
+    def save(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return add_turns(*args, **kwargs)
+        finally:
+            finished.set()
+
+    def summarize(*_args: Any) -> str:
+        summarizing.set()
+        if not resume.wait(2):
+            compression_expired.set()
+        return "summary"
+
+    monkeypatch.setattr(memory, "add_turns", save)
+    monkeypatch.setattr(memory, "_llm_compress", summarize)
+
+    async def exercise() -> None:
+        task = asyncio.create_task(memory.add_turns_async(
+            "session", [MemoryTurn("user", "question"), MemoryTurn("assistant", "answer")],
+        ))
+        try:
+            assert await asyncio.to_thread(summarizing.wait, 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not compression_expired.is_set(), "cancel waited for compression"
+            assert not finished.is_set()
+        finally:
+            resume.set()
+            await asyncio.gather(task, return_exceptions=True)
+            assert await asyncio.to_thread(finished.wait, 1)
+
+    asyncio.run(exercise())
+    assert store.read_snapshot("session") == original
+
+
 def test_guarded_commit_preserves_sqlite_busy_wait_cap(
     commit_database: tuple[Any, sqlite3.Connection, threading.Event],
     commit_connections: list[sqlite3.Connection], monkeypatch: pytest.MonkeyPatch,

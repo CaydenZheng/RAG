@@ -38,6 +38,12 @@ from src.agent.tool_schema import (
 from src.core.agent_runtime import ToolResult
 from src.infra.jsonl import append_jsonl
 from src.infra.tracer import tracer
+from src.security.request_authorization import (
+    current_authorization,
+    require_active_authorization,
+    require_session_owner,
+)
+from src.security.session_ids import account_scope
 
 _CURRENT_TOOL_SESSION_ID: ContextVar[str | None] = ContextVar(
     "current_tool_session_id",
@@ -288,7 +294,13 @@ class ToolRegistry:
     def is_blocked_by_policy(self, name: str) -> bool:
         """Return whether a registered tool is denied by Host policy."""
 
-        return (
+        authorization = current_authorization()
+        account_denied: bool = (
+            authorization is not None and authorization.role != "admin"
+            and name in self._tools and self._tools[name].source == "mcp"
+            and name not in settings.member_mcp_allowlist
+        )
+        return account_denied or (
             name in self._tools
             and not self._policy.evaluate(name).allowed
         )
@@ -400,7 +412,7 @@ class ToolRegistry:
                 tool
                 for tool in self._tools.values()
                 if tool.available
-                and self._policy.evaluate(tool.name).allowed
+                and not self.is_blocked_by_policy(tool.name)
             ),
             key=lambda item: item.name,
         )
@@ -456,7 +468,7 @@ class ToolRegistry:
         for name, tool in self._tools.items():
             if (
                 not tool.available
-                or not self._policy.evaluate(name).allowed
+                or self.is_blocked_by_policy(name)
             ):
                 continue
             params_desc = {
@@ -536,6 +548,7 @@ class ToolRegistry:
             )
         for attempt in range(self._execution_attempts(tool)):
             try:
+                require_active_authorization()
                 result = tool.execute_fn(params)
                 return self._complete(
                     tool, params, result, session_id, call_hash, start
@@ -730,6 +743,7 @@ class ToolRegistry:
             session_token = _CURRENT_TOOL_SESSION_ID.set(session_id)
             call_token = _CURRENT_TOOL_CALL_ID.set(call_id or None)
             try:
+                require_active_authorization()
                 if tool.execute_async_fn is not None:
                     result = await tool.execute_async_fn(params)
                 else:
@@ -805,6 +819,8 @@ class ToolRegistry:
     def _prepare(
         self, tool_name: str, params: dict, session_id: str
     ) -> tuple[ToolDef, str] | ToolResult:
+        require_active_authorization()
+        require_session_owner(session_id)
         tool = self._tools.get(tool_name)
         if tool is None:
             return ToolResult(
@@ -814,7 +830,7 @@ class ToolRegistry:
                 tool_name=tool_name,
             )
         policy_decision = self._policy.evaluate(tool_name)
-        if not policy_decision.allowed:
+        if self.is_blocked_by_policy(tool_name):
             logger.warning(
                 "Tool blocked by access policy: {} ({})",
                 tool_name,
@@ -872,6 +888,7 @@ class ToolRegistry:
             result.error_code = "tool_failed"
         if (
             force_audit
+            or current_authorization() is not None
             or tool.safety_level == SafetyLevel.GRAYLIST
             or self._policy.configured
         ):
@@ -906,7 +923,7 @@ class ToolRegistry:
             tool is not None
             and tool.safety_level == SafetyLevel.GRAYLIST
         )
-        if configured_policy_failure or graylist_validation:
+        if configured_policy_failure or graylist_validation or current_authorization() is not None:
             safe_params = params if isinstance(params, dict) else {}
             self._audit(
                 tool_name,
@@ -1057,6 +1074,8 @@ class ToolRegistry:
         call_hash: str, claim: _ToolCallClaim,
     ) -> ToolResult:
         try:
+            require_active_authorization()
+            require_session_owner(session_id)
             return tool.execute_fn(params)
         finally:
             with self._dedup_lock:
@@ -1161,6 +1180,10 @@ class ToolRegistry:
         }
         if call_id:
             record["call_id"] = _bounded_log_identifier(call_id)
+        authorization = current_authorization()
+        if authorization is not None:
+            record["actor_scope"] = account_scope(authorization.user_id)
+            record["account_policy_decision"] = "denied" if self.is_blocked_by_policy(tool_name) else "allowed"
         if omitted_parameter_name_count:
             record["omitted_parameter_name_count"] = (
                 omitted_parameter_name_count

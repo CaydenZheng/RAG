@@ -30,6 +30,9 @@ class IndexJobResponse(BaseModel):
 
 
 class QueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    conversation_id: str | None = None
+    client_turn_id: str | None = None
     query: str = Field(
         ...,
         min_length=USER_INPUT_MIN_LENGTH,
@@ -83,6 +86,9 @@ class QueryResponse(BaseModel):
 
 
 class AgentChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    conversation_id: str | None = None
+    client_turn_id: str | None = None
     session_id: str = Field(default="", description="会话 ID，空则自动生成")
     message: str = Field(
         ...,

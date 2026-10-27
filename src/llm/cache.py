@@ -10,6 +10,13 @@ from typing import Any, Optional
 from loguru import logger
 
 from config.settings import settings
+from src.security.request_authorization import (
+    AuthorizationRevoked,
+    authorization_commit_guard,
+    current_authorization,
+    require_active_authorization,
+)
+from src.security.session_ids import account_scope
 
 
 class LLMCache:
@@ -73,6 +80,10 @@ class LLMCache:
         prompt_version: str | None = None,
         generation_parameters: dict[str, Any] | None = None,
     ) -> str:
+        authorization = current_authorization()
+        if authorization is not None:
+            # Explicit dimensions are not an authority to read another owner.
+            identity_scope = account_scope(authorization.user_id)
         parameters = {
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -100,6 +111,7 @@ class LLMCache:
         temperature: float,
         **dimensions: Any,
     ) -> Optional[str]:
+        require_active_authorization()
         key = self._make_key(model, messages, temperature, **dimensions)
         with self._lock:
             with sqlite3.connect(str(settings.cache_db_path_resolved)) as conn:
@@ -121,6 +133,7 @@ class LLMCache:
         response: str,
         **dimensions: Any,
     ) -> None:
+        require_active_authorization()
         key = self._make_key(model, messages, temperature, **dimensions)
         with self._lock:
             with sqlite3.connect(str(settings.cache_db_path_resolved)) as conn:
@@ -129,7 +142,13 @@ class LLMCache:
                     (key, response),
                 )
                 self._prune(conn)
-                conn.commit()
+                if current_authorization() is not None:
+                    conn.execute("PRAGMA busy_timeout=0")
+                with authorization_commit_guard() as valid:
+                    if not valid:
+                        conn.rollback()
+                        raise AuthorizationRevoked("auth_required")
+                    conn.commit()
         logger.debug("Cache SET: key={}...", key[:8])
 
     def clear(self) -> None:

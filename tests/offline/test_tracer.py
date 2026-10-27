@@ -441,3 +441,58 @@ def test_query_rewrite_failure_records_its_stage(
     assert trace["spans"][0]["name"] == "query_rewrite"
     assert trace["spans"][0]["status"] == "error"
     assert trace["spans"][0]["error_code"] == "query_rewrite_failed"
+
+
+@pytest.mark.parametrize("method", ["chat", "chat_async", "chat_with_tools_async"])
+@pytest.mark.parametrize(
+    ("reason", "failure_kind"),
+    [("length", "incomplete_output"), ("stop", "empty_output"), ("PRIVATE_UNKNOWN", "unconfirmed_output"), ("upstream", "upstream_error")],
+)
+def test_failed_llm_spans_keep_safe_completion_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, isolated_runtime: Path,
+    method: str, reason: str, failure_kind: str,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    import httpx
+    from openai import APIStatusError
+
+    from src.infra.tracer import TraceLogger
+    from src.llm import client as module
+    from src.llm import llm_client
+
+    local = TraceLogger(isolated_runtime / "llm-failure.jsonl")
+    monkeypatch.setattr(module, "tracer", local)
+    trace = local.start_trace("safe-id", "agent_diagnostic")
+    token = local.bind(trace)
+    response = SimpleNamespace(choices=[SimpleNamespace(finish_reason=reason,
+        message=SimpleNamespace(content="" if reason == "stop" else "PRIVATE_RESPONSE", tool_calls=None))],
+        usage=SimpleNamespace(prompt_tokens=27, completion_tokens=64, total_tokens=91))
+    upstream_error = APIStatusError("PRIVATE_UPSTREAM_URL?token=PRIVATE_TOKEN",
+        response=httpx.Response(503, request=httpx.Request("POST", "https://provider.invalid")), body=None)
+    kwargs = {"side_effect": upstream_error} if reason == "upstream" else {"return_value": response}
+    monkeypatch.setattr(llm_client._chat_client.chat.completions, "create", Mock(**kwargs))
+    monkeypatch.setattr(llm_client._async_chat_client.chat.completions, "create", AsyncMock(**kwargs))
+    try:
+        with local.stage("agent_planning"), pytest.raises((RuntimeError, APIStatusError)):
+            messages = [{"role": "user", "content": "PRIVATE_QUESTION"}]
+            if method == "chat":
+                llm_client.chat(messages, max_tokens=64, skip_cache=True)
+            elif method == "chat_async":
+                asyncio.run(llm_client.chat_async(messages, max_tokens=64, skip_cache=True))
+            else:
+                asyncio.run(llm_client.chat_with_tools_async(messages, [], max_tokens=64))
+    finally:
+        local.reset(token)
+    attributes = trace["spans"][-1]["attributes"]
+    assert attributes["failure_kind"] == failure_kind
+    assert attributes["output_limit"] == 64
+    assert attributes["finish_reason"] == (None if reason == "upstream" else "other" if reason == "PRIVATE_UNKNOWN" else reason)
+    assert attributes["usage_reported"] is (reason != "upstream")
+    assert attributes["http_status"] == (503 if reason == "upstream" else None)
+    if reason != "upstream":
+        assert attributes["completion_tokens"] == 64
+        assert attributes["prompt_tokens"] == 27
+    assert "PRIVATE" not in json.dumps(trace)
+    local.finish_trace(trace)
+    assert "PRIVATE" not in local.trace_file.read_text(encoding="utf8")

@@ -161,9 +161,10 @@ npm run dev -- --host 127.0.0.1
 - Agent 页面：<http://127.0.0.1:8000/agent>
 - OpenAPI 文档：<http://127.0.0.1:8000/docs>
 
-当前 Web 工作台只面向本地单用户使用。浏览器 `localStorage` 中的公开
-session ID 仅用于定位当前对话，不是用户身份或登录凭据；账号登录与数据
-隔离完成前，不要将站点作为多用户公网服务开放。
+默认 Web 工作台仍是本地匿名单用户模式。`AUTH_ENABLED=true` 的邀请制账号候选
+提供登录、初始改密、独立历史和新建／清空／删除，需统一 Review 后受控启用。
+浏览器公开 session ID 只定位对话，不是身份；Cookie 凭据只由服务端验证。
+本轮不授权迁移真实数据或将站点作为多用户公网服务开放，详见 [账号与历史](docs/authentication.md)。
 
 运行状态接口（供脚本或部署检查）：
 
@@ -190,7 +191,7 @@ session ID 仅用于定位当前对话，不是用户身份或登录凭据；账
 | `ADMIN_API_KEY`、`ALLOW_UNAUTHENTICATED_ADMIN` | 索引管理密钥及仅限本地开发的显式免认证开关 |
 | `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算；Token 预算按每次模型请求的完整输入字符估算与预留最大输出累计 |
 | `AGENT_PLANNER_MODE` | `json` 为兼容默认；`native` 使用 OpenAI-compatible 原生 Tool Calling |
-| `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算 |
+| `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算；规划默认 512，最终回答默认 4096 token |
 | `AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS` | Graylist 工具等待调用方批准的时限，默认 25 秒 |
 | `AGENT_TOOL_ALLOWLIST`、`AGENT_TOOL_DENYLIST` | 工具精确注册名 JSON 数组；空 allowlist 默认允许，denylist 优先 |
 | `TOOL_DEDUP_MAX_SESSIONS` | 工具调用去重状态的最大 session 数 |
@@ -201,6 +202,18 @@ session ID 仅用于定位当前对话，不是用户身份或登录凭据；账
 | `MAX_UPLOAD_BYTES` | 单文件上传上限 |
 
 配置在进程启动时由 Pydantic 校验。默认必须设置 `ADMIN_API_KEY`；只有服务绑定 `127.0.0.1` 且仅供本机开发时，才可显式设置 `ALLOW_UNAUTHENTICATED_ADMIN=true`。不要在对外监听时启用免认证，也不要提交 `.env`、密钥或本地数据库。
+
+使用官方 `api.deepseek.com` 端点时，生成客户端显式发送
+`thinking.type=disabled`。DeepSeek V4 默认开启的思考会占用同一个
+`max_tokens` 上限，小预算可能在产生正文前耗尽。该参数只发送给官方
+DeepSeek 端点，其他兼容端点保持原行为。精确缓存按此生成合同隔离。
+Trace 仅记录 Provider 提供的思考 token 数，不记录思考正文；未报告时为空。
+
+Agent 规划默认 512 token，最终回答默认 4096 token；它们仍受总预算和
+总时限限制。Token 不是字数：旧 1024 上限不足以完成约 1500 词的教程。
+已有 `.env` 中显式设置的 `AGENT_FINAL_MAX_TOKENS=1024` 会覆盖新默认值，
+需要长回答时改为 `4096` 并重启后端。达到上限的未完成回答仍按失败处理，
+不缓存、不保存为成功历史。更长正文或多轮工具任务仍需按实际用量配置预算。
 
 ## RAG 接口
 
@@ -458,6 +471,16 @@ Reranker 权重未缓存、模型路径错误、资源不足或超时。准备�
 先激活目标环境并设置 `UV_PROJECT_ENVIRONMENT`，随后使用 `uv run --no-sync`。只有依赖确实变化时才执行 `uv sync`。
 
 ## 已知限制
+
+### 账号认证与会话所有权（AUTH-USER-1/2）
+
+已提供默认关闭的账号与可撤销登录会话 API，以及本地管理员创建、停用、启用和重置密码命令。
+参见[认证合同、权限矩阵与运维说明](docs/authentication.md)。初始密码必须修改，密码使用 Argon2id；
+登录凭证仅存于 HttpOnly Cookie，服务器只保存摘要。无公开注册、邮件找回或登录页面。
+
+账号模式已为旧 RAG/Agent/Memory/reset/pending 路径接入所有权及撤销防护，不把匿名 Cookie 升级为账号。
+**共享资源细化权限、登录 UI 和完整跨设备历史仍未完成。** 普通账号暂不能调用共享 MCP 工具，原生工具仍经后端安全链。
+在后续身份隔离和权限验收完成前，不得将后端作为多人或公网服务开放；现有 GitHub Pages 仍仅为静态模拟。
 
 - 开发评测数据未经人工核验，不能用于发布门槛。
 - 本地 Embedding 与 Reranker 首次加载需要模型文件、内存和启动时间。

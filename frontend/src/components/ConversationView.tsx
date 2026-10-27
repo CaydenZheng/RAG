@@ -200,7 +200,7 @@ export function ConversationView({
                   </p>
                 ) : null}
                 {active && <span className="stream-cursor" aria-hidden="true" />}
-                {turn.status === "cancelled" && <p className="terminal-note">已停止，本轮未保存为成功回答。</p>}
+                {turn.status === "cancelled" && <p className="terminal-note">已停止，本轮未确认为成功回答。</p>}
                 {turn.status === "failed" && <p className="error-notice" role="alert">{turn.error}</p>}
                 {turn.status === "completed" && (
                   <div className="answer-footer">

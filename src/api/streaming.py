@@ -7,11 +7,30 @@ from collections.abc import AsyncIterator
 
 from loguru import logger
 from starlette.requests import Request
+from starlette.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from src.api.public_errors import public_error
 from src.core.agent_runtime import AgentRuntime
-from src.core.generation import AnswerInput, AnswerService
+from src.core.generation import AnswerInput, AnswerService, persist_completed_answer
 from src.infra.tracer import tracer
+from src.security.request_authorization import (
+    AccountLimitExceeded,
+    mark_stream_terminal,
+    require_active_authorization,
+)
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    """Close the iterator even when cancellation interrupts send, not next()."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            close = getattr(self.body_iterator, "aclose", None)
+            if close is not None:
+                await close()
 
 
 def encode_sse_event(event: dict) -> str:
@@ -53,9 +72,14 @@ async def iter_agent_sse(
                 logger.info("Agent stream disconnected; cancelling execution")
                 return
             payload = event.to_dict()
+            require_active_authorization()
             if payload.get("done"):
                 payload["session_id"] = public_session_id
             yield encode_sse_event(payload)
+            # Resuming after yield means the consumer's send completed. A
+            # cancelled, backpressured send must not suppress a revocation error.
+            if payload.get("done") or "error" in payload:
+                mark_stream_terminal()
             await asyncio.sleep(0)
     finally:
         close = getattr(events, "aclose", None)
@@ -116,12 +140,17 @@ async def iter_answer_sse(
             )
             return
 
+        require_active_authorization()
         answer = "".join(answer_chunks)
-        if service.persist(answer_input, answer) is False:
+        if await persist_completed_answer(service, answer_input, answer) is False:
             raise RuntimeError("Session changed during answer generation")
     except asyncio.CancelledError:
         logger.info("RAG stream {} cancelled by server", query_id)
         raise
+    except AccountLimitExceeded:
+        yield encode_sse_event(answer_event("error",query_id,done=True,error=public_error("account_quota_exceeded")))
+        mark_stream_terminal()
+        return
     except Exception as exc:
         tracer.record_error("answer_generation_failed")
         logger.error("RAG stream {} failed: {}", query_id, type(exc).__name__)
@@ -133,6 +162,7 @@ async def iter_answer_sse(
                 error=public_error("answer_generation_failed"),
             )
         )
+        mark_stream_terminal()
         return
 
     latency_ms = round((time.perf_counter() - started_at) * 1000, 1)
@@ -149,3 +179,4 @@ async def iter_answer_sse(
             latency_ms=latency_ms,
         )
     )
+    mark_stream_terminal()

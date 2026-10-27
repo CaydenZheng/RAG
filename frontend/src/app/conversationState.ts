@@ -11,6 +11,7 @@ import { agentInteractionKey, isConversationActive } from "../api/types";
 
 export interface ConversationTurn {
   id: number;
+  clientTurnId?: string;
   status: ConversationStatus;
   question: string;
   answer: string;
@@ -37,6 +38,7 @@ export const initialConversationState: ConversationState = {
 };
 
 export type ConversationAction =
+  | { type: "history"; turns: ConversationTurn[]; prepend?: boolean }
   | { type: "start"; question: string }
   | { type: "chunk"; chunk: string }
   | { type: "tool_step"; step: AgentToolStep }
@@ -80,6 +82,10 @@ export function conversationReducer(
   action: ConversationAction,
 ): ConversationState {
   switch (action.type) {
+    case "history": {
+      const turns = action.prepend ? [...action.turns, ...state.turns] : action.turns;
+      return { status: "idle", turns, nextTurnId: Math.max(0, ...turns.map((turn) => turn.id)) + 1 };
+    }
     case "start":
       return {
         status: "connecting",

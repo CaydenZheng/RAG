@@ -1,5 +1,5 @@
 import { Bot, BookOpen, Database, History, Plus, Settings2, X } from "lucide-react";
-import { useEffect, useRef, type MouseEvent } from "react";
+import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
 
 import type { WorkspaceMode } from "../api/types";
 import { IS_PAGES_DEMO, modeHref } from "../app/runtime";
@@ -12,6 +12,8 @@ interface SidebarProps {
   onReset: () => void;
   onNavigate: (mode: WorkspaceMode) => void;
   onClose: () => void;
+  history?: ReactNode;
+  account?: boolean;
 }
 
 export function Sidebar({
@@ -22,6 +24,8 @@ export function Sidebar({
   onReset,
   onNavigate,
   onClose,
+  history,
+  account = false,
 }: SidebarProps): React.JSX.Element {
   const closeButton = useRef<HTMLButtonElement>(null);
 
@@ -78,7 +82,7 @@ export function Sidebar({
           <History size={16} aria-hidden="true" />
           <span>最近对话</span>
         </div>
-        <p className="coming-soon">即将支持</p>
+        {history ?? <p className="coming-soon">即将支持</p>}
       </section>
 
       <div className="sidebar-spacer" />
@@ -88,11 +92,11 @@ export function Sidebar({
         <span>知识库管理</span>
         <span className="soon-badge" id="knowledgeHint">即将支持</span>
       </button>
-      <a className="sidebar-link" href={IS_PAGES_DEMO ? "https://github.com/CaydenZheng/RAG" : "/docs"}>
+      {!account && <a className="sidebar-link" href={IS_PAGES_DEMO ? "https://github.com/CaydenZheng/RAG" : "/docs"}>
         <Settings2 size={18} aria-hidden="true" />
         <span>{IS_PAGES_DEMO ? "源码与部署说明" : "API 文档"}</span>
-      </a>
-      <p className="local-only-note">{IS_PAGES_DEMO ? "仅演示界面，不提供真实 AI 服务。真实后端仅供本地单用户使用。" : "仅供本地单用户使用；会话 ID 不是登录身份。"}</p>
+      </a>}
+      <p className="local-only-note">{IS_PAGES_DEMO ? "仅演示界面，不提供真实 AI 服务。真实后端仅供本地单用户使用。" : account ? "共享知识库只读，历史按账号隔离。公开会话 ID 不是身份；尚未授权公网开放。" : "仅供本地单用户使用；会话 ID 不是登录身份。"}</p>
     </aside>
   );
 }
