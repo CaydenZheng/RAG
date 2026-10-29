@@ -1,4 +1,5 @@
 import { isRecord } from "./sse";
+import { workspaceFetch as fetch } from "./authClient";
 import { PUBLIC_MESSAGES, PublicClientError } from "./errors";
 import type { AgentInteraction, InteractionDecision } from "./types";
 

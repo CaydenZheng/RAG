@@ -3,33 +3,53 @@ import { useEffect, useRef } from "react";
 
 import { isConversationActive, type ConversationStatus, type WorkspaceMode } from "../api/types";
 import { IS_PAGES_DEMO } from "../app/runtime";
+import { ModelSelect } from "./ModelSelect";
+import type { ModelChoice, ModelOption } from "../api/workspaceClient";
 
 interface ComposerProps {
   mode: WorkspaceMode;
   status: ConversationStatus;
   resetting: boolean;
+  unconfirmed?: boolean;
+  modelUnavailable?: boolean;
   value: string;
   onValueChange: (value: string) => void;
   onSend: (message: string) => Promise<void>;
   onStop: () => void;
+  model?: ModelChoice;
+  models?: ModelOption[];
+  onModelChange?: (model: ModelChoice) => void;
 }
 
 export function Composer({
   mode,
   status,
   resetting,
+  unconfirmed = false,
+  modelUnavailable = false,
   value,
   onValueChange,
   onSend,
   onStop,
+  model = "flash",
+  models,
+  onModelChange,
 }: ComposerProps): React.JSX.Element {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const running = isConversationActive(status);
-  const blocked = running || resetting;
+  const modelLocked = running || resetting || unconfirmed;
+  const blocked = modelLocked || modelUnavailable;
+  const blockedMessage = unconfirmed
+    ? "本轮保存状态未确认，请先核对历史"
+    : resetting ? "会话操作中，暂不可发送"
+    : modelUnavailable ? "当前模型未配置，请选择可用模型" : "";
   const wasBlocked = useRef(blocked);
 
   useEffect(() => {
-    if (wasBlocked.current && !blocked) textarea.current?.focus();
+    const currentFocus = document.activeElement;
+    const ownsFocus = currentFocus === document.body || currentFocus === null ||
+      textarea.current?.closest("form")?.contains(currentFocus);
+    if (wasBlocked.current && !blocked && ownsFocus) textarea.current?.focus();
     wasBlocked.current = blocked;
   }, [blocked]);
 
@@ -62,6 +82,7 @@ export function Composer({
           maxLength={2000}
           value={value}
           readOnly={blocked}
+          aria-describedby={blockedMessage ? "composerBlockedReason" : undefined}
           placeholder={
             mode === "rag"
               ? "向知识库提问，Enter 发送，Shift + Enter 换行"
@@ -81,9 +102,9 @@ export function Composer({
             <button type="button" className="icon-button" disabled aria-label="添加附件，即将支持">
               <Paperclip size={18} aria-hidden="true" />
             </button>
-            <button type="button" className="model-placeholder" disabled>
+            {models && onModelChange ? <ModelSelect value={model} items={models} disabled={modelLocked} onChange={onModelChange} /> : <button type="button" className="model-placeholder" disabled>
               默认模型 · 即将支持
-            </button>
+            </button>}
           </div>
           <span className="character-count" aria-label={`已输入 ${value.length} 个字符`}>
             {value.length}/2000
@@ -94,13 +115,14 @@ export function Composer({
               停止
             </button>
           ) : (
-            <button className="send-button" type="submit" disabled={resetting || !value.trim()}>
+            <button className="send-button" type="submit" disabled={blocked || !value.trim()}>
               <ArrowUp size={18} aria-hidden="true" />
-              <span className="sr-only">{resetting ? "正在新建对话，暂不可发送" : "发送"}</span>
+              <span className="sr-only">{blockedMessage || "发送"}</span>
             </button>
           )}
         </div>
       </form>
+      {blockedMessage && <p id="composerBlockedReason" role="status">{blockedMessage}</p>}
       <p className="ai-disclaimer">{IS_PAGES_DEMO ? "预设模拟内容，非真实模型回答；不执行任何工具。" : "内容由 AI 生成，请核对引用与执行结果。"}</p>
     </div>
   );

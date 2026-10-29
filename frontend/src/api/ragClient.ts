@@ -1,9 +1,14 @@
 import { PUBLIC_MESSAGES, PublicClientError } from "./errors";
+import { workspaceFetch as fetch } from "./authClient";
+import { AUTH_EXPIRED_EVENT } from "./authClient";
 import { requireEventStream } from "./http";
 import { finiteNumber, isRecord, readSseEvents } from "./sse";
 import type { RagCompletion, RagSource, StreamUpdate } from "./types";
+import type { ModelChoice } from "./workspaceClient";
+import { completionMetadata } from "./completionMetadata";
 
 const RAG_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  account_quota_exceeded: "今日模型使用额度已达上限，请明日再试或联系管理员。",
   answer_generation_failed: PUBLIC_MESSAGES.ragFailed,
   query_capacity_exceeded: "服务繁忙，请稍后重试。",
   request_timeout: "请求处理超时，请稍后重试。",
@@ -26,6 +31,7 @@ function normalizeSource(value: unknown, index: number): RagSource | null {
 function terminalError(payload: Record<string, unknown>): PublicClientError {
   const error = isRecord(payload.error) ? payload.error : null;
   const code = error && typeof error.code === "string" ? error.code : "";
+  if (code === "auth_required") window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
   return new PublicClientError(
     "terminal_error",
     RAG_ERROR_MESSAGES[code] ?? PUBLIC_MESSAGES.ragFailed,
@@ -37,8 +43,12 @@ export async function streamRagAnswer(
   sessionId: string,
   signal: AbortSignal,
   onUpdate: (update: StreamUpdate) => void,
+  clientTurnId?: string,
+  model?: ModelChoice,
 ): Promise<RagCompletion> {
   const search = new URLSearchParams({ query, session_id: sessionId });
+  if (clientTurnId) { search.set("conversation_id", sessionId); search.set("client_turn_id", clientTurnId); }
+  if (model) search.set("model", model);
   const response = await fetch(`/query/stream?${search.toString()}`, {
     method: "GET",
     headers: { Accept: "text/event-stream" },
@@ -76,6 +86,7 @@ export async function streamRagAnswer(
       ? rawEvent.warnings.filter((warning): warning is string => typeof warning === "string")
       : [];
     return {
+      ...completionMetadata(rawEvent),
       answer: rawEvent.answer,
       sources,
       warnings,

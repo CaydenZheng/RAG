@@ -14,6 +14,7 @@ from pocketflow import AsyncNode, Node
 
 from config.settings import settings
 from src.core.index_versions import CandidateBatch, RetrievalChannelStatus
+from src.core.run_options import selected_model
 from src.infra.chroma_clients import get_chroma_client
 from src.infra.index_catalog import index_catalog
 from src.infra.prompt_manager import prompt_manager
@@ -61,7 +62,7 @@ class QueryRewriterNode(AsyncNode):
             )
 
             with tracer.stage("query_rewrite_llm"):
-                resp = await llm_client.chat_async(messages, temperature=0.2)
+                resp = await llm_client.chat_async(messages, temperature=0.2, model=selected_model())
             if len(resp) > self.MAX_RESPONSE_CHARS:
                 raise ValueError("rewrite response exceeds limit")
 

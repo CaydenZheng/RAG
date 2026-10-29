@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  fetchPendingInteractions, loadOrCreateSessionId, postInteractionDecision,
+  createSessionId, fetchPendingInteractions, loadOrCreateSessionId, postInteractionDecision,
   resetAndRotateSession, streamAgentAnswer, streamRagAnswer,
 } from "../demo/client";
 import type { StreamUpdate } from "../api/types";
@@ -8,6 +8,16 @@ import type { StreamUpdate } from "../api/types";
 afterEach(() => vi.useRealTimers());
 
 describe("network-free public demo", () => {
+  it("implements the session ID adapter without network or persistent identity", () => {
+    const network = vi.spyOn(globalThis,"fetch");
+    const first = createSessionId();
+    const second = createSessionId();
+    expect(first).toMatch(/^[a-f0-9-]{36}$/i);
+    expect(first).not.toBe(second);
+    expect(network).not.toHaveBeenCalled();
+    expect(localStorage.length).toBe(0);
+    network.mockRestore();
+  });
   it("streams labelled RAG examples without network or persistent content", async () => {
     vi.useFakeTimers();
     const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Network forbidden"));

@@ -14,7 +14,13 @@ from openai import OpenAI
 
 from config.settings import settings
 from src.core.errors import GenerationUnavailableError
+from src.core.run_options import current_run_options
 from src.llm import llm_client
+from src.security.request_authorization import (
+    AccountLimitExceeded,
+    AuthorizationRevoked,
+    require_active_authorization,
+)
 
 
 def _chat_with_ollama(
@@ -22,6 +28,10 @@ def _chat_with_ollama(
     temperature: float,
     max_tokens: int | None = None,
 ) -> str:
+    require_active_authorization()
+    from src.security.account_limits import reserve_model_call
+
+    max_tokens = reserve_model_call(messages,max_tokens)
     with OpenAI(
         base_url=settings.ollama_base_url,
         api_key="ollama",
@@ -34,6 +44,7 @@ def _chat_with_ollama(
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        require_active_authorization()
         return llm_client._completed_message(response).content or ""
 
 
@@ -46,6 +57,7 @@ async def chat_with_fallback_async(
     index_version: str | None = None,
 ) -> str:
     """Async primary call with a non-blocking optional Ollama fallback."""
+    require_active_authorization()
     model = model or settings.llm_model
     last_error: Exception | None = None
 
@@ -58,11 +70,16 @@ async def chat_with_fallback_async(
             skip_cache=skip_cache,
             index_version=index_version,
         )
+    except (AuthorizationRevoked, AccountLimitExceeded):
+        raise
     except Exception as exc:
         last_error = exc
+        if current_run_options.get() is not None:
+            raise GenerationUnavailableError("Selected model failed; fallback disabled") from exc
         logger.warning("Primary async LLM failed; trying configured fallback")
 
     if settings.ollama_base_url:
+        require_active_authorization()
         try:
             answer = await asyncio.to_thread(
                 _chat_with_ollama,
@@ -71,7 +88,12 @@ async def chat_with_fallback_async(
                 max_tokens,
             )
             logger.info("Ollama fallback succeeded")
+            from src.infra.exchange_context import completed_model
+
+            completed_model.set("llama3.2")
             return answer
+        except (AuthorizationRevoked, AccountLimitExceeded):
+            raise
         except Exception as exc:
             last_error = exc
             logger.warning("Ollama fallback failed")

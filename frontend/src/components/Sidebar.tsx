@@ -1,8 +1,8 @@
 import { Bot, BookOpen, Database, History, Plus, Settings2, X } from "lucide-react";
-import { useEffect, useRef, type MouseEvent } from "react";
+import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
 
 import type { WorkspaceMode } from "../api/types";
-import { IS_PAGES_DEMO, modeHref } from "../app/runtime";
+import { IS_PAGES_DEMO, modeHref, skillsHref } from "../app/runtime";
 
 interface SidebarProps {
   mode: WorkspaceMode;
@@ -12,6 +12,10 @@ interface SidebarProps {
   onReset: () => void;
   onNavigate: (mode: WorkspaceMode) => void;
   onClose: () => void;
+  history?: ReactNode;
+  account?: boolean;
+  skillsActive?: boolean;
+  onSkills?: () => void;
 }
 
 export function Sidebar({
@@ -22,6 +26,10 @@ export function Sidebar({
   onReset,
   onNavigate,
   onClose,
+  history,
+  account = false,
+  skillsActive = false,
+  onSkills,
 }: SidebarProps): React.JSX.Element {
   const closeButton = useRef<HTMLButtonElement>(null);
 
@@ -63,14 +71,18 @@ export function Sidebar({
       </button>
 
       <nav className="mode-nav" aria-label="对话模式">
-        <a className="mode-link" data-active={mode === "rag"} href={modeHref("rag")} aria-current={mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
+        <a className="mode-link" data-active={!skillsActive && mode === "rag"} href={modeHref("rag")} aria-current={!skillsActive && mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
           <BookOpen size={19} aria-hidden="true" />
           <span>知识问答</span>
         </a>
-        <a className="mode-link" data-active={mode === "agent"} href={modeHref("agent")} aria-current={mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
+        <a className="mode-link" data-active={!skillsActive && mode === "agent"} href={modeHref("agent")} aria-current={!skillsActive && mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
           <Bot size={19} aria-hidden="true" />
           <span>Agent</span>
         </a>
+        {(account || IS_PAGES_DEMO) && <a className="mode-link" data-active={skillsActive} aria-current={skillsActive ? "page" : undefined} href={skillsHref()} onClick={(event) => {
+          if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+          event.preventDefault();onSkills?.();
+        }}><Settings2 size={19} aria-hidden="true" /><span>Skills 技能</span></a>}
       </nav>
 
       <section className="sidebar-section" aria-labelledby="recentTitle">
@@ -78,7 +90,7 @@ export function Sidebar({
           <History size={16} aria-hidden="true" />
           <span>最近对话</span>
         </div>
-        <p className="coming-soon">即将支持</p>
+        {history ?? <p className="coming-soon">即将支持</p>}
       </section>
 
       <div className="sidebar-spacer" />
@@ -88,11 +100,11 @@ export function Sidebar({
         <span>知识库管理</span>
         <span className="soon-badge" id="knowledgeHint">即将支持</span>
       </button>
-      <a className="sidebar-link" href={IS_PAGES_DEMO ? "https://github.com/CaydenZheng/RAG" : "/docs"}>
+      {!account && <a className="sidebar-link" href={IS_PAGES_DEMO ? "https://github.com/CaydenZheng/RAG" : "/docs"}>
         <Settings2 size={18} aria-hidden="true" />
         <span>{IS_PAGES_DEMO ? "源码与部署说明" : "API 文档"}</span>
-      </a>
-      <p className="local-only-note">{IS_PAGES_DEMO ? "仅演示界面，不提供真实 AI 服务。真实后端仅供本地单用户使用。" : "仅供本地单用户使用；会话 ID 不是登录身份。"}</p>
+      </a>}
+      <p className="local-only-note">{IS_PAGES_DEMO ? "仅演示界面，不提供真实 AI 服务。真实后端仅供本地单用户使用。" : account ? "共享知识库只读，历史按账号隔离。公开会话 ID 不是身份；尚未授权公网开放。" : "仅供本地单用户使用；会话 ID 不是登录身份。"}</p>
     </aside>
   );
 }

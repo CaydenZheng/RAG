@@ -79,7 +79,7 @@ function finishAgent(session, answer) {
     success: true,
   });
   session.stream.send({ chunk: answer });
-  session.stream.send({ done: true, answer, iterations: 1, latency_ms: 12 });
+  session.stream.send({ done: true, answer, iterations: 1, latency_ms: 12, error: "", error_code: "" });
   session.stream.end();
 }
 
@@ -231,6 +231,10 @@ async function respondToInteraction(request, response, sessionId) {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://${HOST}:${PORT}`);
+  if (url.pathname === "/workspace/config") {
+    json(response, 200, { auth_enabled: false });
+    return;
+  }
   if (url.pathname === "/health") {
     json(response, 200, { status: "ok" });
     return;

@@ -13,11 +13,10 @@ sessions.db   — RAG／Agent 共用的有序短期历史，达到阈值时 LLM 
 import asyncio
 import json
 import re
-import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -25,13 +24,21 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from config.settings import settings
+from src.core.run_options import selected_model
+from src.infra.exchange_context import completed_model, exchange_context
 from src.infra.session_store import (
+    CommitPermit,
     HistorySnapshot,
     SessionStore,
     SessionTurn,
     session_store,
 )
+from src.security.request_authorization import (
+    require_active_authorization,
+    require_session_owner,
+)
 from src.security.session_ids import (
+    account_scope_from_session,
     client_scope_from_scoped_session,
     validate_storage_session_id,
 )
@@ -152,6 +159,12 @@ class MemoryManager:
     def long_term_memory_for_session(self, session_id: str) -> str:
         """读取与客户端身份绑定的长期记忆。"""
         session_id = validate_storage_session_id(session_id)
+        require_active_authorization()
+        require_session_owner(session_id)
+        user_scope: str | None = account_scope_from_session(session_id)
+        if user_scope is not None:
+            path: Path = self.memory_dir / "users" / user_scope / "long_term.md"
+            return self._read_long_term(path) if path.is_file() else ""
         client_scope = client_scope_from_scoped_session(session_id)
         if client_scope is None:
             return self.long_term_memory
@@ -237,6 +250,8 @@ class MemoryManager:
         turns = self._store.get_turns(session_id)
         if turns:
             return [self._as_memory_turn(turn) for turn in turns]
+        if account_scope_from_session(session_id) is not None:
+            return []
         return self._migrate_legacy_history(session_id)
 
     def save_history(self, session_id: str, turns: List[MemoryTurn]) -> None:
@@ -279,6 +294,9 @@ class MemoryManager:
         """Append one complete Agent interaction as an atomic history update."""
         session_id = validate_storage_session_id(session_id)
         pending: list[MemoryTurn] = list(new_turns)
+        context = exchange_context.get()
+        if context is not None:
+            exchange_context.set(replace(context,used_model=completed_model.get()))
         if not pending:
             return MemoryUpdateStatus.UNCHANGED
 
@@ -383,26 +401,23 @@ class MemoryManager:
         pending: list[MemoryTurn] = list(new_turns)
         if not pending:
             return MemoryUpdateStatus.UNCHANGED
-        cancelled: threading.Event = threading.Event()
-
-        def can_commit() -> bool:
-            return not cancelled.is_set() and (
-                deadline is None or time.monotonic() < deadline
-            )
+        permit: CommitPermit = CommitPermit(deadline)
 
         try:
             return await asyncio.to_thread(
                 self.add_turns, session_id, pending,
-                expected_epoch=expected_epoch, can_commit=can_commit,
+                expected_epoch=expected_epoch, can_commit=permit,
             )
         finally:
-            # A cancelled to_thread await does not stop the worker. Revoke its
-            # commit permission; the transaction checks again before commit.
-            cancelled.set()
+            # A cancelled to_thread await does not stop the worker. Confirm
+            # revocation only after an already-admitted non-blocking COMMIT ends.
+            permit.revoke()
 
     def clear_session(self, session_id: str) -> bool:
         """Clear shared and legacy history without allowing stale migration."""
         session_id = validate_storage_session_id(session_id)
+        require_active_authorization()
+        require_session_owner(session_id)
         path: Path = self._history_path(session_id)
         legacy_existed: bool = path.exists()
         if legacy_existed:
@@ -550,8 +565,11 @@ class MemoryManager:
                 {"role": "user", "content": f"对话历史（{len(old_turns)} 轮）：\n\n{conversation}"},
             ]
 
+            from src.infra.tracer import tracer
             from src.llm import llm_client
-            summary = llm_client.chat(messages, temperature=0.1, max_tokens=300)
+
+            with tracer.stage("agent_memory_summary"):
+                summary = llm_client.chat(messages, temperature=0.1, max_tokens=300, model=selected_model())
             logger.info("Memory compressed: {} turns → {} chars summary",
                          len(old_turns), len(summary))
             return summary

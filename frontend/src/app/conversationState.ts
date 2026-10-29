@@ -3,14 +3,16 @@ import type {
   AgentCompletion,
   AgentToolStep,
   ConversationStatus,
+  CompletionMetadata,
   InteractionStatus,
   RagCompletion,
   RagSource,
 } from "../api/types";
 import { agentInteractionKey, isConversationActive } from "../api/types";
 
-export interface ConversationTurn {
+export interface ConversationTurn extends CompletionMetadata {
   id: number;
+  clientTurnId?: string;
   status: ConversationStatus;
   question: string;
   answer: string;
@@ -37,6 +39,7 @@ export const initialConversationState: ConversationState = {
 };
 
 export type ConversationAction =
+  | { type: "history"; turns: ConversationTurn[]; prepend?: boolean }
   | { type: "start"; question: string }
   | { type: "chunk"; chunk: string }
   | { type: "tool_step"; step: AgentToolStep }
@@ -80,6 +83,10 @@ export function conversationReducer(
   action: ConversationAction,
 ): ConversationState {
   switch (action.type) {
+    case "history": {
+      const turns = action.prepend ? [...action.turns, ...state.turns] : action.turns;
+      return { status: "idle", turns, nextTurnId: Math.max(0, ...turns.map((turn) => turn.id)) + 1 };
+    }
     case "start":
       return {
         status: "connecting",
@@ -160,6 +167,9 @@ export function conversationReducer(
     case "complete_rag":
       return updateActiveTurn(state, (turn) => ({
         ...turn,
+        requestedModel: action.completion.requestedModel,
+        usedModel: action.completion.usedModel,
+        skills: action.completion.skills,
         status: "completed",
         answer: action.completion.answer,
         sources: action.completion.sources,
@@ -170,6 +180,9 @@ export function conversationReducer(
     case "complete_agent":
       return updateActiveTurn(state, (turn) => ({
         ...turn,
+        requestedModel: action.completion.requestedModel,
+        usedModel: action.completion.usedModel,
+        skills: action.completion.skills,
         status: "completed",
         answer: action.completion.answer,
         iterations: action.completion.iterations,

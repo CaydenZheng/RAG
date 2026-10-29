@@ -2,12 +2,29 @@
 
 import asyncio
 import json
+import re
 import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def agent_token_counter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deterministic token estimates without downloading tokenizer assets."""
+    from types import SimpleNamespace
+
+    import tiktoken
+
+    def tokens(text: str) -> list[str]:
+        return re.findall(r"[A-Za-z0-9_]+|[^\x00-\x7f]|[^\w\s]", text)
+
+    monkeypatch.setattr(tiktoken, "get_encoding", lambda _: SimpleNamespace(encode=tokens))
+    from src.utils import token_counter
+
+    monkeypatch.setattr(token_counter, "count_tokens", lambda text: len(tokens(text)))
 
 
 class _ToolStub:
@@ -522,6 +539,7 @@ def test_provider_finish_reason_controls_agent_terminal_state(
 
     provider_stream = ProviderStream()
     client = object.__new__(LLMClient)
+    client._deepseek_non_thinking = False
     client._async_chat_client = SimpleNamespace(
         chat=SimpleNamespace(
             completions=SimpleNamespace(
@@ -798,7 +816,7 @@ def test_token_budget_stops_before_provider_or_tool_side_effect(
 def test_final_request_input_is_charged_to_json_run_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from src.agent.harness import AgentConfig
+    from src.agent.harness import AgentConfig, _RunBudget
     from src.core.agent_runtime import AgentEventKind
     from src.llm import llm_client
 
@@ -810,14 +828,14 @@ def test_final_request_input_is_charged_to_json_run_budget(
         harness._build_planner_prompt(),
         user_message,
     )
-    initial_input_cost = len(
+    initial_input_cost = _RunBudget.estimate_text(
         json.dumps(initial_messages, ensure_ascii=False, default=str)
     )
     final_messages = harness._build_final_answer_messages(
         initial_messages,
         step_limit_reached=False,
     )
-    final_input_cost = len(
+    final_input_cost = _RunBudget.estimate_text(
         json.dumps(final_messages, ensure_ascii=False, default=str)
     )
     harness.config = AgentConfig(
@@ -826,6 +844,7 @@ def test_final_request_input_is_charged_to_json_run_budget(
             initial_input_cost
             + harness.config.planner_max_tokens
             + final_input_cost
+            + harness.config.final_max_tokens
             - 1
         ),
     )
@@ -853,7 +872,7 @@ def test_final_request_input_is_charged_to_json_run_budget(
 
     events = asyncio.run(consume())
 
-    assert planner_called is True
+    assert planner_called is False
     assert stream_called is False
     assert events[-1].kind is AgentEventKind.ERROR
     assert events[-1].error_code == "agent_token_budget_exceeded"
@@ -986,3 +1005,103 @@ def test_agent_memory_compression_keeps_event_loop_responsive(
     asyncio.run(consume_with_heartbeat())
 
     assert timeline["heartbeat"] < timeline["compression_done"]
+
+
+@pytest.mark.parametrize("mode", ["json", "native"])
+@pytest.mark.parametrize("scenario", ["recover", "persistent", "previous_run"])
+def test_duplicate_tool_feedback_is_bounded_and_never_assumes_unknown_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, scenario: str,
+) -> None:
+    from src.agent.tools import SafetyLevel, ToolDef, ToolParam, ToolRegistry
+    from src.core.agent_runtime import ToolResult
+    from src.llm import llm_client
+    from src.llm.client import NativeChatResponse, NativeToolCall
+
+    harness, memory, _ = _runtime(tmp_path, planner_mode=mode, max_iterations=8, max_tool_calls=8, max_token_budget=50000)
+    executions: list[bool] = []
+    registry = ToolRegistry(dedup_window=300)
+    registry.register(ToolDef(name="calculate", description="Calculate a number",
+        params=[ToolParam("expression", "str", "expression")], safety_level=SafetyLevel.WHITELIST,
+        execute_fn=lambda params: executions.append(True) or ToolResult(success=True, data={"value": 396})))
+    harness.tools = registry
+    if scenario == "previous_run":
+        assert registry.execute("calculate", {"expression": "17*23+5"}, "duplicate-test").success
+    prompts: list[str] = []
+    planner_calls = 0
+
+    async def plan(messages: list[dict], **kwargs: object) -> str | NativeChatResponse:
+        nonlocal planner_calls
+        planner_calls += 1
+        prompts.append(json.dumps(messages))
+        ready = scenario == "recover" and planner_calls == 3
+        if mode == "json":
+            return json.dumps({"action": "final_answer"} if ready else {
+                "action": "tool_call", "tool_name": "calculate", "tool_params": {"expression": "17*23+5"}})
+        if ready:
+            return NativeChatResponse(content="READY_TO_ANSWER")
+        alias = registry.get_model_tool_catalog().tools[0]["function"]["name"]
+        return NativeChatResponse(content="", tool_calls=(NativeToolCall(
+            call_id=f"call-{planner_calls}", name=alias, arguments='{"expression":"17*23+5"}'),))
+
+    monkeypatch.setattr(llm_client, "chat_async", plan)
+    async def native(messages: list[dict], tools: list[dict], **kwargs: object) -> str | NativeChatResponse:
+        return await plan(messages, **kwargs)
+    monkeypatch.setattr(llm_client, "chat_with_tools_async", native)
+    _set_answer_stream(monkeypatch, "396")
+    response = asyncio.run(harness.execute("duplicate-test", "Calculate the number"))
+    assert len(executions) == 1
+    assert planner_calls <= 3
+    if scenario == "recover":
+        assert response.answer == "396"
+        assert not response.error_code
+        assert "successful result in this run" in prompts[-1]
+        assert memory.load_history("duplicate-test")
+    else:
+        assert response.error_code == "agent_repeated_tool_call"
+        assert not response.answer
+        assert memory.load_history("duplicate-test") == []
+        if scenario == "previous_run":
+            assert "No successful result in this run" in prompts[-1]
+
+
+@pytest.mark.parametrize("mode", ["json", "native"])
+@pytest.mark.parametrize("fault", ["length", "upstream", "invalid"])
+def test_planning_failures_are_classified_without_exposing_provider_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temporary_cache: object,
+    mode: str, fault: str,
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from openai import APIStatusError
+
+    from src.agent import harness as module
+    from src.infra.tracer import TraceLogger
+    from src.llm import llm_client
+
+    harness, memory, tools = _runtime(tmp_path, planner_mode=mode)
+    tools.get_model_tools = lambda: []
+    tools.get_model_tool_catalog = lambda: SimpleNamespace(tools=[])
+    error = APIStatusError("PRIVATE_PROVIDER_URL?token=PRIVATE_TOKEN",
+        response=httpx.Response(503, request=httpx.Request("POST", "https://provider.invalid")), body=None)
+    response = SimpleNamespace(choices=[SimpleNamespace(finish_reason="length" if fault == "length" else "stop",
+        message=SimpleNamespace(content="PRIVATE_INVALID_PLAN", tool_calls=None))], usage=None)
+    monkeypatch.setattr(llm_client._async_chat_client.chat.completions, "create",
+        AsyncMock(side_effect=error) if fault == "upstream" else AsyncMock(return_value=response))
+    local = TraceLogger(tmp_path / "classification.jsonl")
+    monkeypatch.setattr(module, "tracer", local)
+    trace = local.start_trace("test-id", "agent")
+    token = local.bind(trace)
+    try:
+        result = asyncio.run(harness.execute("classification", "synthetic task"))
+    finally:
+        local.reset(token)
+    expected = {"length": "agent_planning_incomplete", "upstream": "agent_planning_upstream_failed", "invalid": "invalid_agent_plan"}
+    assert result.error_code == expected[fault]
+    assert not result.answer
+    assert tools.calls == [] and memory.load_history("classification") == []
+    attributes = next(span["attributes"] for span in trace["spans"] if span["name"] == "agent_plan")
+    assert attributes["planner_mode"] == mode
+    assert attributes["failure_kind"] == {"length": "incomplete_output", "upstream": "upstream_error", "invalid": "invalid_plan"}[fault]
+    assert "PRIVATE" not in json.dumps(trace) + result.error

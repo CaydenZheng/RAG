@@ -27,6 +27,9 @@ export default defineConfig({
   }],
   resolve: {
     alias: [{
+      find: /^\.\.\/api\/workspaceClient$/,
+      replacement: fileURLToPath(new URL("./src/demo/workspace.ts", import.meta.url)),
+    }, {
       find: /^\.\.\/api\/(ragClient|agentClient|interactionClient|session)$/,
       replacement: fileURLToPath(new URL("./src/demo/client.ts", import.meta.url)),
     }],

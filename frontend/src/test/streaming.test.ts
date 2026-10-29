@@ -138,6 +138,40 @@ describe("RAG stream", () => {
 });
 
 describe("Agent stream", () => {
+  it("accepts the successful AgentResponse serializer shape including empty errors", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([
+      'data: {"chunk":"complete"}\n\n',
+      'data: {"done":true,"session_id":"agent-1","answer":"complete","tool_calls":[],"iterations":0,"latency_ms":0,"error_code":"","error":""}\n\n',
+    ])));
+    await expect(streamAgentAnswer("question", "agent-1", new AbortController().signal, vi.fn()))
+      .resolves.toMatchObject({ answer: "complete" });
+  });
+
+  it.each([
+    { done: true, answer: "complete", error: "private failure", error_code: "agent_failed" },
+    { done: true, answer: "complete", error: "", error_code: "agent_failed" },
+    { error: "", code: "agent_failed" },
+  ])("rejects an explicit Agent failure even with matching answer chunks: %j", async (terminal) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([
+      'data: {"chunk":"complete"}\n\n',
+      `data: ${JSON.stringify(terminal)}\n\n`,
+    ])));
+    await expect(streamAgentAnswer("question", "agent-1", new AbortController().signal, vi.fn()))
+      .rejects.toMatchObject({ code: "terminal_error", message: "Agent 处理失败，请稍后重试。" });
+  });
+
+  it("keeps a failed tool result as progress when the Agent completes successfully", async () => {
+    const updates: string[] = [];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([
+      'data: {"step":"tool_done","tool":"calculator","success":false,"error_code":"tool_failed"}\n\n',
+      'data: {"chunk":"complete"}\n\n',
+      'data: {"done":true,"answer":"complete","error_code":"","error":""}\n\n',
+    ])));
+    await expect(streamAgentAnswer("question", "agent-1", new AbortController().signal,
+      (update) => updates.push(update.type))).resolves.toMatchObject({ answer: "complete" });
+    expect(updates).toEqual(["tool_step", "chunk"]);
+  });
+
   it("parses tool progress, chunks, and a matching DONE terminal", async () => {
     vi.stubGlobal(
       "fetch",
@@ -208,6 +242,22 @@ describe("Agent stream", () => {
     await expect(
       streamAgentAnswer("任务", "agent-1", new AbortController().signal, vi.fn()),
     ).rejects.toMatchObject({ code: "disconnected" });
+  });
+
+  it.each([
+    ["agent_planning_incomplete", "规划输出未完整结束，请精简任务后重试。"],
+    ["agent_planning_upstream_failed", "规划服务暂时不可用，请稍后重试。"],
+    ["agent_final_generation_failed", "回答生成未完成，本轮未保存为成功；请精简任务后重试。"],
+    ["invalid_agent_plan", "规划格式无效，本轮任务未完成，请调整任务后重试。"],
+    ["agent_token_budget_exceeded", "本轮任务已达到处理预算，请拆分任务后重试。"],
+    ["agent_repeated_tool_call", "规划持续请求重复工具，已停止本轮任务；请核对已有工具结果后调整任务。"],
+    ["agent_timeout", "任务处理超时，请精简任务后重试。"],
+  ])("projects %s into fixed public feedback", async (code, message) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([
+      `data: ${JSON.stringify({ error: "PRIVATE_PROVIDER_ERROR", code })}\n\n`,
+    ])));
+    await expect(streamAgentAnswer("task", "agent-1", new AbortController().signal, vi.fn()))
+      .rejects.toMatchObject({ code: "terminal_error", message });
   });
 
   it("rejects Agent DONE when chunks do not match the final answer", async () => {

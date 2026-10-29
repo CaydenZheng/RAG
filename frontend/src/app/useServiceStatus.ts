@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { isRecord } from "../api/sse";
+import { workspaceFetch as fetch } from "../api/authClient";
 import { IS_PAGES_DEMO } from "./runtime";
 
 export type ServiceState = "checking" | "ready" | "degraded" | "starting" | "unavailable" | "demo";

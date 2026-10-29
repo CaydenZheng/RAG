@@ -18,14 +18,16 @@ import asyncio
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, List, Optional
+from urllib.parse import urlsplit
 
 from loguru import logger
-from openai import AsyncOpenAI, OpenAI, Timeout
+from openai import APIError, AsyncOpenAI, OpenAI, Timeout
 from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from sentence_transformers import SentenceTransformer
 
 from config.settings import settings
 from src.infra.tracer import tracer
+from src.security.request_authorization import require_active_authorization
 
 
 @dataclass(frozen=True)
@@ -45,10 +47,24 @@ class NativeChatResponse:
     tool_calls: tuple[NativeToolCall, ...] = ()
 
 
+class LLMCompletionError(RuntimeError):
+    """An unconfirmed response; no provider text is carried across layers."""
+
+    def __init__(self, failure_kind: str) -> None:
+        super().__init__("Unexpected tool call delta in text stream" if failure_kind == "unexpected_tool_delta"
+                         else "LLM completion ended without a complete response")
+        self.failure_kind = failure_kind
+
+
 class LLMClient:
     """LLM 生成 + 本地 Embedding 的统一入口"""
 
     def __init__(self):
+        # These bounded interactive calls expect visible output. DeepSeek V4
+        # otherwise defaults to high-effort thinking inside the same token cap.
+        self._deepseek_non_thinking = (
+            urlsplit(settings.openai_base_url).hostname == "api.deepseek.com"
+        )
         # --- 生成 Client (DeepSeek) ---
         self._chat_client = OpenAI(
             api_key=settings.openai_api_key,
@@ -72,8 +88,13 @@ class LLMClient:
         # --- Embedding 模型 (本地，延迟加载) ---
         self._embedding_model: Optional[SentenceTransformer] = None
 
-    @staticmethod
+    def _completion_options(self) -> dict[str, Any]:
+        if self._deepseek_non_thinking:
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+        return {}
+
     def _cache_dimensions(
+        self,
         max_tokens: int | None,
         index_version: str | None,
     ) -> dict:
@@ -90,7 +111,10 @@ class LLMClient:
             "identity_scope": current_cache_identity(),
             "index_version": index_version,
             "prompt_version": settings.prompt_version,
-            "generation_parameters": {"completion_contract": "validated-v1"},
+            "generation_parameters": {
+                "completion_contract": "validated-v2",
+                "thinking": "disabled" if self._deepseek_non_thinking else "provider_default",
+            },
         }
 
     @staticmethod
@@ -111,7 +135,14 @@ class LLMClient:
                 allow_tools and choice.finish_reason == "tool_calls" and tool_calls
             ):
                 return message
-        raise RuntimeError("LLM completion ended without a complete response")
+        reason = response.choices[0].finish_reason if response.choices else None
+        failure_kind = (
+            "incomplete_output" if reason == "length"
+            else "filtered_output" if reason == "content_filter"
+            else "empty_output" if reason == "stop" and not (message.content or "").strip()
+            else "unconfirmed_output"
+        )
+        raise LLMCompletionError(failure_kind)
 
     @staticmethod
     def _record_chat_span(
@@ -123,12 +154,29 @@ class LLMClient:
         usage=None,
         status: str = "ok",
         error_code: str = "",
+        response: ChatCompletion | None = None,
+        output_limit: int | None = None,
+        error: Exception | None = None,
+        finish_reason: str | None = None,
     ) -> None:
+        if status == "ok":
+            from src.infra.exchange_context import completed_model
+
+            completed_model.set(model)
+        if response is not None:
+            usage = response.usage
+        reason = response.choices[0].finish_reason if response is not None and response.choices else finish_reason
+        finish_reason = reason if reason in {None, "stop", "length", "tool_calls", "content_filter", "function_call"} else "other"
+        status_code = getattr(error, "status_code", None)
         prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
         completion_tokens = (
             getattr(usage, "completion_tokens", 0) if usage else 0
         )
         total_tokens = getattr(usage, "total_tokens", 0) if usage else 0
+        details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(details, "reasoning_tokens", None)
+        if type(reasoning_tokens) is not int or reasoning_tokens < 0:
+            reasoning_tokens = None
         tracer.add_span(
             None,
             tracer.current_stage,
@@ -140,8 +188,16 @@ class LLMClient:
             response_chars=response_chars,
             prompt_tokens=prompt_tokens or 0,
             completion_tokens=completion_tokens or 0,
+            reasoning_tokens=reasoning_tokens,
             total_tokens=total_tokens or 0,
             usage_reported=usage is not None,
+            output_limit=output_limit,
+            finish_reason=finish_reason,
+            failure_kind=(error.failure_kind if isinstance(error, LLMCompletionError)
+                          else "upstream_error" if isinstance(error, APIError)
+                          else "client_error" if error is not None else ""),
+            exception_type=type(error).__name__ if error is not None else "",
+            http_status=status_code if isinstance(status_code, int) and 100 <= status_code <= 599 else None,
         )
 
     # ================================================================
@@ -158,6 +214,10 @@ class LLMClient:
         index_version: str | None = None,
     ) -> str:
         """同步调用 LLM 生成回复。"""
+        require_active_authorization()
+        from src.security.account_limits import reserve_model_call
+
+        max_tokens = reserve_model_call(messages,max_tokens)
         model = model or self._chat_model
         started_at = time.perf_counter()
         cache_dimensions = (
@@ -174,7 +234,7 @@ class LLMClient:
             )
             if cached is not None:
                 self._record_chat_span(
-                    started_at, model, cache_hit=True, response_chars=len(cached)
+                    started_at, model, cache_hit=True, response_chars=len(cached), output_limit=max_tokens,
                 )
                 return cached
 
@@ -182,23 +242,27 @@ class LLMClient:
             model=model,
             messages=messages,
             temperature=temperature,
+            **self._completion_options(),
         )
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
         logger.debug("LLM chat → model={} messages={}", kwargs["model"], len(messages))
+        resp: ChatCompletion | None = None
         try:
             resp = self._chat_client.chat.completions.create(**kwargs)
             content: str = self._completed_message(resp).content or ""
-        except Exception:
+        except Exception as error:
             self._record_chat_span(
                 started_at, model, cache_hit=False, status="error",
                 error_code="llm_call_failed",
+                response=resp, output_limit=max_tokens, error=error,
             )
             raise
         self._record_chat_span(
             started_at, model, cache_hit=False, response_chars=len(content),
             usage=resp.usage,
+            response=resp, output_limit=max_tokens,
         )
         logger.debug("LLM chat ← {} chars, {} tokens",
                      len(content), resp.usage.total_tokens if resp.usage else "?")
@@ -230,6 +294,10 @@ class LLMClient:
         index_version: str | None = None,
     ) -> str:
         """异步调用 LLM 生成回复（非流式）。"""
+        require_active_authorization()
+        from src.security.account_limits import reserve_model_call
+
+        max_tokens = reserve_model_call(messages,max_tokens)
         model = model or self._chat_model
         started_at = time.perf_counter()
         cache_dimensions = (
@@ -246,7 +314,7 @@ class LLMClient:
             )
             if cached is not None:
                 self._record_chat_span(
-                    started_at, model, cache_hit=True, response_chars=len(cached)
+                    started_at, model, cache_hit=True, response_chars=len(cached), output_limit=max_tokens,
                 )
                 return cached
 
@@ -254,23 +322,27 @@ class LLMClient:
             model=model,
             messages=messages,
             temperature=temperature,
+            **self._completion_options(),
         )
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
         logger.debug("LLM chat_async → model={} messages={}", kwargs["model"], len(messages))
+        resp: ChatCompletion | None = None
         try:
             resp = await self._async_chat_client.chat.completions.create(**kwargs)
             content: str = self._completed_message(resp).content or ""
-        except Exception:
+        except Exception as error:
             self._record_chat_span(
                 started_at, model, cache_hit=False, status="error",
                 error_code="llm_call_failed",
+                response=resp, output_limit=max_tokens, error=error,
             )
             raise
         self._record_chat_span(
             started_at, model, cache_hit=False, response_chars=len(content),
             usage=resp.usage,
+            response=resp, output_limit=max_tokens,
         )
         logger.debug("LLM chat_async ← {} chars, {} tokens",
                      len(content), resp.usage.total_tokens if resp.usage else "?")
@@ -297,12 +369,17 @@ class LLMClient:
         max_tokens: Optional[int] = None,
     ) -> NativeChatResponse:
         """Call an OpenAI-compatible model and preserve native tool requests."""
+        require_active_authorization()
+        from src.security.account_limits import reserve_model_call
+
+        max_tokens = reserve_model_call(messages,max_tokens,tools)
         model = model or self._chat_model
         started_at = time.perf_counter()
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
+            **self._completion_options(),
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
@@ -316,6 +393,7 @@ class LLMClient:
             len(messages),
             len(tools),
         )
+        response: ChatCompletion | None = None
         try:
             response = await self._async_chat_client.chat.completions.create(
                 **kwargs
@@ -323,13 +401,14 @@ class LLMClient:
             message: ChatCompletionMessage = self._completed_message(
                 response, allow_tools=bool(tools),
             )
-        except Exception:
+        except Exception as error:
             self._record_chat_span(
                 started_at,
                 model,
                 cache_hit=False,
                 status="error",
                 error_code="llm_call_failed",
+                response=response, output_limit=max_tokens, error=error,
             )
             raise
 
@@ -348,6 +427,7 @@ class LLMClient:
             cache_hit=False,
             response_chars=len(content),
             usage=response.usage,
+            response=response, output_limit=max_tokens,
         )
         logger.debug(
             "LLM native chat ← {} chars, {} tool calls",
@@ -377,6 +457,10 @@ class LLMClient:
         """
         import re
 
+        require_active_authorization()
+        from src.security.account_limits import reserve_model_call
+
+        max_tokens = reserve_model_call(messages,max_tokens)
         model = model or self._chat_model
         started_at = time.perf_counter()
 
@@ -388,6 +472,7 @@ class LLMClient:
             stream_options={"include_usage": True},
             # 告知 API 最大生成 token 数，防止无限生成
             max_tokens=max_tokens,
+            **self._completion_options(),
         )
 
         logger.debug("LLM chat_stream_async → model={} messages={} max_tokens={}",
@@ -396,27 +481,27 @@ class LLMClient:
         usage = None
         stream = None
         completed = False
+        reported_finish_reason: str | None = None
         try:
             stream = await self._async_chat_client.chat.completions.create(**kwargs)
             async for chunk in stream:
+                require_active_authorization()
                 if getattr(chunk, "usage", None) is not None:
                     usage = chunk.usage
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
                 finish_reason = getattr(choice, "finish_reason", None)
+                if finish_reason is not None:
+                    reported_finish_reason = finish_reason
                 if finish_reason not in (None, "stop"):
-                    raise RuntimeError(
-                        "LLM text stream ended without a complete response"
-                    )
+                    raise LLMCompletionError("incomplete_output" if finish_reason == "length" else "filtered_output" if finish_reason == "content_filter" else "unconfirmed_output")
                 delta = choice.delta
                 if delta is None:
                     completed = finish_reason == "stop" or completed
                     continue
                 if getattr(delta, "tool_calls", None):
-                    raise RuntimeError(
-                        "Unexpected tool call delta in text stream"
-                    )
+                    raise LLMCompletionError("unexpected_tool_delta")
                 if not delta.content:
                     completed = finish_reason == "stop" or completed
                     continue
@@ -428,27 +513,28 @@ class LLMClient:
                         yield word
                 completed = finish_reason == "stop" or completed
             if not completed:
-                raise RuntimeError(
-                    "LLM text stream ended without a complete response"
-                )
+                raise LLMCompletionError("unconfirmed_output")
         except (asyncio.CancelledError, GeneratorExit):
             self._record_chat_span(
                 started_at, model, cache_hit=False,
                 response_chars=response_chars, usage=usage, status="cancelled",
                 error_code="llm_stream_cancelled",
+                output_limit=max_tokens, finish_reason=reported_finish_reason,
             )
             raise
-        except Exception:
+        except Exception as error:
             self._record_chat_span(
                 started_at, model, cache_hit=False,
                 response_chars=response_chars, usage=usage, status="error",
                 error_code="llm_stream_failed",
+                output_limit=max_tokens, finish_reason=reported_finish_reason, error=error,
             )
             raise
         else:
             self._record_chat_span(
                 started_at, model, cache_hit=False,
                 response_chars=response_chars, usage=usage,
+                output_limit=max_tokens, finish_reason=reported_finish_reason,
             )
         finally:
             if stream is not None:

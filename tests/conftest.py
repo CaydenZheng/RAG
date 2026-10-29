@@ -1,14 +1,53 @@
 """Offline pytest fixtures; real-model checks remain standalone scripts."""
 
+import os
 import shutil
 import socket
+import sqlite3
+import tempfile
 from collections.abc import Iterator
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 import pytest
 from offline_environment import clear_host_environment
+
+_IMPORT_ENVIRONMENT: pytest.StashKey[pytest.MonkeyPatch] = pytest.StashKey()
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Isolate import-time SQLite singletons before test collection can create them."""
+    scratch: Path = Path(__file__).resolve().parents[1] / ".test-tmp"
+    scratch.mkdir(exist_ok=True)
+    import_runtime: Path = Path(tempfile.mkdtemp(prefix="pytest-import-", dir=scratch))
+    patch: pytest.MonkeyPatch = pytest.MonkeyPatch()
+    clear_host_environment(patch)
+    for name, value in {
+        "OPENAI_API_KEY": "offline-collection-key",
+        "ADMIN_API_KEY": "offline-collection-admin",
+        "OPENAI_BASE_URL": "http://127.0.0.1:9/v1",
+        "AUTH_ENABLED": "false",
+        "AUTH_ALLOWED_ORIGINS": "[]",
+        "MCP_SERVERS": "[]",
+        "CHROMA_PERSIST_DIR": str(import_runtime / "data/chroma"),
+        "CACHE_DB_PATH": str(import_runtime / "data/cache.db"),
+        "AUTH_DB_PATH": str(import_runtime / "data/auth.db"),
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+    }.items():
+        patch.setenv(name, value)
+    session.config.stash[_IMPORT_ENVIRONMENT] = patch
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    patch: pytest.MonkeyPatch | None = session.config.stash.get(
+        _IMPORT_ENVIRONMENT, None
+    )
+    if patch is not None:
+        patch.undo()
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +71,7 @@ def offline_network(monkeypatch: pytest.MonkeyPatch) -> None:
                 return original(*args, **kwargs)
             finally:
                 inside_socketpair.reset(token)
+
         return socketpair
 
     monkeypatch.setattr(socket, "socketpair", protect_socketpair(socket.socketpair))
@@ -75,12 +115,44 @@ def isolated_runtime(
     for name in type(defaults).model_fields:
         monkeypatch.setattr(settings, name, getattr(defaults, name))
 
+    original_sqlite_connect = sqlite3.connect
+
+    def isolated_sqlite_connect(
+        database: Any, *args: Any, **kwargs: Any
+    ) -> sqlite3.Connection:
+        database_name: str = os.fsdecode(database)
+        if database_name.lower().startswith("file:"):
+            uri = urlsplit(database_name)
+            target: Path = Path(url2pathname(uri.path))
+            # Assessment readers need local read-only URIs, not arbitrary VFS options.
+            if (
+                not kwargs.get("uri", args[6] if len(args) > 6 else False)
+                or uri.netloc not in ("", "localhost")
+                or uri.query != "mode=ro"
+                or uri.fragment
+                or not target.is_absolute()
+            ):
+                pytest.fail("Offline SQLite attempted access outside isolated runtime")
+            database_name = str(target.resolve())
+            database = target.resolve().as_uri() + "?mode=ro"
+        if database_name != ":memory:" and not Path(database_name).resolve().is_relative_to(
+            tmp_path.resolve()
+        ):
+            pytest.fail(
+                "Offline SQLite attempted access outside isolated runtime", pytrace=True
+            )
+        return original_sqlite_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", isolated_sqlite_connect)
+
     import sentence_transformers
 
     def no_weights(*args: Any, **kwargs: Any) -> None:
         pytest.fail("Offline test attempted to load model weights", pytrace=False)
 
-    monkeypatch.setattr(sentence_transformers.SentenceTransformer, "__init__", no_weights)
+    monkeypatch.setattr(
+        sentence_transformers.SentenceTransformer, "__init__", no_weights
+    )
     monkeypatch.setattr(sentence_transformers.CrossEncoder, "__init__", no_weights)
     try:
         yield tmp_path
