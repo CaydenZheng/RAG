@@ -38,11 +38,15 @@ describe("Vite development routing", () => {
     vite = await createViteServer({
       ...viteConfig,
       configFile: false,
+      // This fixture exercises HTML routes and real proxy failures;
+      // module execution is covered by the browser suites.
+      optimizeDeps: { noDiscovery: true, include: [] },
       server: {
         ...viteConfig.server,
         host: "127.0.0.1",
         port: 0,
         strictPort: false,
+        preTransformRequests: false,
         proxy,
       },
     });
