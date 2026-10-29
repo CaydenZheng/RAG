@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
+from tests.offline.test_agent_runtime import agent_token_counter as agent_token_counter
+
 
 def test_planner_mode_defaults_to_json_and_accepts_native() -> None:
     from config.settings import Settings
@@ -810,7 +812,7 @@ def test_final_request_input_is_charged_to_native_run_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from src.agent.harness import AgentConfig
+    from src.agent.harness import AgentConfig, _RunBudget
     from src.llm import llm_client
     from src.llm.client import NativeChatResponse
 
@@ -822,10 +824,10 @@ def test_final_request_input_is_charged_to_native_run_budget(
         harness._build_planner_prompt(),
         user_message,
     )
-    initial_input_cost = len(
+    initial_input_cost = _RunBudget.estimate_text(
         json.dumps(initial_messages, ensure_ascii=False, default=str)
     )
-    tool_input_cost = len(
+    tool_input_cost = _RunBudget.estimate_text(
         json.dumps(
             harness.tools.get_model_tools(),
             ensure_ascii=False,
@@ -836,7 +838,7 @@ def test_final_request_input_is_charged_to_native_run_budget(
         initial_messages,
         step_limit_reached=False,
     )
-    final_input_cost = len(
+    final_input_cost = _RunBudget.estimate_text(
         json.dumps(final_messages, ensure_ascii=False, default=str)
     )
     harness.config = AgentConfig(
@@ -847,6 +849,7 @@ def test_final_request_input_is_charged_to_native_run_budget(
             + tool_input_cost
             + harness.config.planner_max_tokens
             + final_input_cost
+            + harness.config.final_max_tokens
             - 1
         ),
     )
@@ -875,7 +878,7 @@ def test_final_request_input_is_charged_to_native_run_budget(
 
     response = asyncio.run(harness.execute(session_id, user_message))
 
-    assert planner_called is True
+    assert planner_called is False
     assert stream_called is False
     assert response.error_code == "agent_token_budget_exceeded"
     assert calls == []

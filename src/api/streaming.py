@@ -13,6 +13,8 @@ from starlette.types import Receive, Scope, Send
 from src.api.public_errors import public_error
 from src.core.agent_runtime import AgentRuntime
 from src.core.generation import AnswerInput, AnswerService, persist_completed_answer
+from src.core.run_options import current_run_options
+from src.infra.exchange_context import completed_model
 from src.infra.tracer import tracer
 from src.security.request_authorization import (
     AccountLimitExceeded,
@@ -54,6 +56,19 @@ def answer_event(
     }
 
 
+def completion_metadata() -> dict:
+    """Expose only the immutable run identity, never skill instructions."""
+    options = current_run_options.get()
+    if options is None:
+        return {}
+    return {
+        "requested_model": options.choice,
+        "used_model": completed_model.get(),
+        "skills": [{"id": skill.id, "name": skill.name, "version": skill.version}
+                   for skill in options.skills],
+    }
+
+
 async def iter_agent_sse(
     *,
     request: Request,
@@ -75,6 +90,8 @@ async def iter_agent_sse(
             require_active_authorization()
             if payload.get("done"):
                 payload["session_id"] = public_session_id
+                if not payload.get("error") and not payload.get("error_code"):
+                    payload.update(completion_metadata())
             yield encode_sse_event(payload)
             # Resuming after yield means the consumer's send completed. A
             # cancelled, backpressured send must not suppress a revocation error.
@@ -177,6 +194,7 @@ async def iter_answer_sse(
             index_version=index_version,
             session_id=public_session_id,
             latency_ms=latency_ms,
+            **completion_metadata(),
         )
     )
     mark_stream_terminal()

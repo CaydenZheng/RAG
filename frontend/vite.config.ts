@@ -6,7 +6,7 @@ import { defineConfig } from "vitest/config";
 
 const backendTarget = "http://127.0.0.1:8000";
 const proxyRoutes = [
-  "/auth", "/conversations", "/workspace", "/openapi.json",
+  "/auth", "/conversations", "/workspace", "/skills", "/openapi.json",
   "/agent/approvals", "/agent/chat", "/agent/elicitation", "/agent/memory",
   "/agent/oauth", "/agent/reset", "/agent/tools", "/docs", "/query", "/ready", "/session",
 ];
@@ -38,7 +38,7 @@ function localWorkspaceRoutes(): Plugin {
     configureServer(server) {
       server.middlewares.use((request, _response, next) => {
         const [pathname, search = ""] = (request.url ?? "").split("?", 2);
-        if (pathname === "/" || pathname === "/agent") {
+        if (pathname === "/" || pathname === "/agent" || pathname === "/settings/skills") {
           request.url = `/static/app/${search ? `?${search}` : ""}`;
         }
         next();

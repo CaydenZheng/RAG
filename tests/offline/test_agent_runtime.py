@@ -2,12 +2,29 @@
 
 import asyncio
 import json
+import re
 import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def agent_token_counter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deterministic token estimates without downloading tokenizer assets."""
+    from types import SimpleNamespace
+
+    import tiktoken
+
+    def tokens(text: str) -> list[str]:
+        return re.findall(r"[A-Za-z0-9_]+|[^\x00-\x7f]|[^\w\s]", text)
+
+    monkeypatch.setattr(tiktoken, "get_encoding", lambda _: SimpleNamespace(encode=tokens))
+    from src.utils import token_counter
+
+    monkeypatch.setattr(token_counter, "count_tokens", lambda text: len(tokens(text)))
 
 
 class _ToolStub:
@@ -799,7 +816,7 @@ def test_token_budget_stops_before_provider_or_tool_side_effect(
 def test_final_request_input_is_charged_to_json_run_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from src.agent.harness import AgentConfig
+    from src.agent.harness import AgentConfig, _RunBudget
     from src.core.agent_runtime import AgentEventKind
     from src.llm import llm_client
 
@@ -811,14 +828,14 @@ def test_final_request_input_is_charged_to_json_run_budget(
         harness._build_planner_prompt(),
         user_message,
     )
-    initial_input_cost = len(
+    initial_input_cost = _RunBudget.estimate_text(
         json.dumps(initial_messages, ensure_ascii=False, default=str)
     )
     final_messages = harness._build_final_answer_messages(
         initial_messages,
         step_limit_reached=False,
     )
-    final_input_cost = len(
+    final_input_cost = _RunBudget.estimate_text(
         json.dumps(final_messages, ensure_ascii=False, default=str)
     )
     harness.config = AgentConfig(
@@ -827,6 +844,7 @@ def test_final_request_input_is_charged_to_json_run_budget(
             initial_input_cost
             + harness.config.planner_max_tokens
             + final_input_cost
+            + harness.config.final_max_tokens
             - 1
         ),
     )
@@ -854,7 +872,7 @@ def test_final_request_input_is_charged_to_json_run_budget(
 
     events = asyncio.run(consume())
 
-    assert planner_called is True
+    assert planner_called is False
     assert stream_called is False
     assert events[-1].kind is AgentEventKind.ERROR
     assert events[-1].error_code == "agent_token_budget_exceeded"

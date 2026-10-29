@@ -14,6 +14,7 @@ from openai import OpenAI
 
 from config.settings import settings
 from src.core.errors import GenerationUnavailableError
+from src.core.run_options import current_run_options
 from src.llm import llm_client
 from src.security.request_authorization import (
     AccountLimitExceeded,
@@ -73,6 +74,8 @@ async def chat_with_fallback_async(
         raise
     except Exception as exc:
         last_error = exc
+        if current_run_options.get() is not None:
+            raise GenerationUnavailableError("Selected model failed; fallback disabled") from exc
         logger.warning("Primary async LLM failed; trying configured fallback")
 
     if settings.ollama_base_url:

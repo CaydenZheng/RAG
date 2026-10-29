@@ -11,6 +11,7 @@ import { readSseEvents } from "../api/sse";
 const SESSION = "dd0a4998-1e1f-4c1d-84dd-48e22bdfc055";
 const SUMMARY = { id: SESSION,mode:"rag",title:"saved",revision:1,epoch:0,updated_at:"2026-10-22T00:00:00Z" };
 const USER: AccountUser = { id:"owner",username:"alice",role:"member",must_change_password:false };
+const MODELS = { items: [{id:"flash",label:"DeepSeek V4-Flash",available:true},{id:"pro",label:"DeepSeek V4-Pro",available:true}],default_model:"flash" };
 const json = (value: unknown, status = 200): Response => new Response(JSON.stringify(value),{status,headers:{"Content-Type":"application/json"}});
 
 afterEach(() => { setAccountMode(false); clearAccount(); });
@@ -135,7 +136,7 @@ describe("account conversation lifecycle", () => {
   it("closes the title draft when switching conversation mode", async () => {
     window.history.replaceState({},"",`/?conversation=${SESSION}`);
     vi.stubGlobal("fetch",vi.fn((path: string): Promise<Response> => Promise.resolve(path === "/ready" ? json({status:"ready"})
-      : path.startsWith("/conversations?") ? json({items:[SUMMARY],next_cursor:null})
+      : path === "/workspace/models" ? json(MODELS) : path.startsWith("/conversations?") ? json({items:[SUMMARY],next_cursor:null})
         : path.endsWith("/turns") ? json({items:[],next_before:null}) : json(SUMMARY))));
     render(<App account={USER} />);
     const rename = await screen.findByRole("button",{name:"重命名"});
@@ -162,6 +163,7 @@ describe("account conversation lifecycle", () => {
     const turn = (seq: number): Record<string, unknown> => ({seq,question:`Question ${seq}`,answer:`Answer ${seq}`,client_turn_id:SESSION,sources:[]});
     vi.stubGlobal("fetch",vi.fn((path: string): Promise<Response> => {
       if (path === "/ready") return Promise.resolve(json({status:"ready"}));
+      if (path === "/workspace/models") return Promise.resolve(json(MODELS));
       if (path.startsWith("/conversations?")) return Promise.resolve(json({items:[SUMMARY],next_cursor:null}));
       if (path.includes("/turns?before=")) { height=2000; return Promise.resolve(json({items:[turn(1)],next_before:null})); }
       if (path.endsWith("/turns")) return Promise.resolve(json({items:[turn(21)],next_before:"older"}));
@@ -264,6 +266,7 @@ describe("account conversation lifecycle", () => {
     window.history.replaceState({}, "", "/");
     const fetch = vi.fn((path: string): Promise<Response> => {
       if (path === "/ready") return Promise.resolve(json({ status: "ready" }));
+      if (path === "/workspace/models") return Promise.resolve(json(MODELS));
       if (path.startsWith("/query/stream")) return Promise.resolve(new Response('data: {"event":"chunk","done":false,"chunk":"partial"}\n\n'));
       if (path.startsWith("/conversations?")) return Promise.resolve(json({ items: [], next_cursor: null }));
       return Promise.resolve(json(SUMMARY, 201));
@@ -271,6 +274,7 @@ describe("account conversation lifecycle", () => {
     vi.stubGlobal("fetch", fetch);
     render(<App account={USER} />);
     const input = screen.getByRole("textbox", { name: "向知识库提问" });
+    await waitFor(() => expect(input).not.toHaveAttribute("readonly"));
     fireEvent.change(input, { target: { value: "synthetic" } });
     fireEvent.click(screen.getByRole("button", { name: /^发送$/ }));
     const locked = await screen.findByRole("button", { name: "本轮保存状态未确认，请先核对历史" });

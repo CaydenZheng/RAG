@@ -13,6 +13,7 @@ from src.core.knowledge import (
     RetrievalMode,
     validate_metadata_filter,
 )
+from src.core.run_options import ModelChoice
 
 USER_INPUT_MIN_LENGTH = 1
 USER_INPUT_MAX_LENGTH = 2000
@@ -33,6 +34,7 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     conversation_id: str | None = None
     client_turn_id: str | None = None
+    model: ModelChoice | None = None
     query: str = Field(
         ...,
         min_length=USER_INPUT_MIN_LENGTH,
@@ -89,6 +91,7 @@ class AgentChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     conversation_id: str | None = None
     client_turn_id: str | None = None
+    model: ModelChoice | None = None
     session_id: str = Field(default="", description="会话 ID，空则自动生成")
     message: str = Field(
         ...,

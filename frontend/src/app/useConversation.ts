@@ -13,14 +13,15 @@ import { isAbortFailure, PUBLIC_MESSAGES, PublicClientError, toPublicMessage } f
 import { fetchPendingInteractions, postInteractionDecision } from "../api/interactionClient";
 import { streamRagAnswer } from "../api/ragClient";
 import { createSessionId, loadOrCreateSessionId, resetAndRotateSession } from "../api/session";
-import { createConversation, readConversation, readHistory, updateConversation, type ConversationSummary } from "../api/conversationClient";
+import { createConversation, readConversation, readHistory, updateConversation, switchConversationModel, type ConversationSummary } from "../api/conversationClient";
+import type { ModelChoice } from "../api/workspaceClient";
 import { isConversationActive, type AgentInteraction, type InteractionDecision, type InteractionStatus, type StreamUpdate, type WorkspaceMode } from "../api/types";
 import {
   conversationReducer,
   initialConversationState,
   type ConversationState,
 } from "./conversationState";
-import { modeHref } from "./runtime";
+import { IS_PAGES_DEMO, modeHref } from "./runtime";
 
 const RESET_CONFIRMATION: Readonly<Record<WorkspaceMode, string>> = Object.freeze({
   rag: "新建对话会清除当前检索历史，是否继续？",
@@ -49,6 +50,9 @@ interface ConversationController {
   reconcile: () => Promise<void>;
   unconfirmed: boolean;
   forget: () => void;
+  model: ModelChoice;
+  chooseModel: (model: ModelChoice) => Promise<void>;
+  modelUnconfirmed: boolean;
 }
 
 function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -81,7 +85,7 @@ function interactionError(error: unknown): string {
     : PUBLIC_MESSAGES.interactionUnavailable;
 }
 
-export function useConversation(mode: WorkspaceMode, account = false): ConversationController {
+export function useConversation(mode: WorkspaceMode, account = false, defaultModel: ModelChoice = "flash"): ConversationController {
   const [state, dispatch] = useReducer(conversationReducer, initialConversationState);
   const [sessionId, setSessionId] = useState(() => account ? createSessionId() : loadOrCreateSessionId(mode));
   const [summary, setSummary] = useState<ConversationSummary | null>(null);
@@ -96,6 +100,15 @@ export function useConversation(mode: WorkspaceMode, account = false): Conversat
   const resetController = useRef<AbortController | null>(null);
   const resettingRef = useRef(false);
   const runSequence = useRef(0);
+  const [model, setModel] = useState<ModelChoice>(defaultModel);
+  const modelRef = useRef<ModelChoice>(defaultModel);
+  const manualModel = useRef(false);
+  const modelUnconfirmedRef = useRef(false);
+  const [modelUnconfirmed, setModelUnconfirmed] = useState(false);
+  const applyModel = useCallback((choice: ModelChoice): void => { modelRef.current = choice; setModel(choice); }, []);
+  useEffect(() => {
+    if (!summary && !manualModel.current) applyModel(defaultModel);
+  }, [applyModel,defaultModel,summary]);
 
   const stop = useCallback((markCancelled = true) => {
     runSequence.current += 1;
@@ -113,13 +126,15 @@ export function useConversation(mode: WorkspaceMode, account = false): Conversat
     stop(true);
     setSessionId(createSessionId()); setSummary(null); setNextBefore(null);
     uncertainTurnRef.current = null; setUncertainTurn(null);
+    modelUnconfirmedRef.current = false; setModelUnconfirmed(false);
+    manualModel.current = false; applyModel(defaultModel);
     dispatch({type:"clear"}); setDraft(""); setNotice("");
-  }, [stop]);
+  }, [applyModel,defaultModel,stop]);
 
   const send = useCallback(
     async (rawMessage: string): Promise<void> => {
       const message = rawMessage.trim();
-      if (resettingRef.current || uncertainTurnRef.current || !message || message.length > 2000) return;
+      if (resettingRef.current || uncertainTurnRef.current || modelUnconfirmedRef.current || !message || message.length > 2000) return;
 
       stop(true);
       setNotice("");
@@ -127,6 +142,7 @@ export function useConversation(mode: WorkspaceMode, account = false): Conversat
       activeController.current = controller;
       const runId = ++runSequence.current;
       const clientTurnId = account ? createSessionId() : undefined;
+      const requestedModel = modelRef.current;
       dispatch({ type: "start", question: message });
       setDraft("");
 
@@ -153,7 +169,7 @@ export function useConversation(mode: WorkspaceMode, account = false): Conversat
 
       try {
         if (account && !summary) {
-          const created = await createConversation(sessionId,mode,controller.signal);
+          const created = await createConversation(sessionId,mode,controller.signal,requestedModel);
           if (controller.signal.aborted || runSequence.current !== runId) return;
           setSummary(created);
           window.history.replaceState({}, "", `${modeHref(mode)}?conversation=${encodeURIComponent(sessionId)}`);
@@ -165,6 +181,7 @@ export function useConversation(mode: WorkspaceMode, account = false): Conversat
             controller.signal,
             onUpdate,
             clientTurnId,
+            account || IS_PAGES_DEMO ? requestedModel : undefined,
           );
           if (runSequence.current === runId && !controller.signal.aborted) {
             dispatch({ type: "complete_rag", completion });
@@ -177,6 +194,7 @@ export function useConversation(mode: WorkspaceMode, account = false): Conversat
             controller.signal,
             onUpdate,
             clientTurnId,
+            account || IS_PAGES_DEMO ? requestedModel : undefined,
           );
           if (runSequence.current === runId && !controller.signal.aborted) {
             dispatch({ type: "complete_agent", completion });
@@ -241,13 +259,14 @@ export function useConversation(mode: WorkspaceMode, account = false): Conversat
     resetController.current = controller;
     try {
       const nextSessionId = account ? createSessionId() : await resetAndRotateSession(mode,sessionId,controller.signal);
-      const created = account ? await createConversation(nextSessionId,mode,controller.signal) : null;
+      const created = account ? await createConversation(nextSessionId,mode,controller.signal,modelRef.current) : null;
       if (controller.signal.aborted) return;
       stop(false);
       setSessionId(nextSessionId);
       setSummary(created);
       setNextBefore(null);
       uncertainTurnRef.current = null; setUncertainTurn(null);
+      modelUnconfirmedRef.current = false; setModelUnconfirmed(false);
       if (account) {
         setDirectoryRevision((value) => value + 1);
         window.history.pushState({}, "", `${modeHref(mode)}?conversation=${encodeURIComponent(nextSessionId)}`);
@@ -278,6 +297,8 @@ export function useConversation(mode: WorkspaceMode, account = false): Conversat
       if (controller.signal.aborted || runSequence.current !== runId) return;
       if (item.mode !== mode) throw new PublicClientError("history", "该会话属于另一种模式，请从相应目录打开。");
       setSessionId(id); setSummary(item); setNextBefore(page.nextBefore);
+      applyModel(item.model ?? defaultModel);
+      modelUnconfirmedRef.current = false; setModelUnconfirmed(false);
       uncertainTurnRef.current = null; setUncertainTurn(null); setDraft("");
       dispatch({ type:"history", turns:page.items });
     } catch (error) {
@@ -286,7 +307,40 @@ export function useConversation(mode: WorkspaceMode, account = false): Conversat
       if (resetController.current === controller) { resettingRef.current = false; setResetting(false); resetController.current = null; }
       controller.abort();
     }
-  }, [account,mode,stop]);
+  }, [account,applyModel,defaultModel,mode,stop]);
+
+  const chooseModel = useCallback(async (choice: ModelChoice): Promise<void> => {
+    if (resettingRef.current || activeController.current || uncertainTurnRef.current || modelUnconfirmedRef.current) return;
+    manualModel.current = true;
+    if (!account || !summary) { applyModel(choice); return; }
+    stop(false);
+    resettingRef.current = true; setResetting(true); setNotice("");
+    const controller = new AbortController(); resetController.current = controller;
+    const runId = runSequence.current;
+    try {
+      const updated = await switchConversationModel(summary,choice,controller.signal);
+      if (controller.signal.aborted || runSequence.current !== runId) return;
+      setSummary(updated); applyModel(updated.model ?? choice);
+      setDirectoryRevision(value => value + 1);
+    } catch (error) {
+      if (controller.signal.aborted || runSequence.current !== runId) return;
+      try {
+        const current = await readConversation(summary.id,controller.signal);
+        if (controller.signal.aborted || runSequence.current !== runId) return;
+        setSummary(current);
+        if (current.model === choice && current.revision > summary.revision) {
+          applyModel(choice); return;
+        }
+      } catch { /* A missing confirmation is kept locked, never replayed. */ }
+      if (!controller.signal.aborted && runSequence.current === runId) {
+        modelUnconfirmedRef.current = true; setModelUnconfirmed(true);
+        setNotice("模型选择保存状态未确认，请从目录重新打开会话核对；不会自动重发。");
+      }
+    } finally {
+      if (resetController.current === controller) { resetController.current = null; resettingRef.current = false; setResetting(false); }
+      controller.abort();
+    }
+  }, [account,applyModel,summary,stop]);
 
   const loadOlder = useCallback(async (): Promise<void> => {
     if (!account || !nextBefore || resettingRef.current || isConversationActive(state.status)) return;
@@ -365,5 +419,6 @@ export function useConversation(mode: WorkspaceMode, account = false): Conversat
   );
 
   return { state, send, stop, reset, respondToInteraction, resetting, notice, draft, setDraft,
-    sessionId, summary, directoryRevision, nextBefore, open, loadOlder, mutate, reconcile, forget, unconfirmed:uncertainTurn !== null };
+    sessionId, summary, directoryRevision, nextBefore, open, loadOlder, mutate, reconcile, forget, unconfirmed:uncertainTurn !== null,
+    model, chooseModel, modelUnconfirmed };
 }

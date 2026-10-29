@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse, Response
 
 from config.settings import settings
 from src.api.public_errors import public_error
+from src.core.run_options import WorkspaceError, scoped_run_options
 from src.llm.cache_context import scoped_cache_identity
 from src.security.account_limits import AccountRequestLimits, source_scope
 from src.security.request_authorization import (
@@ -41,13 +42,14 @@ CLIENT_ID_COOKIE = "ragflow_client"
 CLIENT_ID_MAX_AGE = 60 * 60 * 24 * 365
 AUTH_RECHECK_SECONDS: float = 0.25
 _GENERATION_PATHS: frozenset[str] = frozenset(
-    {"/query", "/query/stream", "/agent/chat", "/agent/chat/stream"}
+    {"/query", "/query/stream", "/agent/chat", "/agent/chat/stream", "/skills/creator/stream"}
 )
 
 
 def _account_path(path: str) -> bool:
     return (
         path in _GENERATION_PATHS
+        or (path.startswith("/workspace/") and path != "/workspace/config")
         or path in {"/ready", "/agent/tools"}
         or path == "/agent/reset"
         or path.startswith(
@@ -57,6 +59,7 @@ def _account_path(path: str) -> bool:
                 "/agent/approvals/",
                 "/agent/elicitation/",
                 "/conversations",
+                "/skills",
             )
         )
     )
@@ -96,7 +99,9 @@ class ClientIdentityMiddleware:
                 await self.app(scope, receive, send)
             return
 
-        if get_route_path(scope).startswith("/conversations"):
+        if get_route_path(scope).startswith(("/conversations", "/skills")) or (
+            get_route_path(scope).startswith("/workspace/") and get_route_path(scope) != "/workspace/config"
+        ):
             await JSONResponse({"detail": public_error("auth_required")},status_code=401,
                                headers={"Cache-Control":"no-store"})(scope,receive,send)
             return
@@ -239,6 +244,7 @@ class ClientIdentityMiddleware:
         with (
             bind_authorization(authorization),
             scoped_cache_identity("user\0" + user.id),
+            scoped_run_options(None),
         ):
             execution = asyncio.create_task(self.app(scope, receive, private_send))
             watcher: asyncio.Task[None] = asyncio.create_task(watch())
@@ -272,6 +278,8 @@ class ClientIdentityMiddleware:
                 await failure("account_quota_exceeded", 429)
             except sqlite3.Error:
                 await failure("auth_unavailable", 503)
+            except WorkspaceError as error:
+                await failure(error.code, error.status)
             except ValueError:
                 await failure("auth_invalid_request", 422)
             finally:

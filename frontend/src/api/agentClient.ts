@@ -4,6 +4,8 @@ import { AUTH_EXPIRED_EVENT } from "./authClient";
 import { requireEventStream } from "./http";
 import { finiteNumber, isRecord, readSseEvents } from "./sse";
 import type { AgentCompletion, AgentToolStep, StreamUpdate } from "./types";
+import type { ModelChoice } from "./workspaceClient";
+import { completionMetadata } from "./completionMetadata";
 
 const AGENT_FAILURE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
   account_quota_exceeded: "今日模型使用额度已达上限，请明日再试或联系管理员。",
@@ -48,6 +50,7 @@ export async function streamAgentAnswer(
   signal: AbortSignal,
   onUpdate: (update: StreamUpdate) => void,
   clientTurnId?: string,
+  model?: ModelChoice,
 ): Promise<AgentCompletion> {
   const response = await fetch("/agent/chat/stream", {
     method: "POST",
@@ -55,7 +58,7 @@ export async function streamAgentAnswer(
       Accept: "text/event-stream",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ message, session_id: sessionId, ...(clientTurnId ? { conversation_id: sessionId, client_turn_id: clientTurnId } : {}) }),
+    body: JSON.stringify({ message, session_id: sessionId, ...(clientTurnId ? { conversation_id: sessionId, client_turn_id: clientTurnId } : {}), ...(model ? { model } : {}) }),
     signal,
   });
   const stream = requireEventStream(response);
@@ -87,6 +90,7 @@ export async function streamAgentAnswer(
       throw new PublicClientError("protocol", PUBLIC_MESSAGES.protocol);
     }
     return {
+      ...completionMetadata(rawEvent),
       answer: rawEvent.answer,
       iterations: finiteNumber(rawEvent.iterations),
       latencyMs: finiteNumber(rawEvent.latency_ms),

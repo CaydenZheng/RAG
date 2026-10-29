@@ -124,3 +124,19 @@ test("reset restores auto-follow after scrolling a long conversation", async ({ 
   await expect.poll(() => region.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(80);
   await expect(page.getByRole("button", { name: "回到最新" })).toHaveCount(0);
 });
+
+test("models and Skills are explicitly simulated and never contact a backend",async({page})=>{
+  const connections:string[]=[];
+  page.on("request",request=>{if(["fetch","xhr","websocket","eventsource"].includes(request.resourceType()))connections.push(request.url());});
+  await page.getByRole("combobox",{name:"模型",exact:true}).selectOption("pro");
+  await page.getByRole("link",{name:"Skills 技能",exact:true}).click();
+  await expect(page).toHaveURL(/view=skills/);
+  await expect(page.getByText("以下为内存中的模拟技能；不连接模型、不执行工具，刷新会重置。",{exact:true})).toBeVisible();
+  await page.getByRole("checkbox",{name:"启用 skill-creator"}).check();
+  await page.getByLabel("导入原始资料").setInputFiles({name:"demo.txt",mimeType:"text/plain",buffer:Buffer.from("not read by demo")});
+  await page.getByRole("button",{name:"开始整理",exact:true}).click();
+  await expect(page.getByText("模拟转换完成，未进行真实格式校验、上传或启用。",{exact:true})).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("checkbox",{name:"启用 skill-creator"})).not.toBeChecked();
+  expect(connections).toEqual([]);
+});

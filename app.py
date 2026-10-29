@@ -31,6 +31,7 @@ import time
 import uuid
 from functools import partial
 from pathlib import Path
+from typing import Literal
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -90,6 +91,7 @@ from src.api.startup import runtime_readiness, warm_up_runtime
 from src.api.streaming import ClosingStreamingResponse, iter_agent_sse, iter_answer_sse
 from src.api.user_auth import UserAuthBoundaryMiddleware, open_user_auth
 from src.api.user_auth import router as user_auth_router
+from src.api.workspace import router as workspace_router
 from src.core.agent_runtime import AgentRuntime
 from src.core.generation import AnswerInput, answer_service
 from src.core.index_jobs import (
@@ -186,6 +188,7 @@ app.add_middleware(AdminAuthMiddleware)
 app.add_middleware(UserAuthBoundaryMiddleware)
 app.include_router(user_auth_router)
 app.include_router(conversations_router)
+app.include_router(workspace_router)
 
 
 @app.exception_handler(RequestValidationError)
@@ -222,6 +225,7 @@ def index():
 
 
 @app.get("/agent", response_class=HTMLResponse)
+@app.get("/settings/skills", response_class=HTMLResponse)
 def agent_page():
     return web_entrypoint_response()
 
@@ -412,7 +416,7 @@ async def cancel_mcp_oauth_authorization(
 async def query(req: QueryRequest, request: Request):
     """检索问答（异步）"""
     session = begin_exchange(
-        request, req.session_id, req.conversation_id, req.client_turn_id, "rag", req.query, allow_empty=True
+        request, req.session_id, req.conversation_id, req.client_turn_id, "rag", req.query, allow_empty=True, model=req.model
     )
     query_id = request.state.request_id
     started_at = time.perf_counter()
@@ -562,6 +566,7 @@ async def query_stream(
     session_id: str = "",
     conversation_id: str | None = None,
     client_turn_id: str | None = None,
+    model: Literal["flash", "pro"] | None = None,
     top_k: int = Query(
         default=DEFAULT_RETRIEVAL_TOP_K,
         ge=1,
@@ -585,7 +590,7 @@ async def query_stream(
     started_at = time.perf_counter()
     query_id = request.state.request_id
     session = begin_exchange(
-        request, session_id, conversation_id, client_turn_id, "rag", query, allow_empty=True
+        request, session_id, conversation_id, client_turn_id, "rag", query, allow_empty=True, model=model
     )
 
     try:
@@ -695,7 +700,7 @@ async def agent_chat(req: AgentChatRequest, request: Request):
     """Run the shared asynchronous Agent runtime."""
     session = begin_exchange(
         request, req.session_id or req.conversation_id or uuid.uuid4().hex, req.conversation_id,
-        req.client_turn_id, "agent", req.message
+        req.client_turn_id, "agent", req.message, model=req.model
     )
     result = await agent_runtime.execute(session.storage_id, req.message)
     payload = result.to_dict()
@@ -721,7 +726,7 @@ async def agent_chat_stream(
     """
     session = begin_exchange(
         request, req.session_id or req.conversation_id or uuid.uuid4().hex, req.conversation_id,
-        req.client_turn_id, "agent", req.message
+        req.client_turn_id, "agent", req.message, model=req.model
     )
 
     return ClosingStreamingResponse(

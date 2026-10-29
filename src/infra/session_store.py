@@ -83,6 +83,29 @@ class CommitPermit:
             yield self()
 
 
+class _ModelChangePermit(CommitPermit):
+    """Order model metadata commits against generation registration."""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__()
+        self.session_id: str = session_id
+
+    @contextmanager
+    def guard(self) -> Iterator[bool]:
+        from src.security.request_authorization import (
+            _RUNS,
+            _RUNS_LOCK,
+            ConversationBusy,
+        )
+
+        # Held only for one non-blocking COMMIT; released before BUSY retries.
+        with _RUNS_LOCK:
+            running = _RUNS.get(self.session_id)
+            if running is not None and not running.revoked.is_set():
+                raise ConversationBusy("conversation_busy")
+            yield True
+
+
 class SessionStore:
     """Persist ordered session history with atomic multi-message writes."""
 
@@ -202,6 +225,15 @@ class SessionStore:
                 (time.time(),),
             )
             connection.execute("CREATE TABLE IF NOT EXISTS model_reservations (subject TEXT NOT NULL, day INTEGER NOT NULL, units INTEGER NOT NULL, PRIMARY KEY(subject,day))")
+            if "selected_model" not in conversation_columns:
+                connection.execute("ALTER TABLE conversations ADD COLUMN selected_model TEXT")
+            if "requested_model" not in transcript_columns:
+                connection.execute("ALTER TABLE transcript_exchanges ADD COLUMN requested_model TEXT")
+            if "skills" not in transcript_columns:
+                connection.execute("ALTER TABLE transcript_exchanges ADD COLUMN skills TEXT NOT NULL DEFAULT '[]'")
+            from src.infra.skill_store import initialize_workspace_schema
+
+            initialize_workspace_schema(connection)
 
     def reserve_model_units(self, units: int) -> None:
         authorization = current_authorization()
@@ -243,15 +275,19 @@ class SessionStore:
 
     def _summary(self, connection: sqlite3.Connection, public_id: str, *, deleted: bool = False) -> dict[str, Any]:
         row = connection.execute(
-            "SELECT public_id,mode,title,created_at,updated_at,revision,last_model,storage_id,deleted "
+            "SELECT public_id,mode,title,created_at,updated_at,revision,last_model,storage_id,deleted,selected_model "
             "FROM conversations WHERE owner_user_id=? AND public_id=?",
             (self._owner_id(), public_id),
         ).fetchone()
         if row is None or (row[8] and not deleted):
             raise PrivateSessionError("private_session_not_found")
         epoch: int = self._revision(connection, row[7])[0]
+        from src.core.run_options import conversation_model
+
+        preference = connection.execute("SELECT default_model FROM workspace_preferences WHERE owner_user_id=?", (self._owner_id(),)).fetchone()
+        choice = conversation_model(row[9], row[6], preference[0] if preference else "flash")
         return dict(id=row[0], mode=row[1], title=row[2], created_at=self._iso(row[3]),
-                    updated_at=self._iso(row[4]), revision=row[5], epoch=epoch, last_model=row[6])
+                    updated_at=self._iso(row[4]), revision=row[5], epoch=epoch, last_model=row[6], model=choice)
 
     def conversation(self, public_id: str) -> dict[str, Any]:
         with closing(self._connect()) as connection:
@@ -321,15 +357,15 @@ class SessionStore:
             parameters.append(sequence)
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                "SELECT id,client_turn_id,seq,question,answer,completed_at,used_model,index_version,sources,warnings "
+                "SELECT id,client_turn_id,seq,question,answer,completed_at,used_model,index_version,sources,warnings,requested_model,skills "
                 "FROM transcript_exchanges WHERE " + " AND ".join(clauses) + " ORDER BY seq DESC LIMIT ?",
                 (*parameters, limit + 1),
             ).fetchall()
         page = rows[:limit]
         items: list[dict[str, Any]] = [
             dict(id=row[0],client_turn_id=row[1],seq=row[2],question=row[3],answer=row[4],
-                 completed_at=self._iso(row[5]),requested_model=None,used_model=row[6],
-                 index_version=row[7],sources=json.loads(row[8]),attachments=[],skills=[],warnings=json.loads(row[9]))
+                 completed_at=self._iso(row[5]),requested_model=row[10],used_model=row[6],
+                 index_version=row[7],sources=json.loads(row[8]),attachments=[],skills=json.loads(row[11]),warnings=json.loads(row[9]))
             for row in reversed(page)
         ]
         return {"items": items, "next_before": self._cursor(["turns", public_id, page[-1][2]]) if len(rows)>limit else None}
@@ -347,7 +383,7 @@ class SessionStore:
 
     def mutate_conversation(self, public_id: str, expected_revision: int, *,
                             title: str | None = None, clear: bool = False,
-                            delete: bool = False) -> dict[str, Any]:
+                            delete: bool = False, model: str | None = None) -> dict[str, Any]:
         owner: str = self._owner_id()
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -364,11 +400,16 @@ class SessionStore:
                 connection.execute("DELETE FROM sessions WHERE session_id=?", (row[0],))
                 connection.execute("DELETE FROM transcript_exchanges WHERE storage_id=?", (row[0],))
                 self._invalidate_older_operations(connection, row[0])
+            if model is not None:
+                from src.core.run_options import resolve_model
+
+                resolve_model(model)
+                connection.execute("UPDATE conversations SET selected_model=? WHERE owner_user_id=? AND public_id=?", (model, owner, public_id))
             connection.execute(
                 "UPDATE conversations SET title=?,updated_at=?,revision=revision+1,deleted=? WHERE owner_user_id=? AND public_id=?",
                 (title if title is not None else summary["title"], time.time(), int(delete), owner, public_id),
             )
-            if not self._commit_if_permitted(connection, None):
+            if not self._commit_if_permitted(connection, _ModelChangePermit(row[0]) if model is not None else None):
                 raise AuthorizationRevoked("auth_required")
             return self._summary(connection, public_id, deleted=delete)
 
@@ -390,10 +431,11 @@ class SessionStore:
         sequence: int = row[2] + 1
         now: float = time.time()
         connection.execute(
-            "INSERT INTO transcript_exchanges VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO transcript_exchanges(id,storage_id,seq,client_turn_id,question,answer,completed_at,used_model,index_version,sources,warnings,requested_model,skills) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (uuid.uuid4().hex,session_id,sequence,context.client_turn_id,
              context.question,turns[-1].content,now,context.used_model,context.index_version,
-             json.dumps(context.sources,ensure_ascii=False),json.dumps(context.warnings)),
+             json.dumps(context.sources,ensure_ascii=False),json.dumps(context.warnings),
+             context.requested_model,json.dumps(context.skills)),
         )
         title: str = row[0] or " ".join(context.question.split())[:80]
         connection.execute(
@@ -403,7 +445,7 @@ class SessionStore:
             (title, now, sequence, context.used_model, owner, session_id),
         )
 
-    def owned_session(self, user_id: str, public_id: str, mode: SessionNamespace, *, create: bool) -> str:
+    def owned_session(self, user_id: str, public_id: str, mode: SessionNamespace, *, create: bool, model: str | None = None) -> str:
         storage_id: str = account_scoped_session_id(user_id, public_id, mode)
         require_active_authorization()
         require_session_owner(storage_id)
@@ -429,11 +471,15 @@ class SessionStore:
             ).fetchone()[0]
             if count >= MAX_ACCOUNT_CONVERSATIONS:
                 raise ConversationConflict("conversation_conflict")
+            if model is not None:
+                from src.core.run_options import resolve_model
+
+                resolve_model(model)
             now: float = time.time()
             connection.execute("""
-                INSERT INTO conversations(owner_user_id,public_id,mode,storage_id,created_at,updated_at)
-                VALUES(?,?,?,?,?,?)
-            """, (user_id, public_id, mode, storage_id, now, now))
+                INSERT INTO conversations(owner_user_id,public_id,mode,storage_id,created_at,updated_at,selected_model)
+                VALUES(?,?,?,?,?,?,?)
+            """, (user_id, public_id, mode, storage_id, now, now, model))
             if not self._commit_if_permitted(connection, None):
                 raise AuthorizationRevoked("auth_required")
         return storage_id

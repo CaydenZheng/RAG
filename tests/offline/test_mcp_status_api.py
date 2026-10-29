@@ -242,9 +242,14 @@ def test_application_starts_reports_and_closes_real_mcp_server(
         deadline = time.monotonic() + 10
         while True:
             response = client.get("/agent/tools")
+            payload = response.json()
             if any(
                 tool["name"] == "mcp__clock__get_current_time"
-                for tool in response.json()["tools"]
+                and tool["available"]
+                for tool in payload["tools"]
+            ) and any(
+                server["id"] == "clock" and server["status"] == "available"
+                for server in payload["mcp_servers"]
             ):
                 break
             if time.monotonic() >= deadline:

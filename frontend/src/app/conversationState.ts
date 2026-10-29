@@ -3,13 +3,14 @@ import type {
   AgentCompletion,
   AgentToolStep,
   ConversationStatus,
+  CompletionMetadata,
   InteractionStatus,
   RagCompletion,
   RagSource,
 } from "../api/types";
 import { agentInteractionKey, isConversationActive } from "../api/types";
 
-export interface ConversationTurn {
+export interface ConversationTurn extends CompletionMetadata {
   id: number;
   clientTurnId?: string;
   status: ConversationStatus;
@@ -166,6 +167,9 @@ export function conversationReducer(
     case "complete_rag":
       return updateActiveTurn(state, (turn) => ({
         ...turn,
+        requestedModel: action.completion.requestedModel,
+        usedModel: action.completion.usedModel,
+        skills: action.completion.skills,
         status: "completed",
         answer: action.completion.answer,
         sources: action.completion.sources,
@@ -176,6 +180,9 @@ export function conversationReducer(
     case "complete_agent":
       return updateActiveTurn(state, (turn) => ({
         ...turn,
+        requestedModel: action.completion.requestedModel,
+        usedModel: action.completion.usedModel,
+        skills: action.completion.skills,
         status: "completed",
         answer: action.completion.answer,
         iterations: action.completion.iterations,

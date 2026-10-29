@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from config.settings import settings
+from src.core.run_options import selected_model
 from src.infra.exchange_context import completed_model, exchange_context
 from src.infra.session_store import (
     CommitPermit,
@@ -568,7 +569,7 @@ class MemoryManager:
             from src.llm import llm_client
 
             with tracer.stage("agent_memory_summary"):
-                summary = llm_client.chat(messages, temperature=0.1, max_tokens=300)
+                summary = llm_client.chat(messages, temperature=0.1, max_tokens=300, model=selected_model())
             logger.info("Memory compressed: {} turns → {} chars summary",
                          len(old_turns), len(summary))
             return summary

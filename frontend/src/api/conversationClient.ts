@@ -3,6 +3,8 @@ import { PublicClientError } from "./errors";
 import { isRecord } from "./sse";
 import type { WorkspaceMode } from "./types";
 import type { ConversationTurn } from "../app/conversationState";
+import type { ModelChoice } from "./workspaceClient";
+import { completionMetadata } from "./completionMetadata";
 
 export interface ConversationSummary {
   id: string;
@@ -11,6 +13,8 @@ export interface ConversationSummary {
   revision: number;
   epoch: number;
   updated_at: string;
+  model?: ModelChoice;
+  lastModel?: string;
 }
 
 export interface HistoryPage { items: ConversationTurn[]; nextBefore: string | null }
@@ -31,11 +35,19 @@ function summary(value: unknown): ConversationSummary {
     throw new PublicClientError("protocol", "会话信息无效，请刷新核对。");
   }
   return { id: value.id, mode: value.mode === "agent" ? "agent" : "rag", title: value.title,
-    revision: value.revision, epoch: value.epoch, updated_at: value.updated_at };
+    revision: value.revision, epoch: value.epoch, updated_at: value.updated_at,
+    model: value.model === "flash" || value.model === "pro" ? value.model : undefined,
+    lastModel: typeof value.last_model === "string" ? value.last_model : undefined };
 }
 
-export async function createConversation(id: string, mode: WorkspaceMode, signal: AbortSignal): Promise<ConversationSummary> {
-  return summary(await request("/conversations", signal, { method: "POST", body: JSON.stringify({ id, mode }) }));
+export async function createConversation(id: string, mode: WorkspaceMode, signal: AbortSignal, model?: ModelChoice): Promise<ConversationSummary> {
+  return summary(await request("/conversations", signal, { method: "POST", body: JSON.stringify({ id, mode, ...(model ? { model } : {}) }) }));
+}
+
+export async function switchConversationModel(item: ConversationSummary, model: ModelChoice, signal: AbortSignal): Promise<ConversationSummary> {
+  return summary(await request(`/conversations/${encodeURIComponent(item.id)}`, signal, {
+    method: "PATCH", body: JSON.stringify({ model, expected_revision: item.revision }),
+  }));
 }
 
 export async function readConversation(id: string, signal: AbortSignal): Promise<ConversationSummary> {
@@ -61,7 +73,7 @@ export async function readHistory(id: string, signal: AbortSignal, options: { be
       typeof item.client_turn_id !== "string" || (options.clientTurnId && item.client_turn_id !== options.clientTurnId)) {
       throw new PublicClientError("protocol", "历史回合信息无效。");
     }
-    return { id: item.seq, clientTurnId: item.client_turn_id, status: "completed", question: item.question,
+    return { ...completionMetadata(item), id: item.seq, clientTurnId: item.client_turn_id, status: "completed", question: item.question,
       answer: item.answer, error: "", sources: Array.isArray(item.sources) ? item.sources.filter(isRecord).map((source, index) => ({
         ref: String(source.ref ?? index + 1), source: typeof source.label === "string" ? source.label : "回答时的来源",
         text: typeof source.excerpt === "string" ? source.excerpt : "", score: null,

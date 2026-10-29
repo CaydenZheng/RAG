@@ -155,6 +155,9 @@ class Settings(BaseSettings):
         default="https://api.deepseek.com", alias="OPENAI_BASE_URL"
     )
     llm_model: str = Field(default="deepseek-chat", alias="LLM_MODEL")
+    # IDs verified against the official model directory on 2026-10-27.
+    llm_flash_model: str = Field(default="deepseek-flash", alias="LLM_FLASH_MODEL", max_length=128)
+    llm_pro_model: str = Field(default="deepseek-v4-pro", alias="LLM_PRO_MODEL", max_length=128)
 
     # ================================================================
     # Embedding (本地模型)

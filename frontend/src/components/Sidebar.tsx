@@ -2,7 +2,7 @@ import { Bot, BookOpen, Database, History, Plus, Settings2, X } from "lucide-rea
 import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
 
 import type { WorkspaceMode } from "../api/types";
-import { IS_PAGES_DEMO, modeHref } from "../app/runtime";
+import { IS_PAGES_DEMO, modeHref, skillsHref } from "../app/runtime";
 
 interface SidebarProps {
   mode: WorkspaceMode;
@@ -14,6 +14,8 @@ interface SidebarProps {
   onClose: () => void;
   history?: ReactNode;
   account?: boolean;
+  skillsActive?: boolean;
+  onSkills?: () => void;
 }
 
 export function Sidebar({
@@ -26,6 +28,8 @@ export function Sidebar({
   onClose,
   history,
   account = false,
+  skillsActive = false,
+  onSkills,
 }: SidebarProps): React.JSX.Element {
   const closeButton = useRef<HTMLButtonElement>(null);
 
@@ -67,14 +71,18 @@ export function Sidebar({
       </button>
 
       <nav className="mode-nav" aria-label="对话模式">
-        <a className="mode-link" data-active={mode === "rag"} href={modeHref("rag")} aria-current={mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
+        <a className="mode-link" data-active={!skillsActive && mode === "rag"} href={modeHref("rag")} aria-current={!skillsActive && mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
           <BookOpen size={19} aria-hidden="true" />
           <span>知识问答</span>
         </a>
-        <a className="mode-link" data-active={mode === "agent"} href={modeHref("agent")} aria-current={mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
+        <a className="mode-link" data-active={!skillsActive && mode === "agent"} href={modeHref("agent")} aria-current={!skillsActive && mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
           <Bot size={19} aria-hidden="true" />
           <span>Agent</span>
         </a>
+        {(account || IS_PAGES_DEMO) && <a className="mode-link" data-active={skillsActive} aria-current={skillsActive ? "page" : undefined} href={skillsHref()} onClick={(event) => {
+          if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+          event.preventDefault();onSkills?.();
+        }}><Settings2 size={19} aria-hidden="true" /><span>Skills 技能</span></a>}
       </nav>
 
       <section className="sidebar-section" aria-labelledby="recentTitle">

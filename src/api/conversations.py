@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from config.settings import settings
 from src.api.client_identity import RequestSession, scope_request_session
 from src.api.public_errors import public_error
+from src.core.run_options import ModelChoice, current_run_options
 from src.infra import session_store as stores
 from src.infra.exchange_context import (
     ExchangeContext,
@@ -15,6 +16,7 @@ from src.infra.exchange_context import (
     completed_model,
     exchange_context,
 )
+from src.infra.skill_store import SkillStore
 from src.security.request_authorization import current_authorization
 from src.security.session_ids import validate_public_session_id
 
@@ -25,12 +27,14 @@ class CreateConversation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
     mode: Literal["rag", "agent"]
+    model: ModelChoice | None = None
 
 
 class UpdateConversation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=0, strict=True)
     title: str | None = Field(default=None, min_length=1, max_length=80)
+    model: ModelChoice | None = None
 
 
 class ClearConversation(BaseModel):
@@ -70,8 +74,11 @@ def begin_exchange(
     question: str,
     *,
     allow_empty: bool = False,
+    model: ModelChoice | None = None,
 ) -> RequestSession:
     """Validate duplicate keys before retrieval, planning or tool side effects."""
+    if model is not None and not settings.auth_enabled:
+        raise HTTPException(401, detail=public_error("auth_required"))
     if client_turn_id is not None:
         client_turn_id = identifier(client_turn_id)
     if conversation_id is not None:
@@ -91,7 +98,10 @@ def begin_exchange(
             client_turn_id if client_turn_id is not None else str(uuid.uuid4())
         )
         stores.session_store.ensure_new_turn(session.storage_id, turn_id)
-        exchange_context.set(ExchangeContext(turn_id, question))
+        options = SkillStore(stores.session_store).snapshot(session.public_id, model, agent=mode == "agent")
+        current_run_options.set(options)
+        exchange_context.set(ExchangeContext(turn_id, question, requested_model=options.choice,
+            skills=tuple({"id": skill.id, "name": skill.name, "version": skill.version} for skill in options.skills)))
         completed_model.set(None)
     return session
 
@@ -103,7 +113,7 @@ def create(body: CreateConversation) -> dict[str, Any]:
     if authorization is None:
         raise HTTPException(401, detail=public_error("auth_required"))
     stores.session_store.owned_session(
-        authorization.user_id, public_id, body.mode, create=True
+        authorization.user_id, public_id, body.mode, create=True, model=body.model
     )
     return stores.session_store.conversation(public_id)
 
@@ -157,10 +167,10 @@ def turns(
 @router.patch("/{conversation_id}")
 def rename(conversation_id: str, body: UpdateConversation) -> dict[str, Any]:
     title: str | None = body.title.strip() if body.title is not None else None
-    if not title:
+    if (body.title is not None and not title) or (title is None and body.model is None):
         raise HTTPException(422, detail=public_error("auth_invalid_request"))
     return stores.session_store.mutate_conversation(
-        resource_identifier(conversation_id), body.expected_revision, title=title
+        resource_identifier(conversation_id), body.expected_revision, title=title, model=body.model
     )
 
 

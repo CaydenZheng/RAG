@@ -14,6 +14,8 @@ class ExchangeContext:
     index_version: str | None = None
     sources: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     warnings: tuple[str, ...] = ()
+    requested_model: str | None = None
+    skills: tuple[dict[str, str], ...] = ()
 
 
 exchange_context: ContextVar[ExchangeContext | None] = ContextVar(

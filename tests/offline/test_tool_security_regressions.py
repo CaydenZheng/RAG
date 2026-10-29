@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 from loguru import logger
 
+from tests.offline.test_agent_runtime import agent_token_counter as agent_token_counter
+
 _CALCULATOR_ESCAPE = (
     "(lambda: [c for c in ().__class__.__base__.__subclasses__() "
     "if c.__name__ == 'catch_warnings'][0]()._module.__builtins__"

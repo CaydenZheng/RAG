@@ -4,6 +4,8 @@ import { AUTH_EXPIRED_EVENT } from "./authClient";
 import { requireEventStream } from "./http";
 import { finiteNumber, isRecord, readSseEvents } from "./sse";
 import type { RagCompletion, RagSource, StreamUpdate } from "./types";
+import type { ModelChoice } from "./workspaceClient";
+import { completionMetadata } from "./completionMetadata";
 
 const RAG_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
   account_quota_exceeded: "今日模型使用额度已达上限，请明日再试或联系管理员。",
@@ -42,9 +44,11 @@ export async function streamRagAnswer(
   signal: AbortSignal,
   onUpdate: (update: StreamUpdate) => void,
   clientTurnId?: string,
+  model?: ModelChoice,
 ): Promise<RagCompletion> {
   const search = new URLSearchParams({ query, session_id: sessionId });
   if (clientTurnId) { search.set("conversation_id", sessionId); search.set("client_turn_id", clientTurnId); }
+  if (model) search.set("model", model);
   const response = await fetch(`/query/stream?${search.toString()}`, {
     method: "GET",
     headers: { Accept: "text/event-stream" },
@@ -82,6 +86,7 @@ export async function streamRagAnswer(
       ? rawEvent.warnings.filter((warning): warning is string => typeof warning === "string")
       : [];
     return {
+      ...completionMetadata(rawEvent),
       answer: rawEvent.answer,
       sources,
       warnings,

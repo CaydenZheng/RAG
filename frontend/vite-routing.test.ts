@@ -73,6 +73,10 @@ describe("Vite development routing", () => {
     const api = await fetch(`${origin}/agent/chat/stream`, { method: "POST" });
     expect(await api.json()).toEqual({ proxied: true });
     expect(backendPaths).toContain("/agent/chat/stream");
+    const skillsPage = await fetch(`${origin}/settings/skills`);
+    expect(await skillsPage.text()).toContain("/@vite/client");
+    expect(backendPaths).not.toContain("/settings/skills");
+    expect(await (await fetch(`${origin}/skills`)).json()).toEqual({proxied:true});
   });
 
   it("forwards the complete query without changing values", async () => {

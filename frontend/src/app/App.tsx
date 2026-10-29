@@ -10,25 +10,41 @@ import { ConversationView } from "../components/ConversationView";
 import { ServiceStatus } from "../components/ServiceStatus";
 import { Sidebar } from "../components/Sidebar";
 import { ThemeControl } from "../components/ThemeControl";
+import { SkillsPage } from "../components/SkillsPage";
+import { readModels, type ModelCatalog } from "../api/workspaceClient";
+import { toPublicMessage } from "../api/errors";
 import { useConversation } from "./useConversation";
 import { useServiceStatus } from "./useServiceStatus";
 import { useTheme } from "./useTheme";
-import { currentMode, IS_PAGES_DEMO, modeHref } from "./runtime";
+import { currentMode, IS_PAGES_DEMO, isSkillsRoute, modeHref, skillsHref } from "./runtime";
 
 const AUTO_FOLLOW_THRESHOLD_PX = 80;
 const COMPACT_NAVIGATION_QUERY = "(max-width: 899px)";
 
 export function App({ account, onLogout }: { account?: AccountUser; onLogout?: () => void }): React.JSX.Element {
   const [mode, setMode] = useState(currentMode);
+  const [skillsView, setSkillsView] = useState(isSkillsRoute);
+  const [models, setModels] = useState<ModelCatalog | null>(null);
+  const [modelsNotice, setModelsNotice] = useState("");
+  const [modelsRevision, setModelsRevision] = useState(0);
+  useEffect(() => {
+    if (!account && !IS_PAGES_DEMO) return undefined;
+    const controller = new AbortController();
+    setModelsNotice("");
+    void readModels(controller.signal).then(value => {if(!controller.signal.aborted)setModels(value);})
+      .catch(error => {if(!controller.signal.aborted)setModelsNotice(toPublicMessage(error));});
+    return () => controller.abort();
+  }, [account,modelsRevision]);
   const [compactNavigation, setCompactNavigation] = useState(() => (
     window.matchMedia?.(COMPACT_NAVIGATION_QUERY).matches ?? false
   ));
   const [navigationOpen, setNavigationOpen] = useState(false);
   const previousMode = useRef(mode);
+  const previousView = useRef(skillsView);
   const serviceState = useServiceStatus();
   const theme = useTheme();
-  const ragConversation = useConversation("rag", !!account);
-  const agentConversation = useConversation("agent", !!account);
+  const ragConversation = useConversation("rag", !!account, models?.defaultModel);
+  const agentConversation = useConversation("agent", !!account, models?.defaultModel);
   const activeConversation = mode === "rag" ? ragConversation : agentConversation;
   const scrollRegion = useRef<HTMLElement | null>(null);
   const workspace = useRef<HTMLElement | null>(null);
@@ -67,18 +83,19 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
     }
   }, [renaming,resetting]);
   useEffect(() => {
-    if (!account || !routeConversation) return;
+    if (!account || !routeConversation || skillsView) return;
     void (mode === "rag" ? ragOpen : agentOpen)(routeConversation);
-  }, [account,agentOpen,mode,ragOpen,routeConversation]);
+  }, [account,agentOpen,mode,ragOpen,routeConversation,skillsView]);
 
   const navigate = useCallback((nextMode: WorkspaceMode): void => {
-    if (nextMode === mode) return;
+    if (nextMode === mode && !skillsView) return;
     activeConversation.stop(true);
     const nextId = account ? (nextMode === "rag" ? ragConversation : agentConversation).summary?.id : undefined;
     window.history.pushState({}, "", `${modeHref(nextMode)}${nextId ? `?conversation=${encodeURIComponent(nextId)}` : ""}`);
     setRouteConversation(nextId ?? null);
     setMode(nextMode);
-  }, [account,activeConversation,agentConversation,ragConversation,mode]);
+    setSkillsView(false);
+  }, [account,activeConversation,agentConversation,ragConversation,mode,skillsView]);
 
   const closeNavigation = useCallback((): void => {
     focusAfterNavigationClose.current = "navigation";
@@ -133,9 +150,11 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
     const handlePopState = (): void => {
       activeConversation.stop(true);
       const nextMode = currentMode();
+      const nextSkillsView = isSkillsRoute();
       const nextId = account ? new URLSearchParams(window.location.search).get("conversation") : null;
-      if (account && !nextId) (nextMode === "rag" ? ragConversation : agentConversation).forget();
+      if (account && !nextId && !nextSkillsView) (nextMode === "rag" ? ragConversation : agentConversation).forget();
       setMode(nextMode);
+      setSkillsView(nextSkillsView);
       setRouteConversation(nextId);
     };
     window.addEventListener("popstate", handlePopState);
@@ -174,11 +193,12 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
   useEffect(() => {
     followingLatest.current = true;
     setShowLatest(false);
-    if (previousMode.current !== mode) {
+    if (previousMode.current !== mode || previousView.current !== skillsView) {
       workspace.current?.focus({ preventScroll: true });
       previousMode.current = mode;
+      previousView.current = skillsView;
     }
-  }, [mode]);
+  }, [mode,skillsView]);
 
   function handleConversationScroll(): void {
     if (state.turns.length === 0) return;
@@ -197,8 +217,16 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         tabIndex={compactNavigation && navigationOpen ? -1 : undefined}
       >跳到主要内容</a>
       <Sidebar
+        skillsActive={skillsView}
+        onSkills={() => {
+          if (skillsView) {if(navigationOpen)closeNavigation();return;}
+          activeConversation.stop(true);
+          window.history.pushState({},"",skillsHref());setSkillsView(true);setRouteConversation(null);
+          if(navigationOpen)closeNavigationToWorkspace();else window.requestAnimationFrame(()=>workspace.current?.focus());
+        }}
         account={!!account}
         history={account ? <HistoryDirectory mode={mode} activeId={activeConversation.sessionId} revision={activeConversation.directoryRevision} onOpen={(id) => {
+          setSkillsView(false);
           activeConversation.stop(true);
           window.history.pushState({},"",`${modeHref(mode)}?conversation=${encodeURIComponent(id)}`);
           if (id === routeConversation) void activeConversation.open(id);
@@ -210,9 +238,9 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         resetting={resetting}
         compact={compactNavigation}
         open={!compactNavigation || navigationOpen}
-        onReset={() => { setRouteConversation(null); void reset(); }}
+        onReset={() => { if(skillsView)navigate(mode);setRouteConversation(null); void reset(); }}
         onNavigate={(nextMode) => {
-          if (nextMode === mode) {
+          if (nextMode === mode && !skillsView) {
             if (navigationOpen) closeNavigation();
             return;
           }
@@ -252,7 +280,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
           </button>
           <div className="workspace-heading">
             <p className="eyebrow">{mode === "rag" ? "知识问答" : "Agent"}</p>
-            <h1>{mode === "rag" ? "知识问答工作台" : "Agent 工作台"}</h1>
+            <h1>{skillsView ? "Skills 工作台" : mode === "rag" ? "知识问答工作台" : "Agent 工作台"}</h1>
           </div>
           <div className="header-actions">
             <span className="mode-context">{IS_PAGES_DEMO ? "公开模拟演示" : account ? `账号：${account.username}` : "本地单用户模式"}</span>
@@ -265,7 +293,8 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
             />
           </div>
         </header>
-        <section
+        {skillsView ? (models || !account && !IS_PAGES_DEMO ? <SkillsPage available={!!account||IS_PAGES_DEMO} models={models?.items??[]} defaultModel={models?.defaultModel??"flash"} /> :
+          <section className="skills-page"><p role="status">{modelsNotice || "正在加载模型目录…"}</p><button type="button" onClick={()=>setModelsRevision(value=>value+1)}>重新读取模型目录</button></section>) : <><section
           className="conversation-scroll"
           aria-label="对话内容"
           ref={scrollRegion}
@@ -279,6 +308,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
             </aside>
           )}
           {notice && <div className="page-error" role="alert">{notice}</div>}
+          {modelsNotice && <div className="page-error" role="alert">{modelsNotice}<button type="button" onClick={()=>setModelsRevision(value=>value+1)}>重新读取模型目录</button></div>}
           {account && <div className="history-actions">
             <p>{activeConversation.summary?.title || "新对话"}</p>
             <button ref={renameButton} type="button" disabled={resetting || !activeConversation.summary || isConversationActive(state.status)} onClick={() => { setTitleDraft(activeConversation.summary?.title || ""); setRenaming(true); }}>重命名</button>
@@ -310,13 +340,17 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         <Composer
           mode={mode}
           status={state.status}
-          resetting={resetting}
+          resetting={resetting || activeConversation.modelUnconfirmed}
+          modelUnavailable={(!!account || IS_PAGES_DEMO) && !models?.items.some(item=>item.id===activeConversation.model&&item.available)}
+          model={activeConversation.model}
+          models={account || IS_PAGES_DEMO ? models?.items??[] : undefined}
+          onModelChange={value=>void activeConversation.chooseModel(value)}
           unconfirmed={activeConversation.unconfirmed}
           value={draft}
           onValueChange={setDraft}
           onSend={send}
           onStop={() => stop(true)}
-        />
+        /></>}
       </main>
     </div>
   );

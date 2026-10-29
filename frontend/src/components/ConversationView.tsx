@@ -205,6 +205,8 @@ export function ConversationView({
                 {turn.status === "completed" && (
                   <div className="answer-footer">
                     <div className="answer-meta" aria-label="回答元信息">
+                      {turn.usedModel && <span>实际模型 {turn.usedModel}</span>}
+                      {turn.skills?.map(skill => <span key={skill.id}>技能 {skill.name} · {skill.version.slice(0, 8)}</span>)}
                       <span>耗时 {formatLatency(turn.latencyMs)}</span>
                       {mode === "rag" ? <span>索引 {turn.indexVersion}</span> : <span>迭代 {turn.iterations ?? "—"}</span>}
                     </div>

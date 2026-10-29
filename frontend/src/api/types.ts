@@ -20,7 +20,13 @@ export interface RagSource {
   text: string;
 }
 
-export interface RagCompletion {
+export interface CompletionMetadata {
+  requestedModel?: "flash" | "pro";
+  usedModel?: string;
+  skills?: { id: string; name: string; version: string }[];
+}
+
+export interface RagCompletion extends CompletionMetadata {
   answer: string;
   sources: RagSource[];
   warnings: string[];
@@ -37,7 +43,7 @@ export interface AgentToolStep {
   success: boolean | null;
 }
 
-export interface AgentCompletion {
+export interface AgentCompletion extends CompletionMetadata {
   answer: string;
   iterations: number | null;
   latencyMs: number | null;

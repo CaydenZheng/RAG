@@ -166,6 +166,8 @@ npm run dev -- --host 127.0.0.1
 浏览器公开 session ID 只定位对话，不是身份；Cookie 凭据只由服务端验证。
 本轮不授权迁移真实数据或将站点作为多用户公网服务开放，详见 [账号与历史](docs/authentication.md)。
 
+账号工作台新增 Flash／Pro 会话模型选择与 Skills 管理；配置、文件格式和转换边界见 [双模型与 Skills](docs/workspace-models-skills.md)。Pages 对应交互仍为明确标识的模拟。
+
 运行状态接口（供脚本或部署检查）：
 
 - 存活检查：`GET /health`
@@ -189,7 +191,7 @@ npm run dev -- --host 127.0.0.1
 | `MAX_CONTEXT_TOKENS`、`SYSTEM_RESERVE_RATIO`、`CONTEXT_BUFFER_RATIO` | 上下文 Token 预算 |
 | `MAX_CONCURRENT_QUERIES`、`REQUEST_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES` | 请求容量、总时限和 Provider 重试 |
 | `ADMIN_API_KEY`、`ALLOW_UNAUTHENTICATED_ADMIN` | 索引管理密钥及仅限本地开发的显式免认证开关 |
-| `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算；Token 预算按每次模型请求的完整输入字符估算与预留最大输出累计 |
+| `AGENT_MAX_ITERATIONS`、`AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_TOKEN_BUDGET` | Agent 运行预算；规划/最终回答的完整输入按 token 近似计数加 10% 余量，与预留最大输出累计，不作为 Provider 计费数据 |
 | `AGENT_PLANNER_MODE` | `json` 为兼容默认；`native` 使用 OpenAI-compatible 原生 Tool Calling |
 | `AGENT_TIMEOUT_SECONDS`、`AGENT_PLANNER_MAX_TOKENS`、`AGENT_FINAL_MAX_TOKENS` | Agent 时限和生成预算；规划默认 512，最终回答默认 4096 token |
 | `AGENT_TOOL_APPROVAL_TIMEOUT_SECONDS` | Graylist 工具等待调用方批准的时限，默认 25 秒 |
@@ -269,6 +271,8 @@ Agent 通过同一个 `AgentRuntime` 生成普通响应和 SSE 事件。当前�
 - `search_web`：受控外部搜索，属于灰名单工具。
 
 工具调用会校验名称、Host allowlist/denylist、参数、调用次数和总预算；不可信工具输出带明确边界并截断后再交给模型。`AGENT_PLANNER_MODE=json` 保持兼容的 JSON Planner；设为 `native` 时通过 OpenAI-compatible SDK 发送标准工具 Schema，并用 `assistant.tool_calls` 与 `tool_call_id` 续接同一轮调用。两种模式共用 ToolRegistry、预算、Hook、审计、参数校验和结果安全链路。普通与流式 Agent 的 `message` 长度均为 1～2000 个字符。
+
+过去已完成的问答仅作为规划阶段的上下文数据，不作为规划器自己的 assistant 输出范例；最终回答阶段保留自然语言对话角色，持久历史不改写为规划 JSON。扣除下一次规划输入（含 native Schema）前，先检查该次规划与完整最终回答的合计费用；工具检查还保留有界结果的上下文空间。已有工具观察且只够收尾时，跳过后续规划或新工具，用已有结果生成明确说明限制的最终回答；不扣未发出的规划费用，也不追加未执行的 native 工具调用。没有观察或连收尾额度也不足时，返回预算错误。不调高默认上限、不自动重放工具；该运行预算仍是带余量的估算，独立于账号每日硬额度。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

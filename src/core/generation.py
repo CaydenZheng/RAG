@@ -17,6 +17,7 @@ from pocketflow import AsyncNode, Node
 
 from config.settings import settings
 from src.core.index_versions import LEGACY_INDEX_VERSION
+from src.core.run_options import RunOptions, current_run_options
 from src.infra.exchange_context import completed_model, exchange_context, safe_sources
 from src.infra.prompt_manager import prompt_manager
 from src.infra.session_store import CommitPermit, SessionTurn, session_store
@@ -137,6 +138,7 @@ class AnswerInput:
     sources: tuple[dict, ...] = ()
     warnings: tuple[str, ...] = ()
     commit_permit: CommitPermit | None = None
+    options: RunOptions | None = None
 
     def __post_init__(self) -> None:
         if self.session_id and self.session_epoch is None:
@@ -158,6 +160,7 @@ class AnswerInput:
             index_version=shared.get("index_version", LEGACY_INDEX_VERSION),
             abstain_reason=shared.get("abstain_reason", ""),
             session_epoch=shared.get("session_epoch"),
+            options=current_run_options.get(),
             sources=safe_sources(shared.get("sources", [])),
             warnings=tuple(warning for warning in shared.get("warnings", []) if warning in {
                 "rerank_timeout", "rerank_unavailable", "insufficient_evidence", "evidence_score_unavailable",
@@ -206,7 +209,7 @@ class AnswerService:
         with tracer.stage("answer_generation"):
             answer = await chat_with_fallback_async(
                 self._messages(answer_input),
-                model=config["model"],
+                model=answer_input.options.model if answer_input.options else config["model"],
                 temperature=config["temperature"],
                 max_tokens=config["max_tokens"],
                 index_version=answer_input.index_version,
@@ -230,7 +233,7 @@ class AnswerService:
         with tracer.stage("answer_generation"):
             provider_stream = llm_client.chat_stream_async(
                 self._messages(answer_input),
-                model=config["model"],
+                model=answer_input.options.model if answer_input.options else config["model"],
                 temperature=config["temperature"],
                 max_tokens=config["max_tokens"],
             )
