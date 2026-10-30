@@ -41,12 +41,45 @@
   color: var(--accent);
   font-size: 12px;
   font-weight: 500;
+  border: 0;
   transition: background-color var(--t);
 }
 
 .skills-action:hover {
   background: var(--accent-soft-strong);
 }
+
+.skills-action:disabled { opacity: 0.5; }
+.creator-availability { color: var(--muted); }
+
+.skill-creator-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.skill-creator-dialog {
+  width: min(640px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-panel);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-float);
+}
+
+.skill-creator-dialog .skill-detail {
+  max-width: none;
+  max-height: calc(100dvh - 32px);
+}
+
+.skill-creator-dialog .skill-detail-body { min-height: 0; }
+.skill-creator-dialog h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.skill-creator-form { display: grid; gap: 12px; }
+.skill-creator-form label { display: grid; gap: 6px; font-size: 12.5px; }
+.skill-creator-form input[type="file"] { width: 100%; }
 
 .skills-action input {
   position: absolute;
@@ -173,6 +206,11 @@
 }
 
 /* 详情弹层 */
+.skill-detail-bg,
+.skill-creator-dialog::backdrop {
+  background: light-dark(rgb(20 20 25 / 18%), rgb(0 0 0 / 46%));
+}
+
 .skill-detail-bg {
   position: fixed;
   inset: 0;
@@ -180,7 +218,6 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: light-dark(rgb(20 20 25 / 18%), rgb(0 0 0 / 46%));
 }
 
 .skill-detail {

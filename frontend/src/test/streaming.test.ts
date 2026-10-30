@@ -4,8 +4,24 @@ import { streamAgentAnswer } from "../api/agentClient";
 import { PublicClientError } from "../api/errors";
 import { streamRagAnswer } from "../api/ragClient";
 import { readSseEvents } from "../api/sse";
+import { requireEventStream } from "../api/http";
 
 const encoder = new TextEncoder();
+
+describe("pre-stream public service errors", () => {
+  it.each([
+    ["retrieval_failed", "检索服务暂时不可用，请稍后重试。"],
+    ["query_capacity_exceeded", "服务繁忙，请稍后重试。"],
+    ["unlisted_private_failure", "服务尚未就绪，请稍后重试。"],
+    ["constructor", "服务尚未就绪，请稍后重试。"],
+    ["toString", "服务尚未就绪，请稍后重试。"],
+  ])("projects HTTP 503 %s without exposing the server message", async (code, message) => {
+    const response = new Response(JSON.stringify({ detail: { code, message: "PRIVATE_EXCEPTION_CONTENT" } }), {
+      status: 503, headers: { "Content-Type": "application/json" },
+    });
+    await expect(requireEventStream(response)).rejects.toMatchObject({ code: "service_unavailable", message });
+  });
+});
 
 function sseResponse(chunks: string[], status = 200): Response {
   const body = new ReadableStream<Uint8Array>({
