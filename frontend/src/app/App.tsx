@@ -291,7 +291,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         </button>
         {skillsView ? (
           models || (!account && !IS_PAGES_DEMO) ? (
-            <SkillsPage available={!!account || IS_PAGES_DEMO} />
+            <SkillsPage available={!!account || IS_PAGES_DEMO} models={models?.items} defaultModel={models?.defaultModel} />
           ) : (
             <section className="skills-page">
               <p role="status">{modelsNotice || "正在加载模型目录…"}</p>

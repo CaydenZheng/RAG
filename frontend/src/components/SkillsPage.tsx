@@ -1,16 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 
-import { deleteSkill, readSkill, readSkills, setSkill, uploadSkill, type SkillItem } from "../api/workspaceClient";
+import { deleteSkill, readSkill, readSkills, setSkill, uploadSkill, type ModelChoice, type ModelOption, type SkillItem } from "../api/workspaceClient";
 import { isAbortFailure, toPublicMessage } from "../api/errors";
 import { IS_PAGES_DEMO } from "../app/runtime";
 import { RowMenu } from "./RowMenu";
+import { SkillCreatorDialog } from "./SkillCreatorDialog";
 
-export function SkillsPage({ available }: { available: boolean }): React.JSX.Element {
+export function SkillsPage({ available, models = [], defaultModel = "flash" }: {
+  available: boolean; models?: ModelOption[]; defaultModel?: ModelChoice;
+}): React.JSX.Element {
   const [items, setItems] = useState<SkillItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [status, setStatus] = useState("");
   const [selected, setSelected] = useState<SkillItem | null>(null);
+  const [creatorOpen, setCreatorOpen] = useState(false);
   const operation = useRef<AbortController | null>(null);
   const active = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -71,12 +75,19 @@ export function SkillsPage({ available }: { available: boolean }): React.JSX.Ele
     if (!signal.aborted) setItems(values);
   }
 
-  async function saveUpload(file: File, signal: AbortSignal): Promise<void> {
-    const saved = await uploadSkill(file, signal);
-    await refresh(signal);
-    if (!signal.aborted) setStatus(saved.enabled
-      ? "技能已上传，当前启用；已保留原有状态。"
-      : "技能已上传，当前关闭；请明确启用后使用。");
+  async function saveUpload(file: File, signal: AbortSignal): Promise<SkillItem> {
+    try {
+      const saved = await uploadSkill(file, signal);
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      await refresh(signal);
+      if (!signal.aborted) setStatus(saved.enabled
+        ? "技能已上传，当前启用；已保留原有状态。"
+        : "技能已上传，当前关闭；请明确启用后使用。");
+      return saved;
+    } catch (error) {
+      if (!isAbortFailure(error, signal)) setNotice(toPublicMessage(error));
+      throw error;
+    }
   }
 
   function openDetail(item: SkillItem): void {
@@ -117,6 +128,9 @@ export function SkillsPage({ available }: { available: boolean }): React.JSX.Ele
         <h1 ref={heading} tabIndex={-1}>技能</h1>
         <p className="skills-sub">对 Agent 生效，不影响知识问答；开关只影响后续请求。</p>
       </div>
+      <div className="skill-creator-actions">
+      <button className="skills-action" type="button" disabled={busy || !items.some(item => item.id === "skill-creator" && item.enabled)}
+        aria-describedby="creatorAvailability" onClick={() => setCreatorOpen(true)}>从资料生成技能</button>
       <label className="skills-action">
         上传技能
         <input
@@ -127,14 +141,18 @@ export function SkillsPage({ available }: { available: boolean }): React.JSX.Ele
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = "";
-            if (file) void perform(signal => saveUpload(file, signal));
+            if (file) void perform(async signal => { await saveUpload(file, signal); });
           }}
         />
       </label>
+      </div>
     </div>
+    <p className="skills-sub creator-availability" id="creatorAvailability">启用 skill-creator 后，可从原始资料生成技能文件。</p>
 
     {IS_PAGES_DEMO && <p className="skills-sub">模拟数据，不连接模型，刷新会重置。</p>}
-    {notice && <p className="skills-notice" role="alert">{notice}</p>}
+    {notice && <div className="skills-notice" role="alert"><p>{notice}</p>
+      <button className="skills-action" type="button" disabled={busy} onClick={() => void perform(refresh)}>刷新目录</button>
+    </div>}
     <p className="skills-status" role="status" aria-live="polite">{status || (busy ? "操作中，请稍候…" : "")}</p>
 
     <ul className="skill-rows" aria-busy={busy}>
@@ -195,5 +213,9 @@ export function SkillsPage({ available }: { available: boolean }): React.JSX.Ele
         </section>
       </div>
     )}
+    {creatorOpen && <SkillCreatorDialog models={models} defaultModel={defaultModel} onUpload={saveUpload} onClose={uploadUnconfirmed => {
+      setCreatorOpen(false);
+      if (uploadUnconfirmed) setNotice("上传结果未确认，请刷新目录核对。");
+    }} />}
   </section>;
 }

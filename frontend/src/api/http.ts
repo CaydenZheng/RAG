@@ -3,6 +3,8 @@ import { isRecord } from "./sse";
 
 // 后端明确返回的公开错误码 -> 用户可读文案；未列入的仍按状态码兜底。
 const RESPONSE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  retrieval_failed: "检索服务暂时不可用，请稍后重试。",
+  query_capacity_exceeded: "服务繁忙，请稍后重试。",
   skill_not_selected: "所选技能不可用，请刷新技能列表后重试。",
   skill_selection_limit: "单轮选择的技能过多，请减少后重试。",
   conversation_busy: "该会话正在生成，请停止或稍后重试。",
@@ -27,11 +29,11 @@ export async function requireEventStream(response: Response): Promise<ReadableSt
     throw new PublicClientError("auth_required", "登录或安全校验已失效，请重新登录后重试。");
   }
 
-  const code: string = response.status === 422 || response.status === 409 || response.status === 429
+  const code: string = [409, 422, 429, 503].includes(response.status)
     ? await publicErrorCode(response)
     : "";
-  const specific: string | undefined = code ? RESPONSE_MESSAGES[code] : undefined;
-  if (specific) throw new PublicClientError("validation", specific);
+  const specific: string | undefined = Object.hasOwn(RESPONSE_MESSAGES, code) ? RESPONSE_MESSAGES[code] : undefined;
+  if (specific) throw new PublicClientError(response.status === 503 ? "service_unavailable" : "validation", specific);
 
   if (response.status === 409) {
     throw new PublicClientError("validation", "会话已变化、正在生成或该回合已提交；请刷新历史核对，不要重发同一轮。");

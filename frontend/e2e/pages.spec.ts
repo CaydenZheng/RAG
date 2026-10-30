@@ -138,7 +138,9 @@ test("models and Skills are explicitly simulated and never contact a backend",as
   await expect(picker.getByText("skill-creator")).toHaveCount(0);
   await page.keyboard.press("Enter");
   await expect(page.getByRole("textbox")).toHaveValue("/concise-writing ");
-  await page.getByRole("textbox").fill("/concise-writing 模拟任务");
+  await page.getByRole("textbox").fill("/concise-writing\n模拟任务");
+  await expect(picker).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"发送",exact:true})).toBeEnabled();
   await page.getByRole("button",{name:"发送",exact:true}).click();
   await expect(page.getByText("模拟任务",{exact:false})).toBeVisible();
   await page.getByRole("link",{name:"Skills 技能",exact:true}).click();
@@ -148,5 +150,63 @@ test("models and Skills are explicitly simulated and never contact a backend",as
   await page.getByRole("button",{name:"关闭详情",exact:true}).click();
   await page.reload();
   await expect(page.getByRole("checkbox",{name:"启用 skill-creator"})).not.toBeChecked();
+  expect(connections).toEqual([]);
+});
+
+test("creator modal restores its complete simulated flow, keyboard focus and narrow layout", async ({page}) => {
+  const connections: string[] = [];
+  page.on("request", request => { if (["fetch", "xhr", "websocket", "eventsource"].includes(request.resourceType())) connections.push(request.url()); });
+  await page.getByRole("link", {name:"Skills 技能", exact:true}).click();
+  const open = page.getByRole("button", {name:"从资料生成技能", exact:true});
+  await expect(open).toBeDisabled();
+  await page.getByRole("checkbox", {name:"启用 skill-creator", exact:true}).click();
+  await expect(open).toBeEnabled(); await open.click();
+  const dialog = page.getByRole("dialog", {name:"从资料生成技能", exact:true});
+  await expect(dialog).toBeVisible();
+  for (let index = 0; index < 8; index += 1) {
+    await page.keyboard.press("Tab");
+    expect(await dialog.evaluate(element => element.contains(document.activeElement))).toBe(true);
+  }
+  for (let index = 0; index < 8; index += 1) {
+    await page.keyboard.press("Shift+Tab");
+    expect(await dialog.evaluate(element => element.contains(document.activeElement))).toBe(true);
+  }
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0); await expect(open).toBeFocused();
+  await open.click();
+  await dialog.getByLabel("导入原始资料").setInputFiles({name:"notes.txt", mimeType:"text/plain", buffer:Buffer.from("public synthetic notes")});
+  await dialog.getByRole("combobox", {name:"模型", exact:true}).selectOption("pro");
+  await dialog.getByRole("button", {name:"开始整理", exact:true}).click();
+  await expect(dialog.getByRole("status")).toContainText("模拟转换完成");
+  await expect(dialog.getByRole("status")).not.toContainText("技能校验通过");
+  await expect(page.locator(".skill-row")).toHaveCount(2);
+  await dialog.getByLabel("导入原始资料").setInputFiles({name:"replacement.txt", mimeType:"text/plain", buffer:Buffer.from("replacement synthetic notes")});
+  await expect(dialog.getByLabel("技能转换预览")).toHaveCount(0);
+  await expect(dialog.getByRole("link", {name:"下载技能文件", exact:true})).toHaveCount(0);
+  await expect(dialog.getByRole("button", {name:"上传此技能（新项默认关闭）", exact:true})).toHaveCount(0);
+  await expect(dialog.getByRole("status")).toBeEmpty();
+  await dialog.getByRole("button", {name:"开始整理", exact:true}).click();
+  await expect(dialog.getByRole("status")).toContainText("模拟转换完成");
+  const pendingDownload = page.waitForEvent("download");
+  await dialog.getByRole("link", {name:"下载技能文件", exact:true}).click();
+  const download = await pendingDownload;
+  expect(download.suggestedFilename()).toBe("simulated-writing.md");
+  await dialog.getByRole("button", {name:"上传此技能（新项默认关闭）", exact:true}).click();
+  await expect(dialog.getByRole("status")).toContainText("当前关闭");
+  await expect(page.locator(".skill-row")).toHaveCount(3);
+  await dialog.getByRole("button", {name:"关闭生成窗口", exact:true}).click();
+  await expect(open).toBeFocused();
+  await page.setViewportSize({width:375,height:812});
+  await page.emulateMedia({colorScheme:"dark", reducedMotion:"reduce"});
+  await open.click(); await expect(dialog).toBeVisible();
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await expect(dialog.getByRole("button", {name:"开始整理", exact:true})).toBeDisabled();
+  await expect(dialog.getByRole("link", {name:"下载技能文件", exact:true})).toHaveCount(0);
+  await page.keyboard.press("Escape"); await expect(open).toBeFocused();
+  await page.setViewportSize({width:812,height:375});
+  await open.click();
+  await expect(dialog.getByRole("button", {name:"关闭生成窗口", exact:true})).toBeInViewport();
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.keyboard.press("Escape"); await expect(open).toBeFocused();
   expect(connections).toEqual([]);
 });

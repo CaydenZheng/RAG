@@ -162,6 +162,30 @@ describe("creator transport",()=>{
 });
 
 describe("Skills page",()=>{
+  it("unlocks document conversion only after the builtin creator is confirmed enabled", async () => {
+    const fetch = vi.fn((path: string, init?: RequestInit): Promise<Response> => Promise.resolve(
+      json(init?.method === "PATCH" ? {...CREATOR, enabled:true, revision:1} : {items:[CREATOR]}),
+    ));
+    vi.stubGlobal("fetch", fetch);
+    const user = userEvent.setup();
+    render(<SkillsPage available />);
+    const toggle = await screen.findByRole("checkbox", {name:"启用 skill-creator"});
+    const open = screen.getByRole("button", {name:"从资料生成技能"});
+    expect(open).toBeDisabled();
+    await user.click(toggle);
+    await waitFor(() => expect(open).toBeEnabled());
+  });
+  it("retries a failed catalog read without replaying a write", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(json({}, 503)).mockResolvedValue(json({items:[CREATOR]}));
+    vi.stubGlobal("fetch", fetch);
+    const user = userEvent.setup();
+    render(<SkillsPage available />);
+    const retry = await screen.findByRole("button", {name:"刷新目录"});
+    await user.click(retry);
+    expect(await screen.findByRole("checkbox", {name:"启用 skill-creator"})).toBeVisible();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  });
   it("uploads a skill and reports the preserved enabled state",async()=>{
     const custom = {...CREATOR,id:"custom",name:"concise",builtin:false,enabled:true};
     const fetch = vi.fn((path:string,init?:RequestInit):Promise<Response>=>{
@@ -257,6 +281,41 @@ describe("composer skill picker",()=>{
     return <Composer mode="agent" status="idle" resetting={false} skillsEnabled value={value} onValueChange={setValue} onSend={onSend} onStop={vi.fn()} />;
   }
 
+  it("retries a failed directory and never sends an unresolved command as plain text", async () => {
+    const fetch = vi.fn().mockRejectedValueOnce(new TypeError("PRIVATE_NETWORK_DETAIL")).mockResolvedValue(json({items:skills}));
+    vi.stubGlobal("fetch", fetch);
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<Harness onSend={onSend} />);
+    const input = screen.getByRole("textbox", {name:"向 Agent 发送任务"});
+    await user.type(input, "/concise task");
+    const retry = await screen.findByRole("button", {name:"重试技能列表"});
+    fireEvent.submit(input.closest("form")!);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.queryByText("PRIVATE_NETWORK_DETAIL")).not.toBeInTheDocument();
+    await user.click(retry);
+    await waitFor(() => expect(screen.getByRole("button", {name:"发送"})).toBeEnabled());
+    await user.click(screen.getByRole("button", {name:"发送"}));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("task", ["c1"]));
+  });
+
+  it("keeps commands blocked during directory loading and after an empty directory", async () => {
+    let finish: ((response: Response) => void) | undefined;
+    const fetch = vi.fn(() => new Promise<Response>(resolve => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetch);
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<Harness onSend={onSend} />);
+    const input = screen.getByRole("textbox", {name:"向 Agent 发送任务"});
+    await user.type(input, "/missing task");
+    fireEvent.submit(input.closest("form")!);
+    expect(onSend).not.toHaveBeenCalled();
+    await act(async () => { finish?.(json({items:[]})); });
+    fireEvent.submit(input.closest("form")!);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("lists only enabled custom skills and inserts the chosen name",async()=>{
     vi.stubGlobal("fetch",vi.fn().mockResolvedValue(json({items:skills})));
     const user=userEvent.setup();
@@ -286,6 +345,23 @@ describe("composer skill picker",()=>{
     await waitFor(()=>expect(onSend).toHaveBeenCalledWith("整理部署要点",["c1"]));
   });
 
+  it.each(["\n", "\t", "\r\n", "\u00a0"])("sends a resolved command separated by %j through button and form submission", async (separator) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({items:skills})));
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<Harness onSend={onSend} />);
+    const input = screen.getByRole("textbox", {name:"向 Agent 发送任务"});
+    await user.type(input, "/");
+    await screen.findByRole("option", {name:/concise/});
+    fireEvent.change(input, {target:{value:`/concise${separator}总结`}});
+    expect(screen.queryByRole("listbox", {name:"选择技能"})).not.toBeInTheDocument();
+    const send = screen.getByRole("button", {name:"发送"});
+    expect(send).toBeEnabled();
+    await user.click(send);
+    fireEvent.submit(input.closest("form")!);
+    expect(onSend.mock.calls).toEqual([["总结", ["c1"]], ["总结", ["c1"]]]);
+  });
+
   it("blocks sending a bare command and unknown skill names",async()=>{
     vi.stubGlobal("fetch",vi.fn().mockResolvedValue(json({items:skills})));
     const onSend=vi.fn().mockResolvedValue(undefined);
@@ -296,6 +372,13 @@ describe("composer skill picker",()=>{
     await waitFor(()=>expect(screen.getByRole("button",{name:"请补充任务内容后再发送"})).toBeDisabled());
     fireEvent.submit(input.closest("form")!);
     expect(onSend).not.toHaveBeenCalled();
+
+    for (const value of ["/concise\n", "/concise\t"]) {
+      fireEvent.change(input, {target:{value}});
+      expect(screen.getByRole("button", {name:"请补充任务内容后再发送"})).toBeDisabled();
+      fireEvent.submit(input.closest("form")!);
+      expect(onSend).not.toHaveBeenCalled();
+    }
 
     await user.clear(input);
     await user.type(input,"/nope 做点什么");

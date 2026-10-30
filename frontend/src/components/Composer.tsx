@@ -65,15 +65,18 @@ export function Composer({
 
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [skillsFailed, setSkillsFailed] = useState(false);
+  const [skillsLoaded, setSkillsLoaded] = useState(false);
   const [skillIndex, setSkillIndex] = useState(0);
 
   // 内置技能（skill-creator）只解锁"整理为技能"，不参与普通聊天选择。
   const selectable = skills.filter((skill) => skill.enabled && !skill.builtin);
   const command = mode === "agent" ? parseSkillCommand(value) : null;
   const matched = command ? selectable.find((skill) => skill.name === command.name) ?? null : null;
-  const commandUnresolved = command !== null && !matched && skills.length > 0;
+  const commandUnresolved = command !== null && !matched && skillsLoaded;
   const bodyMissing = command !== null && matched !== null && !command.body;
-  const commandHint = bodyMissing
+  const commandHint = command !== null && skillsEnabled && !skillsLoaded
+    ? skillsFailed ? "技能列表暂不可用，请重试加载后再发送" : "正在加载技能，请稍候"
+    : bodyMissing
     ? "请补充任务内容后再发送"
     : commandUnresolved ? "所选技能不可用，请刷新技能列表后重试" : "";
 
@@ -82,7 +85,7 @@ export function Composer({
   // 选中技能后会变成 "/name "，此时收起列表，只保留一次选择机会。
   const slashOpen = mode === "agent" && skillsEnabled && !blocked
     && value.startsWith("/")
-    && !slashToken.includes(" ");
+    && !/\s/.test(slashToken);
   const slashItems = selectable.filter((skill) => (
     !slashQuery
     || skill.name.toLowerCase().includes(slashQuery)
@@ -97,15 +100,15 @@ export function Composer({
     wasBlocked.current = blocked;
   }, [blocked]);
 
-  const needsSkills = (slashOpen || command !== null) && skills.length === 0 && !skillsFailed;
+  const needsSkills = !blocked && (slashOpen || command !== null) && !skillsLoaded && !skillsFailed;
   useEffect(() => {
     if (!skillsEnabled || mode !== "agent" || !needsSkills) return undefined;
     const controller = new AbortController();
     void readSkills(controller.signal)
-      .then((items) => { if (!controller.signal.aborted) setSkills(items); })
+      .then((items) => { if (!controller.signal.aborted) { setSkills(items); setSkillsLoaded(true); } })
       .catch(() => { if (!controller.signal.aborted) setSkillsFailed(true); });
     return () => controller.abort();
-  }, [command, mode, needsSkills, skillsEnabled]);
+  }, [mode, needsSkills, skillsEnabled]);
 
   useEffect(() => {
     setSkillIndex(0);
@@ -116,11 +119,12 @@ export function Composer({
     textarea.current?.focus();
   }
 
-  const notice = blockedMessage || commandHint;
+  const needsSkillsRetry = skillsFailed && (slashOpen || command !== null);
+  const notice = blockedMessage || commandHint || (needsSkillsRetry ? "技能列表暂不可用，请重试加载" : "");
   const noticeId = blockedMessage ? "composerBlockedReason" : undefined;
 
   const submit = (): void => {
-    if (blocked || commandHint) return;
+    if (blocked || commandHint || slashOpen) return;
     if (matched && command) {
       if (!command.body) return;
       void onSend(command.body, [matched.id]);
@@ -145,7 +149,7 @@ export function Composer({
           <div className="slash-menu" role="listbox" aria-label="选择技能">
             <p className="slash-title">技能</p>
             {slashItems.length === 0 ? (
-              <p className="slash-empty">{skillsFailed ? "技能列表暂不可用" : "没有匹配的已启用技能"}</p>
+              <p className="slash-empty">{skillsFailed ? "技能列表暂不可用" : !skillsLoaded ? "正在加载技能…" : "没有匹配的已启用技能"}</p>
             ) : slashItems.map((skill, index) => (
               <button
                 key={skill.id}
@@ -231,7 +235,7 @@ export function Composer({
               停止
             </button>
           ) : (
-            <button className="send-button" type="submit" disabled={blocked || Boolean(commandHint) || !value.trim()}>
+            <button className="send-button" type="submit" disabled={blocked || slashOpen || Boolean(commandHint) || !value.trim()}>
               <ArrowUp size={16} aria-hidden="true" />
               <span className="sr-only">{notice || "发送"}</span>
             </button>
@@ -241,6 +245,9 @@ export function Composer({
       {notice && (
         <div className="composer-notice" role="status">
           <p id={noticeId}>{notice}</p>
+          {needsSkillsRetry && <button type="button" disabled={blocked} onClick={() => {
+            setSkillsFailed(false); textarea.current?.focus();
+          }}>重试技能列表</button>}
           {unconfirmed && onReconcile && (
             <button type="button" onClick={onReconcile}>核对本轮历史</button>
           )}
