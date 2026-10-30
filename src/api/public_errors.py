@@ -1,6 +1,8 @@
 """Stable public errors for RAG HTTP and SSE responses."""
 
 PUBLIC_ERRORS = {
+    "skill_not_selected": "所选技能不可用，请刷新技能列表后重试",
+    "skill_selection_limit": "单轮选择技能数量超过上限（32 个）",
     "model_invalid": "请选择 Flash 或 Pro",
     "model_not_configured": "所选模型尚未配置，不能自动切换其他模型",
     "skill_invalid": "技能格式无效，请使用规定的单文件 Markdown 格式",

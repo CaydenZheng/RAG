@@ -218,6 +218,129 @@ def test_models_preferences_selection_and_transcript_do_not_rewrite_history(acco
     assert observed == ["fixture-pro", "fixture-flash"]
 
 
+@pytest.mark.parametrize("endpoint", ["/agent/chat", "/agent/chat/stream"])
+def test_selected_skills_reach_runtime_done_and_history(accounts: Any, monkeypatch: pytest.MonkeyPatch, endpoint: str) -> None:
+    from src.agent.memory import MemoryTurn
+    from src.core.agent_runtime import AgentEvent, AgentEventKind, AgentResponse
+    from src.core.run_options import current_run_options, skill_instructions
+
+    browser = accounts.browsers["alice"]
+    items = []
+    for name in ("alpha", "beta"):
+        item = browser.post("/skills", files={"file": (name + ".md", skill(name, "ONLY_" + name))}).json()
+        assert browser.patch(f"/skills/{item['id']}", json={"enabled": True, "expected_revision": 0}).status_code == 200
+        items.append(item)
+    observed = []
+
+    async def execute(session_id: str, message: str) -> AgentResponse:
+        options = current_run_options.get()
+        assert options is not None
+        observed.append([entry.id for entry in options.skills])
+        for planning in (False, True):
+            prompt = skill_instructions(options, planning=planning)
+            assert ("ONLY_alpha" in prompt) == (items[0]["id"] in observed[-1])
+            assert ("ONLY_beta" in prompt) == (items[1]["id"] in observed[-1])
+        await accounts.memory.add_turns_async(session_id, [MemoryTurn("user", message), MemoryTurn("assistant", "done")])
+        return AgentResponse(session_id, "done")
+
+    async def events(session_id: str, message: str):
+        response = await execute(session_id, message)
+        yield AgentEvent(AgentEventKind.CHUNK, chunk="done")
+        yield AgentEvent(AgentEventKind.DONE, response=response)
+
+    monkeypatch.setattr(accounts.api.agent_runtime, "execute", execute)
+    monkeypatch.setattr(accounts.api.agent_runtime, "events", events, raising=False)
+    all_ids = [item["id"] for item in items]
+    for selection, expected in (({}, all_ids), ({"skill_ids": None}, all_ids), ({"skill_ids": []}, all_ids),
+                                ({"skill_ids": [all_ids[1]]}, [all_ids[1]]),
+                                ({"skill_ids": [all_ids[1], all_ids[0], all_ids[0]]}, all_ids)):
+        public_id = str(uuid.uuid4())
+        body = {"conversation_id": public_id, "client_turn_id": str(uuid.uuid4()), "message": "question", **selection}
+        response = browser.post(endpoint, json=body)
+        assert response.status_code == 200, response.text
+        assert observed[-1] == expected
+        if endpoint.endswith("/stream"):
+            done = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")][-1]
+            assert [entry["id"] for entry in done["skills"]] == expected
+        history = browser.get(f"/conversations/{public_id}/turns", params={"client_turn_id": body["client_turn_id"]}).json()["items"]
+        assert [entry["id"] for entry in history[0]["skills"]] == expected
+        calls = len(observed)
+        assert browser.post(endpoint, json=body).status_code == 409
+        assert len(observed) == calls
+
+
+@pytest.mark.parametrize("endpoint", ["/agent/chat", "/agent/chat/stream"])
+def test_invalid_selection_rejected_before_runtime_and_turn_id_remains_available(accounts: Any, monkeypatch: pytest.MonkeyPatch, endpoint: str) -> None:
+    from src.core.skills import MAX_SELECTED_SKILLS
+
+    browser = accounts.browsers["alice"]
+    disabled = browser.post("/skills", files={"file": ("disabled.md", skill())}).json()["id"]
+    foreign = accounts.browsers["bob"].post("/skills", files={"file": ("foreign.md", skill())}).json()["id"]
+    assert accounts.browsers["bob"].patch(f"/skills/{foreign}", json={"enabled": True, "expected_revision": 0}).status_code == 200
+
+    def forbidden(*args: Any, **kwargs: Any):
+        pytest.fail("Invalid skill selection reached Agent runtime")
+
+    original = accounts.api.agent_runtime.execute
+    monkeypatch.setattr(accounts.api.agent_runtime, "execute", forbidden)
+    monkeypatch.setattr(accounts.api.agent_runtime, "events", forbidden, raising=False)
+    public_id, turn_id = str(uuid.uuid4()), str(uuid.uuid4())
+    body = {"conversation_id": public_id, "client_turn_id": turn_id, "message": "question"}
+    errors = []
+    for skill_id in (disabled, foreign, "missing", "skill-creator"):
+        response = browser.post(endpoint, json={**body, "skill_ids": [skill_id]})
+        assert response.status_code == 422
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.json()["detail"]["code"] == "skill_not_selected"
+        errors.append(response.json())
+    assert all(error == errors[0] for error in errors)
+    response = browser.post(endpoint, json={**body, "skill_ids": [disabled] * (MAX_SELECTED_SKILLS + 1)})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "skill_selection_limit"
+    assert browser.get(f"/conversations/{public_id}/turns").json()["items"] == []
+    monkeypatch.setattr(accounts.api.agent_runtime, "execute", original)
+    assert browser.post("/agent/chat", json=body).status_code == 200
+
+
+@pytest.mark.parametrize("selection", [None, [], ["missing"]])
+@pytest.mark.parametrize("endpoint", ["/agent/chat", "/agent/chat/stream"])
+def test_anonymous_explicit_skill_selection_requires_auth(accounts: Any, monkeypatch: pytest.MonkeyPatch, selection: Any, endpoint: str) -> None:
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "auth_enabled", False)
+    response = accounts.browsers["alice"].post(endpoint, json={"message": "question", "skill_ids": selection})
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "auth_required"
+
+
+@pytest.mark.parametrize("selection", ["", "missing"])
+def test_rag_stream_rejects_skill_parameter(accounts: Any, selection: str) -> None:
+    response = accounts.browsers["alice"].get("/query/stream", params={"query": "question", "skill_ids": selection})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "skill_not_selected"
+
+
+def test_selection_accepts_full_custom_skill_limit_and_validates_id_shape(accounts: Any) -> None:
+    from pydantic import ValidationError
+
+    from src.api.schemas import AgentChatRequest
+    from src.core.skills import MAX_CUSTOM_SKILLS, MAX_SELECTED_SKILLS, validate_skill
+    from src.infra.skill_store import SkillStore
+
+    assert MAX_SELECTED_SKILLS == MAX_CUSTOM_SKILLS
+    with authorize(accounts.service, accounts.logins["alice"]):
+        store = SkillStore(accounts.store)
+        ids = []
+        for index in range(MAX_CUSTOM_SKILLS):
+            item = store.upload(validate_skill(skill(f"skill-{index:02}", "x")))
+            store.update(item["id"], True, 0)
+            ids.append(item["id"])
+        assert [item.id for item in store.snapshot(None, "flash", agent=True, skill_ids=ids).skills] == ids
+    for value in ([""], ["x" * 65], [1], "id"):
+        with pytest.raises(ValidationError):
+            AgentChatRequest(message="question", skill_ids=value)
+
+
 def test_skill_snapshot_survives_disable_delete_and_never_contains_creator(accounts: Any) -> None:
     from src.infra.skill_store import SkillStore
 

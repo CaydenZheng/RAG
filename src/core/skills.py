@@ -12,6 +12,7 @@ from src.core.run_options import WorkspaceError
 MAX_SKILL_BYTES: int = 64 * 1024
 MAX_SKILL_BODY_CHARS: int = 8000
 MAX_CUSTOM_SKILLS: int = 32
+MAX_SELECTED_SKILLS: int = MAX_CUSTOM_SKILLS
 MAX_ENABLED_SKILL_TOKENS: int = 2048
 CREATOR_ID: str = "skill-creator"
 CREATOR_BODY: str = (

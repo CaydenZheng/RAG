@@ -75,9 +75,11 @@ def begin_exchange(
     *,
     allow_empty: bool = False,
     model: ModelChoice | None = None,
+    skill_ids: list[str] | None = None,
+    skill_ids_provided: bool = False,
 ) -> RequestSession:
     """Validate duplicate keys before retrieval, planning or tool side effects."""
-    if model is not None and not settings.auth_enabled:
+    if (model is not None or skill_ids_provided or skill_ids is not None) and not settings.auth_enabled:
         raise HTTPException(401, detail=public_error("auth_required"))
     if client_turn_id is not None:
         client_turn_id = identifier(client_turn_id)
@@ -98,7 +100,7 @@ def begin_exchange(
             client_turn_id if client_turn_id is not None else str(uuid.uuid4())
         )
         stores.session_store.ensure_new_turn(session.storage_id, turn_id)
-        options = SkillStore(stores.session_store).snapshot(session.public_id, model, agent=mode == "agent")
+        options = SkillStore(stores.session_store).snapshot(session.public_id, model, agent=mode == "agent", skill_ids=skill_ids)
         current_run_options.set(options)
         exchange_context.set(ExchangeContext(turn_id, question, requested_model=options.choice,
             skills=tuple({"id": skill.id, "name": skill.name, "version": skill.version} for skill in options.skills)))

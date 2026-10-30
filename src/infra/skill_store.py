@@ -20,6 +20,7 @@ from src.core.skills import (
     CREATOR_ID,
     MAX_CUSTOM_SKILLS,
     MAX_ENABLED_SKILL_TOKENS,
+    MAX_SELECTED_SKILLS,
     SkillDocument,
 )
 from src.security.request_authorization import AuthorizationRevoked, PrivateSessionError
@@ -173,10 +174,16 @@ class SkillStore:
             self._commit(connection)
         return {"default_model": choice, "revision": revision + 1}
 
-    def snapshot(self, public_id: str | None, explicit: ModelChoice | None, *, agent: bool) -> RunOptions:
+    def snapshot(self, public_id: str | None, explicit: ModelChoice | None, *, agent: bool,
+                 skill_ids: list[str] | None = None) -> RunOptions:
         owner: str = self.store._owner_id()
         with closing(self.store._connect()) as connection, connection:
             connection.execute("BEGIN")
+            if skill_ids is not None and len(skill_ids) > MAX_SELECTED_SKILLS:
+                raise WorkspaceError("skill_selection_limit")
+            requested: list[str] = list(dict.fromkeys(skill_ids or []))
+            if requested and not agent:
+                raise WorkspaceError("skill_not_selected")
             selected: str | None = None
             used: str | None = None
             if public_id:
@@ -187,9 +194,16 @@ class SkillStore:
                 used = row[1]
             preference = connection.execute("SELECT default_model FROM workspace_preferences WHERE owner_user_id=?", (owner,)).fetchone()
             choice: ModelChoice = explicit or conversation_model(selected, used, preference[0] if preference else "flash")
+            sql: str = "SELECT id,name,version,body FROM skills WHERE owner_user_id=? AND enabled=1"
+            parameters: list[str] = [owner]
+            if requested:
+                sql += " AND id IN (" + ",".join("?" for _ in requested) + ")"
+                parameters.extend(requested)
             skills: tuple[SkillSnapshot, ...] = tuple(
-                SkillSnapshot(*row) for row in connection.execute("SELECT id,name,version,body FROM skills WHERE owner_user_id=? AND enabled=1 ORDER BY name,id", (owner,))
+                SkillSnapshot(*row) for row in connection.execute(sql + " ORDER BY name,id", parameters)
             ) if agent else ()
+            if requested and len(skills) != len(requested):
+                raise WorkspaceError("skill_not_selected")
             return RunOptions(choice, resolve_model(choice), skills)
 
     def claim_creator(self, operation_id: str, *, can_commit: "CommitPermit | None" = None) -> None:

@@ -1,7 +1,7 @@
 """Request and response models for the HTTP interface."""
 
 import json
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -92,6 +92,7 @@ class AgentChatRequest(BaseModel):
     conversation_id: str | None = None
     client_turn_id: str | None = None
     model: ModelChoice | None = None
+    skill_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] | None = None
     session_id: str = Field(default="", description="会话 ID，空则自动生成")
     message: str = Field(
         ...,

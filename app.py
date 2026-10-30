@@ -574,6 +574,7 @@ async def query_stream(
     ),
     retrieval_mode: RetrievalMode = DEFAULT_RETRIEVAL_MODE,
     filter_json: str | None = Query(default=None, alias="filter"),
+    skill_ids: str | None = None,
 ):
     """
     流式检索问答（SSE）。
@@ -587,6 +588,8 @@ async def query_stream(
         data: {"event": "done", "query_id": "...", "done": true, ...}
         data: {"event": "error", "query_id": "...", "done": true, "error": {...}}
     """
+    if skill_ids is not None:
+        raise HTTPException(422, detail=public_error("skill_not_selected"))
     started_at = time.perf_counter()
     query_id = request.state.request_id
     session = begin_exchange(
@@ -700,7 +703,8 @@ async def agent_chat(req: AgentChatRequest, request: Request):
     """Run the shared asynchronous Agent runtime."""
     session = begin_exchange(
         request, req.session_id or req.conversation_id or uuid.uuid4().hex, req.conversation_id,
-        req.client_turn_id, "agent", req.message, model=req.model
+        req.client_turn_id, "agent", req.message, model=req.model,
+        skill_ids=req.skill_ids, skill_ids_provided="skill_ids" in req.model_fields_set,
     )
     result = await agent_runtime.execute(session.storage_id, req.message)
     payload = result.to_dict()
@@ -726,7 +730,8 @@ async def agent_chat_stream(
     """
     session = begin_exchange(
         request, req.session_id or req.conversation_id or uuid.uuid4().hex, req.conversation_id,
-        req.client_turn_id, "agent", req.message, model=req.model
+        req.client_turn_id, "agent", req.message, model=req.model,
+        skill_ids=req.skill_ids, skill_ids_provided="skill_ids" in req.model_fields_set,
     )
 
     return ClosingStreamingResponse(
