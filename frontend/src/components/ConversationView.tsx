@@ -1,12 +1,11 @@
 import { useState } from "react";
-import { Bot, Check, ChevronRight, CircleAlert, Copy, UserRound } from "lucide-react";
+import { Check, CircleAlert, Copy } from "lucide-react";
 
 import { isConversationActive, type InteractionDecision, type WorkspaceMode } from "../api/types";
 import { safeHttpUrl } from "../api/safeUrls";
 import type { ConversationState, ConversationTurn } from "../app/conversationState";
 import { MarkdownContent } from "./MarkdownContent";
 import { AgentInteractions } from "./AgentInteractions";
-import { IS_PAGES_DEMO } from "../app/runtime";
 
 const WARNING_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
   bm25_unavailable: "关键词检索暂不可用，当前结果仅使用向量检索。",
@@ -16,51 +15,14 @@ const WARNING_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
 });
 const SOURCE_EXCERPT_LENGTH = 360;
 
-const SUGGESTIONS: Readonly<Record<WorkspaceMode, readonly string[]>> = Object.freeze({
-  rag: [
-    "总结知识库中的核心观点",
-    "当前知识库包含哪些主题？",
-    "查找与部署相关的说明",
-  ],
-  agent: [
-    "检索知识库并整理关键结论",
-    "计算并解释一个结果",
-    "规划一个需要多步工具协作的任务",
-  ],
-});
-
 function formatLatency(value: number | null): string {
   return value === null ? "—" : `${Math.round(value)} ms`;
 }
 
-function EmptyConversation({
-  mode,
-  onSuggestion,
-}: {
-  mode: WorkspaceMode;
-  onSuggestion: (value: string) => void;
-}) {
+function EmptyConversation() {
   return (
-    <section className="empty-conversation" aria-labelledby="welcomeTitle">
-      <div className="welcome-mark" aria-hidden="true">
-        {mode === "rag" ? <ChevronRight size={28} /> : <Bot size={28} />}
-      </div>
-      <p className="eyebrow">{mode === "rag" ? "知识问答" : "Agent"}</p>
-      <h2 id="welcomeTitle">
-        {mode === "rag" ? "从知识库中找到可信答案" : "让 Agent 帮你完成多步任务"}
-      </h2>
-      <p>
-        {IS_PAGES_DEMO ? "体验预设流式回答、引用与工具交互；这里不进行真实检索或模型推理。" : mode === "rag"
-          ? "问题会经过检索与生成，并在完成后提供可核对的引用。"
-          : "Agent 会规划步骤、调用后端允许的工具，并展示执行过程。"}
-      </p>
-      <div className="suggestion-list" aria-label="建议问题">
-        {SUGGESTIONS[mode].map((suggestion) => (
-          <button key={suggestion} type="button" onClick={() => onSuggestion(suggestion)}>
-            {suggestion}
-          </button>
-        ))}
-      </div>
+    <section className="empty-conversation">
+      <p>有什么我能帮你的吗？</p>
     </section>
   );
 }
@@ -144,12 +106,10 @@ function RagEvidence({ turn }: { turn: ConversationTurn }) {
 export function ConversationView({
   mode,
   state,
-  onSuggestion,
   onInteractionDecision,
 }: {
   mode: WorkspaceMode;
   state: ConversationState;
-  onSuggestion: (value: string) => void;
   onInteractionDecision: (decision: InteractionDecision) => Promise<void>;
 }) {
   const [copyFeedback, setCopyFeedback] = useState<{
@@ -171,7 +131,7 @@ export function ConversationView({
   }
 
   if (state.turns.length === 0) {
-    return <EmptyConversation mode={mode} onSuggestion={onSuggestion} />;
+    return <EmptyConversation />;
   }
 
   return (
@@ -181,17 +141,11 @@ export function ConversationView({
         return (
           <section className="conversation-turn" key={turn.id}>
             <article className="message message-user">
-              <div className="message-avatar" aria-hidden="true"><UserRound size={18} /></div>
-              <div>
-                <p className="message-author">你</p>
-                <p className="message-body">{turn.question}</p>
-              </div>
+              <p className="message-body">{turn.question}</p>
             </article>
 
             <article className="message message-assistant">
-              <div className="message-avatar" aria-hidden="true"><Bot size={18} /></div>
               <div className="assistant-content">
-                <p className="message-author">{IS_PAGES_DEMO ? "RAGFlow · 模拟回答" : "RAGFlow"}</p>
                 {turn.answer ? (
                   <MarkdownContent value={turn.answer} />
                 ) : active ? (

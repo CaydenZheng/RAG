@@ -5,15 +5,8 @@ import { PublicClientError } from "../api/errors";
 import { isRecord } from "../api/sse";
 import { App } from "./App";
 import { IS_PAGES_DEMO } from "./runtime";
-import { useTheme } from "./useTheme";
-import { ThemeControl } from "../components/ThemeControl";
 
 type AccountState = "checking" | "anonymous" | "login" | "authenticated" | "unavailable";
-
-function AccountThemeControl(): React.JSX.Element {
-  const theme = useTheme();
-  return <ThemeControl preference={theme.preference} resolved={theme.resolved} onChange={theme.setPreference} />;
-}
 
 export function AccountBoundary(): React.JSX.Element {
   const [status, setStatus] = useState<AccountState>(IS_PAGES_DEMO ? "anonymous" : "checking");
@@ -139,7 +132,6 @@ export function AccountBoundary(): React.JSX.Element {
   return (
     <main className="account-shell">
       <section className="account-card" aria-labelledby="accountTitle" aria-busy={busy}>
-        <AccountThemeControl />
         <p className="eyebrow">RAGFlow · 邀请制工作台</p>
         <h1 id="accountTitle">{status === "checking" ? "正在检查登录状态" : status === "unavailable" ? "账号服务暂不可用" : user?.must_change_password ? "修改初始密码" : "登录工作台"}</h1>
         {notice && <p role="alert" className="page-error">{notice}</p>}
@@ -153,7 +145,7 @@ export function AccountBoundary(): React.JSX.Element {
             <button className="new-chat-button" type="submit" disabled={busy}>{busy ? "正在处理" : user?.must_change_password ? "修改密码" : "登录"}</button>
           </form>
         )}
-        {status !== "checking" && <button type="button" disabled={busy} onClick={() => void logout()}>退出当前登录会话</button>}
+        {user && <button type="button" disabled={busy} onClick={() => void logout()}>退出当前登录会话</button>}
         <p className="local-only-note">账号由管理员创建，不提供公开注册。知识库共享只读，历史归各账号所有。尚未授权公网部署。</p>
       </section>
     </main>

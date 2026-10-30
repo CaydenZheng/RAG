@@ -24,54 +24,7 @@ describe("App shell", () => {
     expect(screen.getByRole("button", { name: "添加附件，即将支持" })).toBeDisabled();
     expect(screen.getByRole("button", { name: /默认模型/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /知识库管理/ })).toBeDisabled();
-    expect(screen.getByText("会话 ID 不是登录身份。", { exact: false })).toBeVisible();
     await waitFor(() => expect(screen.getByText("服务可用")).toBeVisible());
-  });
-
-  it("applies and persists an explicit theme without treating it as identity", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "ready" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })),
-    );
-    const user = userEvent.setup();
-    render(<App />);
-
-    await user.selectOptions(screen.getByRole("combobox", { name: "外观主题" }), "dark");
-
-    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
-    expect(document.documentElement).toHaveAttribute("data-theme-preference", "dark");
-    expect(localStorage.getItem("ragflow_theme")).toBe("dark");
-  });
-
-  it("follows system theme changes while the system preference is selected", async () => {
-    let dark = true;
-    let themeListener: (() => void) | undefined;
-    vi.stubGlobal("matchMedia", vi.fn().mockImplementation((query: string) => ({
-      get matches() { return query === "(prefers-color-scheme: dark)" ? dark : false; },
-      addEventListener: (_type: string, nextListener: () => void) => {
-        if (query === "(prefers-color-scheme: dark)") themeListener = nextListener;
-      },
-      removeEventListener: vi.fn(),
-    })));
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "ready" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })),
-    );
-    render(<App />);
-
-    expect(screen.getByRole("combobox", { name: "外观主题" })).toHaveValue("system");
-    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
-
-    dark = false;
-    act(() => themeListener?.());
-
-    expect(document.documentElement).toHaveAttribute("data-theme", "light");
   });
 
   it("moves focus to the workspace after an in-app route change", async () => {
@@ -105,25 +58,6 @@ describe("App shell", () => {
     await user.tab();
 
     expect(screen.getByRole("link", { name: "跳到主要内容" })).toHaveFocus();
-  });
-
-  it("fills a suggested question without sending it automatically", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ status: "ready" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    const user = userEvent.setup();
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: "总结知识库中的核心观点" }));
-
-    expect(screen.getByRole("textbox", { name: /向知识库提问/ })).toHaveValue(
-      "总结知识库中的核心观点",
-    );
-    expect(fetchMock.mock.calls.some(([request]) => String(request).startsWith("/query/stream"))).toBe(false);
   });
 
   it("stops an active stream and labels the turn as cancelled", async () => {
@@ -222,7 +156,7 @@ describe("App shell", () => {
 
     finishReset?.(new Response(null, { status: 200 }));
     await waitFor(() => expect(localStorage.getItem("ragflow_session_id")).not.toBe("old-session"));
-    expect(screen.getByRole("heading", { name: "从知识库中找到可信答案" })).toBeVisible();
+    expect(screen.getByText("有什么我能帮你的吗？")).toBeVisible();
   });
 
   it("polls Approval alongside the Agent stream and shares its cancellation signal", async () => {

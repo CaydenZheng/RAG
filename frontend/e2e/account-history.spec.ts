@@ -71,7 +71,7 @@ async function login(page: Page, user = "alice"): Promise<void> {
   await page.getByLabel("账号",{exact:true}).fill(user);
   await page.getByLabel("密码",{exact:true}).fill("synthetic-browser-password");
   await page.getByRole("button",{name:"登录",exact:true}).click();
-  await expect(page.getByRole("heading",{name:"知识问答工作台"})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"知识问答工作台"})).toBeAttached();
   await expect(page.getByRole("main")).toBeFocused();
 }
 
@@ -93,10 +93,10 @@ test("fake API: two accounts isolate history; a second device reopens and contin
     original = page.url();
     await page.getByRole("button",{name:"新建对话",exact:true}).click();
     await expect(page).not.toHaveURL(original);
-    await expect(page.getByRole("button",{name:/Alice private question/})).toBeVisible();
+    await expect(page.getByRole("button",{name:/^Alice private question/})).toBeVisible();
   });
   await onDevice("alice", async (device) => {
-    await device.getByRole("button",{name:/Alice private question/}).click();
+    await device.getByRole("button",{name:/^Alice private question/}).click();
     await expect(device.getByText("Synthetic answer for alice",{exact:true})).toBeVisible();
     await device.reload();
     await expect(device.getByText("Synthetic answer for alice",{exact:true})).toBeVisible();
@@ -104,7 +104,7 @@ test("fake API: two accounts isolate history; a second device reopens and contin
     await device.getByRole("button",{name:"发送",exact:true}).click();
     await expect(device.getByText("Synthetic answer for alice",{exact:true})).toHaveCount(2);
     await device.getByRole("link",{name:"Agent",exact:true}).click();
-    await expect(device.getByRole("heading",{name:"Agent 工作台"})).toBeVisible();
+    await expect(device.getByRole("heading",{name:"Agent 工作台"})).toBeAttached();
     await device.getByRole("link",{name:"知识问答",exact:true}).click();
     await expect(device).toHaveURL(original);
     await device.reload();
@@ -120,25 +120,27 @@ test("fake API: two accounts isolate history; a second device reopens and contin
 test("fake API: rename, clear and delete are explicit; logout cancels connecting work", async ({context,page}) => {
   await fixture()(context); await login(page);
   await page.getByRole("button",{name:"新建对话",exact:true}).click();
-  await page.getByRole("button",{name:"重命名",exact:true}).click();
+  await page.locator('.history-item[data-active="true"] [aria-haspopup="menu"]').click();
+  await page.getByRole("menuitem",{name:"重命名",exact:true}).click();
   await page.getByLabel("会话标题",{exact:true}).fill("Named history");
-  await page.getByRole("button",{name:"保存标题",exact:true}).click();
-  await expect(page.getByRole("button",{name:/Named history/})).toBeVisible();
-  await expect(page.getByRole("button",{name:"重命名",exact:true})).toBeFocused();
+  await page.getByRole("button",{name:"保存",exact:true}).click();
+  await expect(page.getByRole("button",{name:/^Named history/})).toBeVisible();
   page.on("dialog",(dialog) => void dialog.accept());
-  await page.getByRole("button",{name:"清空内容",exact:true}).click();
-  await expect(page.getByRole("button",{name:/Named history/})).toBeVisible();
-  await page.getByRole("button",{name:"删除会话",exact:true}).click();
-  await expect(page.getByRole("button",{name:/Named history/})).toHaveCount(0);
+  await page.locator('.history-item[data-active="true"] [aria-haspopup="menu"]').click();
+  await page.getByRole("menuitem",{name:"清空内容",exact:true}).click();
+  await expect(page.getByRole("button",{name:/^Named history/})).toBeVisible();
+  await page.locator('.history-item[data-active="true"] [aria-haspopup="menu"]').click();
+  await page.getByRole("menuitem",{name:"删除会话",exact:true}).click();
+  await expect(page.getByRole("button",{name:/^Named history/})).toHaveCount(0);
   await page.getByRole("textbox",{name:/向知识库提问/}).fill("delayed private question");
   await page.getByRole("button",{name:"发送",exact:true}).click();
-  await page.getByRole("button",{name:"退出／切换账号",exact:true}).click();
+  await page.getByRole("button",{name:"退出",exact:true}).click();
   await expect(page.getByRole("heading",{name:"登录工作台"})).toBeVisible();
   await expect(page.getByText("delayed private question",{exact:true})).toHaveCount(0);
   await page.getByLabel("账号",{exact:true}).fill("bob");
   await page.getByLabel("密码",{exact:true}).fill("synthetic-browser-password");
   await page.getByRole("button",{name:"登录",exact:true}).click();
-  await expect(page.getByRole("heading",{name:"知识问答工作台"})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"知识问答工作台"})).toBeAttached();
   await expect(page.getByText("delayed private question",{exact:true})).toHaveCount(0);
   const storage = await page.evaluate(() => JSON.stringify(localStorage));
   expect(storage).not.toMatch(/synthetic-browser-password|csrf|private question/);
@@ -183,16 +185,13 @@ test("fake API: skills route, explicit creator upload and narrow navigation", as
   const toggle=page.getByRole("checkbox",{name:"启用 skill-creator"});
   await toggle.click();
   await expect(toggle).toBeChecked();
-  await page.getByLabel("导入原始资料").setInputFiles({name:"notes.txt",mimeType:"text/plain",buffer:Buffer.from("Public notes")});
-  await page.getByRole("button",{name:"开始整理",exact:true}).click();
-  const install=page.getByRole("button",{name:"上传此技能（新项默认关闭）"});
-  await expect(install).toBeVisible();
-  expect(uploads).toBe(0);
-  const download=page.waitForEvent("download");await page.getByRole("link",{name:"下载技能文件"}).click();
-  expect((await download).suggestedFilename()).toBe("browser-skill.md");
-  await install.click();
+  await page.locator('input[type="file"]').setInputFiles({name:"browser-skill.md",mimeType:"text/markdown",buffer:Buffer.from(content)});
   await expect(page.getByRole("checkbox",{name:"启用 browser-skill"})).not.toBeChecked();
   expect(uploads).toBe(1);
+  await page.getByRole("button",{name:"更多操作 browser-skill",exact:true}).click();
+  await page.getByRole("menuitem",{name:"详情",exact:true}).click();
+  await expect(page.getByRole("region",{name:"技能详情"})).toBeVisible();
+  await page.getByRole("button",{name:"关闭详情",exact:true}).click();
   await page.reload();await expect(toggle).toBeChecked();
   await page.setViewportSize({width:768,height:900});
   await page.getByRole("button",{name:"打开导航",exact:true}).click();
@@ -201,5 +200,5 @@ test("fake API: skills route, explicit creator upload and narrow navigation", as
   await page.getByRole("button",{name:"打开导航",exact:true}).click();
   await page.getByRole("link",{name:"知识问答",exact:true}).click();
   await expect(page.getByRole("main")).toBeFocused();
-  await page.goBack();await expect(page.getByRole("heading",{name:"Skills 工作台"})).toBeVisible();
+  await page.goBack();await expect(page.getByRole("heading",{name:"Skills 工作台"})).toBeAttached();
 });

@@ -18,16 +18,10 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByText("服务可用")).toBeVisible();
 });
 
-test("persists theme choice and keeps the empty workspace usable across target widths", async ({ page }) => {
-  await expect(page.getByRole("heading", { name: "从知识库中找到可信答案" })).toBeVisible();
+test("keeps the empty workspace usable across target widths", async ({ page }) => {
+  await expect(page.getByText("有什么我能帮你的吗？", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "添加附件，即将支持" })).toBeDisabled();
-  await page.getByRole("combobox", { name: "外观主题" }).selectOption("dark");
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await page.reload();
-  await expect(page.getByRole("combobox", { name: "外观主题" })).toHaveValue("dark");
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-  await page.getByRole("combobox", { name: "外观主题" }).selectOption("system");
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   const transitionDuration = await page.locator(".skip-link").evaluate((element) => (
     getComputedStyle(element).transitionDuration
   ));
@@ -46,7 +40,7 @@ test("persists theme choice and keeps the empty workspace usable across target w
   await expect(page.getByText("最近对话")).toBeVisible();
   await expect(page.getByRole("button", { name: /知识库管理/ })).toBeVisible();
   await expect(page.getByRole("link", { name: "API 文档" })).toBeVisible();
-  await expect(page.getByText("会话 ID 不是登录身份。", { exact: false })).toBeVisible();
+  await expect(page.getByText("服务可用", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "打开导航" })).toBeFocused();
 });
@@ -176,7 +170,7 @@ test("closes Agent stream and polling on route switch", async ({ page, request }
   await page.getByRole("link", { name: "知识问答" }).click();
 
   await expect.poll(async () => (await fakeState(request)).active_streams).toBe(0);
-  await expect(page.getByRole("heading", { name: "知识问答工作台" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "知识问答工作台" })).toBeAttached();
 });
 
 test("remains keyboard-operable at an effective 200 percent zoom viewport", async ({ page, context }) => {

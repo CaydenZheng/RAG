@@ -43,7 +43,7 @@ describe("ConversationView", () => {
   it("copies a completed answer and announces success without moving focus", async () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
-    render(<ConversationView mode="rag" state={completedState} onSuggestion={vi.fn()} onInteractionDecision={vi.fn()} />);
+    render(<ConversationView mode="rag" state={completedState} onInteractionDecision={vi.fn()} />);
 
     const copyButton = screen.getByRole("button", { name: "复制回答" });
     copyButton.focus();
@@ -58,14 +58,14 @@ describe("ConversationView", () => {
     const user = userEvent.setup();
     vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
     const view = render(
-      <ConversationView mode="rag" state={completedState} onSuggestion={vi.fn()} onInteractionDecision={vi.fn()} />,
+      <ConversationView mode="rag" state={completedState} onInteractionDecision={vi.fn()} />,
     );
 
     await user.click(screen.getByRole("button", { name: "复制回答" }));
     expect(screen.getByRole("status")).toHaveTextContent("回答已复制");
 
     view.rerender(
-      <ConversationView mode="agent" state={completedState} onSuggestion={vi.fn()} onInteractionDecision={vi.fn()} />,
+      <ConversationView mode="agent" state={completedState} onInteractionDecision={vi.fn()} />,
     );
 
     expect(screen.getByRole("status")).toBeEmptyDOMElement();
@@ -78,7 +78,6 @@ describe("ConversationView", () => {
       <ConversationView
         mode="rag"
         state={completedStateFor("旧问题", "旧回答")}
-        onSuggestion={vi.fn()}
         onInteractionDecision={vi.fn()}
       />,
     );
@@ -87,13 +86,12 @@ describe("ConversationView", () => {
     expect(screen.getByRole("status")).toHaveTextContent("回答已复制");
 
     view.rerender(
-      <ConversationView mode="rag" state={emptyState} onSuggestion={vi.fn()} onInteractionDecision={vi.fn()} />,
+      <ConversationView mode="rag" state={emptyState} onInteractionDecision={vi.fn()} />,
     );
     view.rerender(
       <ConversationView
         mode="rag"
         state={completedStateFor("新问题", "新回答")}
-        onSuggestion={vi.fn()}
         onInteractionDecision={vi.fn()}
       />,
     );
@@ -110,20 +108,18 @@ describe("ConversationView", () => {
       <ConversationView
         mode="rag"
         state={completedStateFor("旧问题", "旧回答")}
-        onSuggestion={vi.fn()}
         onInteractionDecision={vi.fn()}
       />,
     );
 
     await user.click(screen.getByRole("button", { name: "复制回答" }));
     view.rerender(
-      <ConversationView mode="rag" state={emptyState} onSuggestion={vi.fn()} onInteractionDecision={vi.fn()} />,
+      <ConversationView mode="rag" state={emptyState} onInteractionDecision={vi.fn()} />,
     );
     view.rerender(
       <ConversationView
         mode="rag"
         state={completedStateFor("新问题", "新回答")}
-        onSuggestion={vi.fn()}
         onInteractionDecision={vi.fn()}
       />,
     );
@@ -147,7 +143,7 @@ describe("ConversationView", () => {
         warnings: ["rerank_timeout"],
       }],
     };
-    render(<ConversationView mode="rag" state={state} onSuggestion={vi.fn()} onInteractionDecision={vi.fn()} />);
+    render(<ConversationView mode="rag" state={state} onInteractionDecision={vi.fn()} />);
 
     expect(screen.getByRole("link", { name: "https://docs.example.test/page" })).toHaveAttribute(
       "href",
@@ -173,7 +169,7 @@ describe("ConversationView", () => {
         ],
       }],
     };
-    render(<ConversationView mode="agent" state={state} onSuggestion={vi.fn()} onInteractionDecision={vi.fn()} />);
+    render(<ConversationView mode="agent" state={state} onInteractionDecision={vi.fn()} />);
 
     const process = screen.getByText("执行过程 · 3 个步骤").closest("details");
     expect(process).not.toHaveAttribute("open");

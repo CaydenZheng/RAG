@@ -1,9 +1,38 @@
 import { PUBLIC_MESSAGES, PublicClientError } from "./errors";
+import { isRecord } from "./sse";
 
-export function requireEventStream(response: Response): ReadableStream<Uint8Array> {
+// 后端明确返回的公开错误码 -> 用户可读文案；未列入的仍按状态码兜底。
+const RESPONSE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  skill_not_selected: "所选技能不可用，请刷新技能列表后重试。",
+  skill_selection_limit: "单轮选择的技能过多，请减少后重试。",
+  conversation_busy: "该会话正在生成，请停止或稍后重试。",
+  conversation_conflict: "会话已变化、正在生成或该回合已提交；请刷新历史核对，不要重发同一轮。",
+});
+
+async function publicErrorCode(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.json();
+    const detail = isRecord(body) ? body.detail : undefined;
+    const code = isRecord(detail) ? detail.code : detail;
+    return typeof code === "string" ? code : "";
+  } catch {
+    return "";
+  }
+}
+
+export async function requireEventStream(response: Response): Promise<ReadableStream<Uint8Array>> {
+  if (response.ok && response.body) return response.body;
+
   if (response.status === 401 || response.status === 403) {
     throw new PublicClientError("auth_required", "登录或安全校验已失效，请重新登录后重试。");
   }
+
+  const code: string = response.status === 422 || response.status === 409 || response.status === 429
+    ? await publicErrorCode(response)
+    : "";
+  const specific: string | undefined = code ? RESPONSE_MESSAGES[code] : undefined;
+  if (specific) throw new PublicClientError("validation", specific);
+
   if (response.status === 409) {
     throw new PublicClientError("validation", "会话已变化、正在生成或该回合已提交；请刷新历史核对，不要重发同一轮。");
   }
@@ -14,13 +43,7 @@ export function requireEventStream(response: Response): ReadableStream<Uint8Arra
     throw new PublicClientError("validation", PUBLIC_MESSAGES.invalidRequest);
   }
   if (response.status === 503) {
-    throw new PublicClientError(
-      "service_unavailable",
-      PUBLIC_MESSAGES.serviceUnavailable,
-    );
+    throw new PublicClientError("service_unavailable", PUBLIC_MESSAGES.serviceUnavailable);
   }
-  if (!response.ok || !response.body) {
-    throw new PublicClientError("http", PUBLIC_MESSAGES.disconnected);
-  }
-  return response.body;
+  throw new PublicClientError("http", PUBLIC_MESSAGES.disconnected);
 }

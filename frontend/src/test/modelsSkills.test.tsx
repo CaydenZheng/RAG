@@ -1,4 +1,5 @@
-import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { createHash, webcrypto } from "node:crypto";
 import userEvent from "@testing-library/user-event";
@@ -8,6 +9,7 @@ import { AUTH_EXPIRED_EVENT } from "../api/authClient";
 import { readHistory } from "../api/conversationClient";
 import { useConversation } from "../app/useConversation";
 import { SkillsPage } from "../components/SkillsPage";
+import { Composer } from "../components/Composer";
 import { ConversationView } from "../components/ConversationView";
 import { App } from "../app/App";
 
@@ -123,7 +125,7 @@ describe("model selection lifecycle", () => {
   it("renders answer-time model and skill version from history", async () => {
     vi.stubGlobal("fetch",vi.fn().mockResolvedValue(json({items:[{seq:1,client_turn_id:"turn",question:"q",answer:"a",used_model:"historical-model",requested_model:"pro",skills:[{id:"s",name:"concise",version:"0123456789abcdef"}]}]})));
     const page=await readHistory("saved",new AbortController().signal);
-    render(<ConversationView mode="agent" state={{status:"idle",turns:page.items,nextTurnId:2}} onSuggestion={vi.fn()} onInteractionDecision={vi.fn()} />);
+    render(<ConversationView mode="agent" state={{status:"idle",turns:page.items,nextTurnId:2}} onInteractionDecision={vi.fn()} />);
     expect(screen.getByText("实际模型 historical-model")).toBeVisible();
     expect(screen.getByText("技能 concise · 01234567")).toBeVisible();
   });
@@ -160,80 +162,155 @@ describe("creator transport",()=>{
 });
 
 describe("Skills page",()=>{
-  it.each(["plain", "creator"])("preserves and reports an enabled skill on idempotent %s upload",async(origin)=>{
-    vi.stubGlobal("crypto",webcrypto);
-    const checksum = createHash("sha256").update(CONTENT).digest("hex");
+  it("uploads a skill and reports the preserved enabled state",async()=>{
     const custom = {...CREATOR,id:"custom",name:"concise",builtin:false,enabled:true};
     const fetch = vi.fn((path:string,init?:RequestInit):Promise<Response>=>{
-      if(path === "/skills/creator/stream") return Promise.resolve(sse({done:true,content:CONTENT,filename:"concise.md",checksum}));
       if(init?.method === "POST") return Promise.resolve(json(custom));
       return Promise.resolve(json({items:[{...CREATOR,enabled:true},custom]}));
     });
     vi.stubGlobal("fetch",fetch);
     const user=userEvent.setup();
-    render(<SkillsPage available models={MODELS} defaultModel="flash" />);
+    render(<SkillsPage available />);
     const toggle=await screen.findByRole("checkbox",{name:"启用 concise"});
     await waitFor(()=>expect(toggle).toBeEnabled());
-    if(origin === "plain") {
-      await user.upload(screen.getByLabelText("选择技能文件"),new File([CONTENT],"concise.md",{type:"text/markdown"}));
-      await user.click(screen.getByRole("button",{name:"上传技能"}));
-    } else {
-      await user.upload(screen.getByLabelText("导入原始资料"),new File(["notes"],"notes.txt",{type:"text/plain"}));
-      await user.click(screen.getByRole("button",{name:"开始整理"}));
-      await user.click(await screen.findByRole("button",{name:/上传此技能/}));
-    }
+    await user.upload(screen.getByLabelText("上传技能"),new File([CONTENT],"concise.md",{type:"text/markdown"}));
     await waitFor(()=>expect(screen.getByRole("status")).toHaveTextContent("当前启用"));
     expect(screen.getByRole("status")).not.toHaveTextContent("当前关闭");
     expect(toggle).toBeChecked();
     expect(fetch.mock.calls.some(([,init])=>init?.method === "PATCH")).toBe(false);
   });
-  it("returns keyboard focus to the detail trigger after closing inline details",async()=>{
+
+  it("opens details from the row menu and returns focus to its trigger",async()=>{
     vi.stubGlobal("fetch",vi.fn((path:string):Promise<Response>=>Promise.resolve(json(path==="/skills"?{items:[CREATOR]}:{...CREATOR,content:"Safe instructions"}))));
-    render(<SkillsPage available models={MODELS} defaultModel="flash" />);
-    const trigger=await screen.findByRole("button",{name:"查看 skill-creator"});
-    await waitFor(()=>expect(trigger).toBeEnabled());fireEvent.click(trigger);
+    render(<SkillsPage available />);
+    const trigger=await screen.findByRole("button",{name:"更多操作 skill-creator"});
+    await waitFor(()=>expect(trigger).toBeEnabled());
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("menuitem",{name:"详情"}));
     const close=await screen.findByRole("button",{name:"关闭详情"});
-    await waitFor(()=>expect(close).toBeEnabled());close.focus();fireEvent.click(close);
+    await waitFor(()=>expect(close).toBeEnabled());
+    expect(screen.getByRole("region",{name:"技能详情"})).toBeVisible();
+    expect(screen.getByText("Safe instructions")).toBeVisible();
+    close.focus();
+    fireEvent.click(close);
     expect(trigger).toHaveFocus();
     expect(screen.queryByRole("region",{name:"技能详情"})).not.toBeInTheDocument();
   });
-  it("enables creator explicitly; completed output requires a separate upload and stays disabled",async()=>{
-    vi.stubGlobal("crypto",webcrypto);
-    const checksum=createHash("sha256").update(CONTENT).digest("hex");
-    let creator={...CREATOR};const uploaded:unknown[]=[];
+
+  it("deletes a custom skill from the row menu but keeps builtins",async()=>{
+    const custom = {...CREATOR,id:"custom",name:"concise",builtin:false};
+    const fetch = vi.fn((path:string,init?:RequestInit):Promise<Response>=>{
+      if(init?.method === "DELETE") return Promise.resolve(json({}));
+      return Promise.resolve(json({items:[CREATOR,custom]}));
+    });
+    vi.stubGlobal("fetch",fetch);
+    vi.spyOn(window,"confirm").mockReturnValue(true);
+    render(<SkillsPage available />);
+    const builtin = await screen.findByRole("button",{name:"更多操作 skill-creator"});
+    await waitFor(()=>expect(builtin).toBeEnabled());
+    fireEvent.click(builtin);
+    expect(screen.queryByRole("menuitem",{name:"删除"})).not.toBeInTheDocument();
+    fireEvent.keyDown(document,{key:"Escape"});
+
+    fireEvent.click(screen.getByRole("button",{name:"更多操作 concise"}));
+    fireEvent.click(await screen.findByRole("menuitem",{name:"删除"}));
+    await waitFor(()=>expect(fetch.mock.calls.some(([,init])=>init?.method === "DELETE")).toBe(true));
+  });
+});
+
+describe("agent skill selection transport",()=>{
+  it("sends the selected skill id with the stripped message",async()=>{
+    const user=userEvent.setup();
+    window.history.replaceState({},"","/agent?conversation=saved");
+    const skills=[{...CREATOR,id:"c1",name:"concise",description:"Be concise.",builtin:false,enabled:true}];
     const fetch=vi.fn((path:string,init?:RequestInit):Promise<Response>=>{
-      if(path==="/skills/creator/stream")return Promise.resolve(sse({chunk:CONTENT},{done:true,filename:"concise.md",content:CONTENT,checksum}));
-      if(init?.method==="PATCH"){creator={...creator,enabled:true,revision:1};return Promise.resolve(json(creator));}
-      if(init?.method==="POST"){uploaded.push(init.body);return Promise.resolve(json({...CREATOR,id:"custom",name:"concise",builtin:false}));}
-      return Promise.resolve(json({items:[creator]}));
-    });vi.stubGlobal("fetch",fetch);
-    render(<SkillsPage available models={MODELS} defaultModel="flash" />);
-    const toggle=await screen.findByRole("checkbox",{name:"启用 skill-creator"});
-    await waitFor(()=>expect(toggle).toBeEnabled());
-    expect(screen.getByLabelText("导入原始资料")).toBeDisabled();
-    expect(screen.queryByRole("button",{name:"删除 skill-creator"})).not.toBeInTheDocument();
-    fireEvent.click(toggle);
-    await waitFor(()=>expect(screen.getByLabelText("导入原始资料")).toBeEnabled());
-    fireEvent.change(screen.getByLabelText("导入原始资料"),{target:{files:[new File(["notes"],"notes.txt")]}});
-    fireEvent.click(screen.getByRole("button",{name:"开始整理"}));
-    const install=await screen.findByRole("button",{name:"上传此技能（新项默认关闭）"});
-    expect(uploaded).toHaveLength(0);
-    fireEvent.click(install);
-    await screen.findByText("技能已上传，当前关闭；请明确启用后使用。");
-    expect(uploaded).toHaveLength(1);
+      if(path==="/ready")return Promise.resolve(json({status:"ready"}));
+      if(path==="/workspace/models")return Promise.resolve(json({items:MODELS,default_model:"flash"}));
+      if(path==="/skills")return Promise.resolve(json({items:skills}));
+      if(path.startsWith("/conversations?"))return Promise.resolve(json({items:[{...SUMMARY,mode:"agent"}],next_cursor:null}));
+      if(path.endsWith("/turns"))return Promise.resolve(json({items:[],next_before:null}));
+      if(path==="/agent/chat/stream")return Promise.resolve(sse({done:true,answer:"ok",error:""}));
+      if(path.startsWith("/agent/approvals/")||path.startsWith("/agent/elicitation/"))return Promise.resolve(json({pending:[]}));
+      if(init?.method==="PATCH")return Promise.resolve(json({...SUMMARY,mode:"agent"}));
+      return Promise.resolve(json({...SUMMARY,mode:"agent"}));
+    });
+    vi.stubGlobal("fetch",fetch);
+    render(<App account={{id:"owner",username:"alice",role:"member",must_change_password:false}} />);
+    const input=await screen.findByRole("textbox",{name:"向 Agent 发送任务"});
+    await user.type(input,"/");
+    await screen.findByRole("listbox",{name:"选择技能"});
+    await user.keyboard("{Enter}");
+    await user.type(input,"整理要点");
+    await user.click(screen.getByRole("button",{name:"发送"}));
+    await waitFor(()=>expect(fetch.mock.calls.some(([path])=>path==="/agent/chat/stream")).toBe(true));
+    const call=fetch.mock.calls.find(([path])=>path==="/agent/chat/stream");
+    expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({message:"整理要点",skill_ids:["c1"]});
+  });
+});
+
+describe("composer skill picker",()=>{
+  const CONCISE = {...CREATOR,id:"c1",name:"concise",description:"Be concise.",builtin:false,enabled:true};
+  const skills=[CONCISE,{...CREATOR,id:"off",name:"disabled-skill",builtin:false,enabled:false}];
+
+  function Harness({onSend}:{onSend:(message:string,skillIds?:readonly string[])=>Promise<void>}): React.JSX.Element {
+    const [value,setValue]=useState("");
+    return <Composer mode="agent" status="idle" resetting={false} skillsEnabled value={value} onValueChange={setValue} onSend={onSend} onStop={vi.fn()} />;
+  }
+
+  it("lists only enabled custom skills and inserts the chosen name",async()=>{
+    vi.stubGlobal("fetch",vi.fn().mockResolvedValue(json({items:skills})));
+    const user=userEvent.setup();
+    render(<Harness onSend={vi.fn()} />);
+    const input=screen.getByRole("textbox",{name:"向 Agent 发送任务"});
+    await user.type(input,"/");
+    const list=await screen.findByRole("listbox",{name:"选择技能"});
+    expect(within(list).getByText("concise")).toBeVisible();
+    expect(within(list).queryByText("disabled-skill")).not.toBeInTheDocument();
+    expect(within(list).queryByText("skill-creator")).not.toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    expect(input).toHaveValue("/concise ");
+    expect(screen.queryByRole("listbox",{name:"选择技能"})).not.toBeInTheDocument();
   });
 
-  it("unmount aborts an active conversion and discards late artifacts",async()=>{
-    let signal:AbortSignal|undefined;
-    vi.stubGlobal("fetch",vi.fn((path:string,init?:RequestInit):Promise<Response>=>{
-      if(path==="/skills/creator/stream"){signal=init?.signal??undefined;return new Promise((_resolve,reject)=>signal?.addEventListener("abort",()=>reject(new DOMException("Aborted","AbortError"))));}
-      return Promise.resolve(json({items:[{...CREATOR,enabled:true}]}));
-    }));
-    const page=render(<SkillsPage available models={MODELS} defaultModel="flash" />);
-    await waitFor(()=>expect(screen.getByLabelText("导入原始资料")).toBeEnabled());
-    fireEvent.change(screen.getByLabelText("导入原始资料"),{target:{files:[new File(["notes"],"notes.txt")]}});
-    fireEvent.click(screen.getByRole("button",{name:"开始整理"}));
-    await waitFor(()=>expect(signal).toBeDefined());page.unmount();
-    expect(signal?.aborted).toBe(true);
+  it("sends the stripped body with the selected skill id",async()=>{
+    vi.stubGlobal("fetch",vi.fn().mockResolvedValue(json({items:skills})));
+    const onSend=vi.fn().mockResolvedValue(undefined);
+    const user=userEvent.setup();
+    render(<Harness onSend={onSend} />);
+    const input=screen.getByRole("textbox",{name:"向 Agent 发送任务"});
+    await user.type(input,"/");
+    await screen.findByRole("listbox",{name:"选择技能"});
+    await user.keyboard("{Enter}");
+    await user.type(input,"整理部署要点");
+    await user.click(screen.getByRole("button",{name:"发送"}));
+    await waitFor(()=>expect(onSend).toHaveBeenCalledWith("整理部署要点",["c1"]));
+  });
+
+  it("blocks sending a bare command and unknown skill names",async()=>{
+    vi.stubGlobal("fetch",vi.fn().mockResolvedValue(json({items:skills})));
+    const onSend=vi.fn().mockResolvedValue(undefined);
+    const user=userEvent.setup();
+    render(<Harness onSend={onSend} />);
+    const input=screen.getByRole("textbox",{name:"向 Agent 发送任务"});
+    await user.type(input,"/concise");
+    await waitFor(()=>expect(screen.getByRole("button",{name:"请补充任务内容后再发送"})).toBeDisabled());
+    fireEvent.submit(input.closest("form")!);
+    expect(onSend).not.toHaveBeenCalled();
+
+    await user.clear(input);
+    await user.type(input,"/nope 做点什么");
+    await waitFor(()=>expect(screen.getByRole("button",{name:"所选技能不可用，请刷新技能列表后重试"})).toBeDisabled());
+    fireEvent.submit(input.closest("form")!);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("sends plain text without skill ids when no command is present",async()=>{
+    vi.stubGlobal("fetch",vi.fn().mockResolvedValue(json({items:skills})));
+    const onSend=vi.fn().mockResolvedValue(undefined);
+    const user=userEvent.setup();
+    render(<Harness onSend={onSend} />);
+    await user.type(screen.getByRole("textbox",{name:"向 Agent 发送任务"}),"普通任务");
+    await user.click(screen.getByRole("button",{name:"发送"}));
+    await waitFor(()=>expect(onSend).toHaveBeenCalledWith("普通任务"));
   });
 });

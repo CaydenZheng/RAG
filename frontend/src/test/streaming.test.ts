@@ -205,7 +205,7 @@ describe("Agent stream", () => {
     const result = streamAgentAnswer("任务", "agent-1", controller.signal, vi.fn());
     await Promise.resolve();
     controller.abort();
-    await expect(result).rejects.toBeInstanceOf(PublicClientError);
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
     expect(cancel).toHaveBeenCalledOnce();
   });
 

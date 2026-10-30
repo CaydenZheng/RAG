@@ -38,11 +38,11 @@ test("Agent link supports refresh, history and cancels the previous stream", asy
   await expect(page).toHaveURL(/\/RAG\/\?mode=agent$/);
   await expect(page.getByRole("main")).toBeFocused();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Agent 工作台" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agent 工作台" })).toBeAttached();
   await page.goBack();
-  await expect(page.getByRole("heading", { name: "知识问答工作台" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "知识问答工作台" })).toBeAttached();
   await page.goForward();
-  await expect(page.getByRole("heading", { name: "Agent 工作台" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agent 工作台" })).toBeAttached();
 });
 
 test("approval, form and URL interactions are explicitly simulated", async ({ page, context }) => {
@@ -87,14 +87,7 @@ test("stop, error, reset and timeout cannot appear as successful answers", async
   await expect(page.getByRole("button", { name: "复制回答" })).toHaveCount(0);
 });
 
-test("theme persists and narrow drawer restores focus", async ({ page }) => {
-  const theme = page.getByRole("combobox", { name: "主题" });
-  await theme.selectOption("dark");
-  await page.reload();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await theme.selectOption("light");
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await theme.selectOption("system");
+test("narrow drawer restores focus and never overflows horizontally", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   const open = page.getByRole("button", { name: "打开导航", exact: true });
   await open.click();
@@ -107,7 +100,7 @@ test("theme persists and narrow drawer restores focus", async ({ page }) => {
 });
 
 test("reset restores auto-follow after scrolling a long conversation", async ({ page }) => {
-  await page.setViewportSize({ width: 1024, height: 600 });
+  await page.setViewportSize({ width: 1024, height: 460 });
   await page.getByRole("textbox").fill("预设回答");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.getByText("引用来源 · 2")).toBeVisible();
@@ -131,11 +124,28 @@ test("models and Skills are explicitly simulated and never contact a backend",as
   await page.getByRole("combobox",{name:"模型",exact:true}).selectOption("pro");
   await page.getByRole("link",{name:"Skills 技能",exact:true}).click();
   await expect(page).toHaveURL(/view=skills/);
-  await expect(page.getByText("以下为内存中的模拟技能；不连接模型、不执行工具，刷新会重置。",{exact:true})).toBeVisible();
-  await page.getByRole("checkbox",{name:"启用 skill-creator"}).check();
-  await page.getByLabel("导入原始资料").setInputFiles({name:"demo.txt",mimeType:"text/plain",buffer:Buffer.from("not read by demo")});
-  await page.getByRole("button",{name:"开始整理",exact:true}).click();
-  await expect(page.getByText("模拟转换完成，未进行真实格式校验、上传或启用。",{exact:true})).toBeVisible();
+  await expect(page.getByText("模拟数据，不连接模型，刷新会重置。",{exact:true})).toBeVisible();
+  const toggle = page.getByRole("checkbox",{name:"启用 skill-creator"});
+  await toggle.check();
+  await expect(toggle).toBeChecked();
+  await page.locator('input[type="file"]').setInputFiles({name:"demo.md",mimeType:"text/markdown",buffer:Buffer.from("demo")});
+  await expect(page.getByText("技能已上传，当前关闭；请明确启用后使用。",{exact:true})).toBeVisible();
+  await page.getByRole("link",{name:"Agent",exact:true}).click();
+  await page.getByRole("textbox").fill("/");
+  const picker=page.getByRole("listbox",{name:"选择技能"});
+  await expect(picker).toBeVisible();
+  await expect(picker.getByText("concise-writing")).toBeVisible();
+  await expect(picker.getByText("skill-creator")).toHaveCount(0);
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("textbox")).toHaveValue("/concise-writing ");
+  await page.getByRole("textbox").fill("/concise-writing 模拟任务");
+  await page.getByRole("button",{name:"发送",exact:true}).click();
+  await expect(page.getByText("模拟任务",{exact:false})).toBeVisible();
+  await page.getByRole("link",{name:"Skills 技能",exact:true}).click();
+  await page.getByRole("button",{name:"更多操作 模拟上传技能",exact:true}).click();
+  await page.getByRole("menuitem",{name:"详情",exact:true}).click();
+  await expect(page.getByRole("region",{name:"技能详情"})).toBeVisible();
+  await page.getByRole("button",{name:"关闭详情",exact:true}).click();
   await page.reload();
   await expect(page.getByRole("checkbox",{name:"启用 skill-creator"})).not.toBeChecked();
   expect(connections).toEqual([]);

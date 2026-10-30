@@ -438,7 +438,10 @@ Playwright 首次运行需要安装 Chromium。默认浏览器套件会自行启
 Vite 和本地假后端，覆盖分段 SSE、停止、错误、引用、工具过程、Approval、
 form/URL Elicitation、主题、键盘与响应式布局；不读取用户文件、不连接真实 Provider
 或外部服务。`test:e2e:production` 复用已构建资源，以禁用 lifespan 的本地 FastAPI
-进程验证 `/`、`/agent`、生产资源和严格 CSP，不发送真实问答请求。若本机设置了代理，
+进程验证 `/`、`/agent`、`/settings/skills`、生产资源和严格 CSP；另以临时数据库和测试账号
+启动真实账号 API，通过浏览器验证技能列表加载后被停用时，发送请求返回 422、页面显示
+技能不可用提示且无完成回合落库。账号测试只初始化认证与会话存储，不启动索引或模型；
+模型地址固定为不可用的回环测试地址，不连接真实 Provider。若本机设置了代理，
 测试配置会让 `127.0.0.1` 和 `localhost` 保持直连。
 
 Ragas 依赖位于 `eval` 组，不进入默认 CI。Windows 与 Linux 的离线检查以及独立的

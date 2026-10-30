@@ -51,6 +51,7 @@ export async function streamAgentAnswer(
   onUpdate: (update: StreamUpdate) => void,
   clientTurnId?: string,
   model?: ModelChoice,
+  skillIds?: readonly string[],
 ): Promise<AgentCompletion> {
   const response = await fetch("/agent/chat/stream", {
     method: "POST",
@@ -58,10 +59,16 @@ export async function streamAgentAnswer(
       Accept: "text/event-stream",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ message, session_id: sessionId, ...(clientTurnId ? { conversation_id: sessionId, client_turn_id: clientTurnId } : {}), ...(model ? { model } : {}) }),
+    body: JSON.stringify({
+      message,
+      session_id: sessionId,
+      ...(clientTurnId ? { conversation_id: sessionId, client_turn_id: clientTurnId } : {}),
+      ...(model ? { model } : {}),
+      ...(skillIds && skillIds.length ? { skill_ids: [...skillIds] } : {}),
+    }),
     signal,
   });
-  const stream = requireEventStream(response);
+  const stream = await requireEventStream(response);
   let streamedAnswer = "";
   let stepSequence = 0;
 

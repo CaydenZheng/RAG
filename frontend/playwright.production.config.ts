@@ -25,7 +25,7 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer: {
+  webServer: [{
     command: "uv run --no-sync --offline --no-env-file uvicorn app:app --host 127.0.0.1 --port 8001 --lifespan off",
     cwd: "..",
     env: {
@@ -39,5 +39,11 @@ export default defineConfig({
     url: "http://127.0.0.1:8001/health",
     reuseExistingServer: false,
     timeout: 60_000,
-  },
+  }, {
+    command: "uv run --no-sync --offline --no-env-file python frontend/e2e/account-backend.py",
+    cwd: "..",
+    url: "http://127.0.0.1:8002/health",
+    reuseExistingServer: false,
+    timeout: 60_000,
+  }],
 });

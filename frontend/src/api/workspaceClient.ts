@@ -97,7 +97,7 @@ export async function createSkill(file: File, model: ModelChoice, operationId: s
   const data = new FormData(); data.set("file", file); data.set("model", model); data.set("client_operation_id", operationId);
   const result = await response("/skills/creator/stream", signal, { method: "POST", body: data });
   let previewBytes = 0;
-  for await (const event of readSseEvents(requireEventStream(result), signal)) {
+  for await (const event of readSseEvents(await requireEventStream(result), signal)) {
     if (!isRecord(event)) continue;
     if (event.code === "auth_required" || isRecord(event.error) && event.error.code === "auth_required") {
       window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));

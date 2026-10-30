@@ -32,7 +32,7 @@ const INTERACTION_POLL_MS = 350;
 
 interface ConversationController {
   state: ConversationState;
-  send: (rawMessage: string) => Promise<void>;
+  send: (rawMessage: string, skillIds?: readonly string[]) => Promise<void>;
   stop: (markCancelled?: boolean) => void;
   reset: () => Promise<void>;
   respondToInteraction: (decision: InteractionDecision) => Promise<void>;
@@ -47,6 +47,11 @@ interface ConversationController {
   open: (id: string) => Promise<void>;
   loadOlder: () => Promise<void>;
   mutate: (action: "rename" | "clear" | "delete", title?: string) => Promise<boolean>;
+  mutateConversation: (
+    item: ConversationSummary,
+    action: "rename" | "clear" | "delete",
+    title?: string,
+  ) => Promise<boolean>;
   reconcile: () => Promise<void>;
   unconfirmed: boolean;
   forget: () => void;
@@ -132,7 +137,7 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
   }, [applyModel,defaultModel,stop]);
 
   const send = useCallback(
-    async (rawMessage: string): Promise<void> => {
+    async (rawMessage: string, skillIds?: readonly string[]): Promise<void> => {
       const message = rawMessage.trim();
       if (resettingRef.current || uncertainTurnRef.current || modelUnconfirmedRef.current || !message || message.length > 2000) return;
 
@@ -195,6 +200,7 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
             onUpdate,
             clientTurnId,
             account || IS_PAGES_DEMO ? requestedModel : undefined,
+            skillIds,
           );
           if (runSequence.current === runId && !controller.signal.aborted) {
             dispatch({ type: "complete_agent", completion });
@@ -355,26 +361,39 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
     finally { if (resetController.current === controller) { resettingRef.current = false; setResetting(false); resetController.current = null; } }
   }, [account,nextBefore,sessionId,state.status]);
 
-  const mutate = useCallback(async (action: "rename" | "clear" | "delete", title?: string): Promise<boolean> => {
-    if (!account || !summary || resettingRef.current) return false;
-    if (action === "rename" && isConversationActive(state.status)) return false;
-    if (action !== "rename" && !window.confirm(action === "clear" ? "清空当前会话的所有问答？目录和标题将保留。" : "删除整个会话及历史？此操作不能撤销。")) return false;
-    stop(true);
+  const mutateConversation = useCallback(async (
+    item: ConversationSummary,
+    action: "rename" | "clear" | "delete",
+    title?: string,
+  ): Promise<boolean> => {
+    if (!account || resettingRef.current) return false;
+    const isActive = summary?.id === item.id;
+    if (action === "rename" && isActive && isConversationActive(state.status)) return false;
+    if (action !== "rename" && !window.confirm(action === "clear" ? "清空该会话的所有问答？目录和标题将保留。" : "删除整个会话及历史？此操作不能撤销。")) return false;
+    if (isActive) stop(true);
     resettingRef.current = true; setResetting(true); setNotice("");
     const controller = new AbortController(); resetController.current = controller;
     try {
-      const updated = await updateConversation(summary,controller.signal,action,title);
+      const updated = await updateConversation(item,controller.signal,action,title);
       if (controller.signal.aborted) return false;
-      setSummary(updated); setDirectoryRevision((value) => value + 1);
-      if (action !== "rename") {
-        stop(false); dispatch({type:"clear"}); setNextBefore(null);
-        uncertainTurnRef.current = null; setUncertainTurn(null);
-        if (action === "delete") { setSessionId(createSessionId()); window.history.replaceState({},"",modeHref(mode)); }
+      setDirectoryRevision((value) => value + 1);
+      if (isActive) {
+        setSummary(updated);
+        if (action !== "rename") {
+          stop(false); dispatch({type:"clear"}); setNextBefore(null);
+          uncertainTurnRef.current = null; setUncertainTurn(null);
+          if (action === "delete") { setSessionId(createSessionId()); window.history.replaceState({},"",modeHref(mode)); }
+        }
       }
       return true;
     } catch (error) { if (!controller.signal.aborted) setNotice(toPublicMessage(error)); return false; }
     finally { if (resetController.current === controller) { resettingRef.current = false; setResetting(false); resetController.current = null; } }
   }, [account,summary,stop,mode,state.status]);
+
+  const mutate = useCallback(async (action: "rename" | "clear" | "delete", title?: string): Promise<boolean> => {
+    if (!summary) return false;
+    return mutateConversation(summary, action, title);
+  }, [mutateConversation,summary]);
 
   const reconcile = useCallback(async (): Promise<void> => {
     const turnId = uncertainTurnRef.current;
@@ -419,6 +438,6 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
   );
 
   return { state, send, stop, reset, respondToInteraction, resetting, notice, draft, setDraft,
-    sessionId, summary, directoryRevision, nextBefore, open, loadOlder, mutate, reconcile, forget, unconfirmed:uncertainTurn !== null,
+    sessionId, summary, directoryRevision, nextBefore, open, loadOlder, mutate, mutateConversation, reconcile, forget, unconfirmed:uncertainTurn !== null,
     model, chooseModel, modelUnconfirmed };
 }

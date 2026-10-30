@@ -5,11 +5,11 @@ import { useConversation } from "../app/useConversation";
 import { AUTH_EXPIRED_EVENT, clearAccount, readAccount, setAccountMode, workspaceFetch, type AccountUser } from "../api/authClient";
 import { App } from "../app/App";
 import { Composer } from "../components/Composer";
-import { createConversation, readHistory } from "../api/conversationClient";
+import { createConversation, readHistory, type ConversationSummary } from "../api/conversationClient";
 import { readSseEvents } from "../api/sse";
 
 const SESSION = "dd0a4998-1e1f-4c1d-84dd-48e22bdfc055";
-const SUMMARY = { id: SESSION,mode:"rag",title:"saved",revision:1,epoch:0,updated_at:"2026-10-22T00:00:00Z" };
+const SUMMARY: ConversationSummary = { id: SESSION,mode:"rag",title:"saved",revision:1,epoch:0,updated_at:"2026-10-22T00:00:00Z" };
 const USER: AccountUser = { id:"owner",username:"alice",role:"member",must_change_password:false };
 const MODELS = { items: [{id:"flash",label:"DeepSeek V4-Flash",available:true},{id:"pro",label:"DeepSeek V4-Pro",available:true}],default_model:"flash" };
 const json = (value: unknown, status = 200): Response => new Response(JSON.stringify(value),{status,headers:{"Content-Type":"application/json"}});
@@ -139,7 +139,8 @@ describe("account conversation lifecycle", () => {
       : path === "/workspace/models" ? json(MODELS) : path.startsWith("/conversations?") ? json({items:[SUMMARY],next_cursor:null})
         : path.endsWith("/turns") ? json({items:[],next_before:null}) : json(SUMMARY))));
     render(<App account={USER} />);
-    const rename = await screen.findByRole("button",{name:"重命名"});
+    fireEvent.click(await screen.findByRole("button",{name:"会话操作 saved"}));
+    const rename = await screen.findByRole("menuitem",{name:"重命名"});
     await waitFor(() => expect(rename).toBeEnabled());
     fireEvent.click(rename);
     fireEvent.change(screen.getByLabelText("会话标题"),{target:{value:"private draft title"}});
@@ -260,6 +261,38 @@ describe("account conversation lifecycle", () => {
     await act(() => hook.result.current.send("never replay"));
     expect(fetch.mock.calls.filter(([path]) => path.startsWith("/query/stream"))).toHaveLength(1);
     expect(fetch.mock.calls.some(([path]) => path.includes(`client_turn_id=${turnId}`) && path.includes("/turns"))).toBe(true);
+  });
+
+  it("renames and deletes a non-active conversation without disturbing the open one", async () => {
+    window.confirm = vi.fn().mockReturnValue(true);
+    const other = {...SUMMARY,id:"other",title:"other"};
+    const fetch = vi.fn((path: string,init?: RequestInit): Promise<Response> => {
+      if (init?.method === "PATCH") return Promise.resolve(json({...other,title:"renamed",revision:2}));
+      if (init?.method === "DELETE") return Promise.resolve(new Response(null,{status:204}));
+      if (path.endsWith("/turns")) return Promise.resolve(json({items:[],next_before:null}));
+      if (path.startsWith("/conversations?")) return Promise.resolve(json({items:[SUMMARY,other],next_cursor:null}));
+      return Promise.resolve(json(SUMMARY));
+    });
+    vi.stubGlobal("fetch",fetch);
+    const hook = renderHook(() => useConversation("rag",true));
+    await act(() => hook.result.current.open(SESSION));
+
+    let saved = false;
+    await act(async () => { saved = await hook.result.current.mutateConversation(other,"rename","renamed"); });
+    expect(saved).toBe(true);
+    expect(hook.result.current.sessionId).toBe(SESSION);
+    expect(hook.result.current.summary?.title).toBe("saved");
+    const patch = fetch.mock.calls.find(([,init]) => init?.method === "PATCH");
+    expect(patch?.[0]).toBe("/conversations/other");
+    expect(JSON.parse(String(patch?.[1]?.body))).toMatchObject({expected_revision:other.revision,title:"renamed"});
+
+    await act(async () => { saved = await hook.result.current.mutateConversation(other,"delete"); });
+    expect(saved).toBe(true);
+    const removed = fetch.mock.calls.find(([,init]) => init?.method === "DELETE");
+    expect(removed?.[0]).toBe("/conversations/other");
+    expect(new Headers(removed?.[1]?.headers).get("If-Match")).toBe(String(other.revision));
+    expect(hook.result.current.sessionId).toBe(SESSION);
+    expect(hook.result.current.state.turns).toHaveLength(0);
   });
 
   it("explains unconfirmed saving in the real App and keeps submission locked", async () => {

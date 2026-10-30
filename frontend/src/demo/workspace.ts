@@ -3,7 +3,8 @@ import type { CreatorResult, ModelCatalog, ModelChoice, SkillItem } from "../api
 import { PublicClientError } from "../api/errors";
 
 const creator: SkillItem = {id:"skill-creator",name:"skill-creator",description:"预设模拟：将资料整理为技能，不调用模型。",builtin:true,enabled:false,revision:0,version:"simulated-creator"};
-const items=new Map<string,SkillItem>([[creator.id,creator]]);
+const concise: SkillItem = {id:"demo-concise",name:"concise-writing",description:"预设模拟：先给结论，再补充依据。",builtin:false,enabled:true,revision:0,version:"simulated-demo",content:"---\nschema_version: 1\nname: concise-writing\ndescription: 预设模拟技能\n---\n先给结论，再补充依据。\n"};
+const items=new Map<string,SkillItem>([[creator.id,creator],[concise.id,concise]]);
 function check(signal:AbortSignal):void {if(signal.aborted)throw new DOMException("Aborted","AbortError");}
 export async function readModels(signal:AbortSignal):Promise<ModelCatalog>{check(signal);return {items:[{id:"flash",label:"DeepSeek V4-Flash · 模拟",available:true},{id:"pro",label:"DeepSeek V4-Pro · 模拟",available:true}],defaultModel:"flash"};}
 export async function readSkills(signal:AbortSignal):Promise<SkillItem[]>{check(signal);return [...items.values()].map(item=>({...item}));}

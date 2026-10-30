@@ -55,7 +55,7 @@ export async function streamRagAnswer(
     cache: "no-store",
     signal,
   });
-  const stream = requireEventStream(response);
+  const stream = await requireEventStream(response);
   let streamedAnswer = "";
 
   for await (const rawEvent of readSseEvents(stream, signal)) {

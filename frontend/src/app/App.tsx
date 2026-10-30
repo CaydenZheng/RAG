@@ -7,15 +7,12 @@ import type { AccountUser } from "../api/authClient";
 import { HistoryDirectory } from "../components/HistoryDirectory";
 import { Composer } from "../components/Composer";
 import { ConversationView } from "../components/ConversationView";
-import { ServiceStatus } from "../components/ServiceStatus";
 import { Sidebar } from "../components/Sidebar";
-import { ThemeControl } from "../components/ThemeControl";
 import { SkillsPage } from "../components/SkillsPage";
 import { readModels, type ModelCatalog } from "../api/workspaceClient";
 import { toPublicMessage } from "../api/errors";
 import { useConversation } from "./useConversation";
 import { useServiceStatus } from "./useServiceStatus";
-import { useTheme } from "./useTheme";
 import { currentMode, IS_PAGES_DEMO, isSkillsRoute, modeHref, skillsHref } from "./runtime";
 
 const AUTO_FOLLOW_THRESHOLD_PX = 80;
@@ -31,10 +28,10 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
     if (!account && !IS_PAGES_DEMO) return undefined;
     const controller = new AbortController();
     setModelsNotice("");
-    void readModels(controller.signal).then(value => {if(!controller.signal.aborted)setModels(value);})
-      .catch(error => {if(!controller.signal.aborted)setModelsNotice(toPublicMessage(error));});
+    void readModels(controller.signal).then(value => { if (!controller.signal.aborted) setModels(value); })
+      .catch(error => { if (!controller.signal.aborted) setModelsNotice(toPublicMessage(error)); });
     return () => controller.abort();
-  }, [account,modelsRevision]);
+  }, [account, modelsRevision]);
   const [compactNavigation, setCompactNavigation] = useState(() => (
     window.matchMedia?.(COMPACT_NAVIGATION_QUERY).matches ?? false
   ));
@@ -42,7 +39,6 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
   const previousMode = useRef(mode);
   const previousView = useRef(skillsView);
   const serviceState = useServiceStatus();
-  const theme = useTheme();
   const ragConversation = useConversation("rag", !!account, models?.defaultModel);
   const agentConversation = useConversation("agent", !!account, models?.defaultModel);
   const activeConversation = mode === "rag" ? ragConversation : agentConversation;
@@ -53,10 +49,6 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
   const followingLatest = useRef(true);
   const [showLatest, setShowLatest] = useState(false);
   const [routeConversation, setRouteConversation] = useState(() => account ? new URLSearchParams(window.location.search).get("conversation") : null);
-  const [renaming, setRenaming] = useState(false);
-  const [titleDraft, setTitleDraft] = useState("");
-  const renameButton = useRef<HTMLButtonElement>(null);
-  const focusRenameAfterClose = useRef(false);
   const olderAnchor = useRef<{ height: number; top: number } | null>(null);
   const {
     state,
@@ -72,20 +64,11 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
 
   const ragOpen = ragConversation.open;
   const agentOpen = agentConversation.open;
-  useEffect(() => {
-    setRenaming(false); setTitleDraft(""); focusRenameAfterClose.current=false;
-  }, [mode,activeConversation.sessionId]);
-  useEffect(() => { if (account) workspace.current?.focus({preventScroll:true}); }, [account]);
-  useLayoutEffect(() => {
-    if (!renaming && !resetting && focusRenameAfterClose.current) {
-      focusRenameAfterClose.current = false;
-      renameButton.current?.focus();
-    }
-  }, [renaming,resetting]);
+  useEffect(() => { if (account) workspace.current?.focus({ preventScroll: true }); }, [account]);
   useEffect(() => {
     if (!account || !routeConversation || skillsView) return;
     void (mode === "rag" ? ragOpen : agentOpen)(routeConversation);
-  }, [account,agentOpen,mode,ragOpen,routeConversation,skillsView]);
+  }, [account, agentOpen, mode, ragOpen, routeConversation, skillsView]);
 
   const navigate = useCallback((nextMode: WorkspaceMode): void => {
     if (nextMode === mode && !skillsView) return;
@@ -95,7 +78,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
     setRouteConversation(nextId ?? null);
     setMode(nextMode);
     setSkillsView(false);
-  }, [account,activeConversation,agentConversation,ragConversation,mode,skillsView]);
+  }, [account, activeConversation, agentConversation, ragConversation, mode, skillsView]);
 
   const closeNavigation = useCallback((): void => {
     focusAfterNavigationClose.current = "navigation";
@@ -159,7 +142,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [account,activeConversation,agentConversation,ragConversation]);
+  }, [account, activeConversation, agentConversation, ragConversation]);
 
   useLayoutEffect(() => {
     if (olderAnchor.current && scrollRegion.current) {
@@ -198,7 +181,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
       previousMode.current = mode;
       previousView.current = skillsView;
     }
-  }, [mode,skillsView]);
+  }, [mode, skillsView]);
 
   function handleConversationScroll(): void {
     if (state.turns.length === 0) return;
@@ -207,6 +190,14 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
     const atBottom = region.scrollHeight - region.scrollTop - region.clientHeight <= AUTO_FOLLOW_THRESHOLD_PX;
     followingLatest.current = atBottom;
     setShowLatest(!atBottom);
+  }
+
+  function loadOlder(): void {
+    if (scrollRegion.current) {
+      olderAnchor.current = { height: scrollRegion.current.scrollHeight, top: scrollRegion.current.scrollTop };
+    }
+    followingLatest.current = false;
+    void activeConversation.loadOlder();
   }
 
   return (
@@ -219,26 +210,44 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
       <Sidebar
         skillsActive={skillsView}
         onSkills={() => {
-          if (skillsView) {if(navigationOpen)closeNavigation();return;}
+          if (skillsView) { if (navigationOpen) closeNavigation(); return; }
           activeConversation.stop(true);
-          window.history.pushState({},"",skillsHref());setSkillsView(true);setRouteConversation(null);
-          if(navigationOpen)closeNavigationToWorkspace();else window.requestAnimationFrame(()=>workspace.current?.focus());
+          window.history.pushState({}, "", skillsHref());
+          setSkillsView(true);
+          setRouteConversation(null);
+          if (navigationOpen) closeNavigationToWorkspace();
+          else window.requestAnimationFrame(() => workspace.current?.focus());
         }}
         account={!!account}
-        history={account ? <HistoryDirectory mode={mode} activeId={activeConversation.sessionId} revision={activeConversation.directoryRevision} onOpen={(id) => {
-          setSkillsView(false);
-          activeConversation.stop(true);
-          window.history.pushState({},"",`${modeHref(mode)}?conversation=${encodeURIComponent(id)}`);
-          if (id === routeConversation) void activeConversation.open(id);
-          else setRouteConversation(id);
-          if (navigationOpen) closeNavigationToWorkspace();
-          else workspace.current?.focus();
-        }} /> : undefined}
+        username={account?.username}
+        onLogout={onLogout}
+        serviceState={serviceState.state}
+        onRefreshService={serviceState.refresh}
+        history={account ? <HistoryDirectory
+          mode={mode}
+          activeId={activeConversation.sessionId}
+          revision={activeConversation.directoryRevision}
+          title={activeConversation.summary?.title}
+          busy={resetting || isConversationActive(state.status)}
+          canMutate
+          onRename={(item, nextTitle) => activeConversation.mutateConversation(item, "rename", nextTitle)}
+          onClear={(item) => void activeConversation.mutateConversation(item, "clear")}
+          onDelete={(item) => void activeConversation.mutateConversation(item, "delete")}
+          onOpen={(id) => {
+            setSkillsView(false);
+            activeConversation.stop(true);
+            window.history.pushState({}, "", `${modeHref(mode)}?conversation=${encodeURIComponent(id)}`);
+            if (id === routeConversation) void activeConversation.open(id);
+            else setRouteConversation(id);
+            if (navigationOpen) closeNavigationToWorkspace();
+            else workspace.current?.focus();
+          }}
+        /> : undefined}
         mode={mode}
         resetting={resetting}
         compact={compactNavigation}
         open={!compactNavigation || navigationOpen}
-        onReset={() => { if(skillsView)navigate(mode);setRouteConversation(null); void reset(); }}
+        onReset={() => { if (skillsView) navigate(mode); setRouteConversation(null); void reset(); }}
         onNavigate={(nextMode) => {
           if (nextMode === mode && !skillsView) {
             if (navigationOpen) closeNavigation();
@@ -266,91 +275,82 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         aria-hidden={compactNavigation && navigationOpen ? true : undefined}
         inert={compactNavigation && navigationOpen ? true : undefined}
       >
-        <header className="workspace-header">
-          <button
-            ref={navigationButton}
-            className="mobile-nav-button"
-            type="button"
-            aria-label="打开导航"
-            aria-controls="workspaceNavigation"
-            aria-expanded={navigationOpen}
-            onClick={() => setNavigationOpen(true)}
-          >
-            <Menu size={20} aria-hidden="true" />
-          </button>
-          <div className="workspace-heading">
-            <p className="eyebrow">{mode === "rag" ? "知识问答" : "Agent"}</p>
-            <h1>{skillsView ? "Skills 工作台" : mode === "rag" ? "知识问答工作台" : "Agent 工作台"}</h1>
-          </div>
-          <div className="header-actions">
-            <span className="mode-context">{IS_PAGES_DEMO ? "公开模拟演示" : account ? `账号：${account.username}` : "本地单用户模式"}</span>
-            {account && <button type="button" onClick={onLogout}>退出／切换账号</button>}
-            <ServiceStatus state={serviceState.state} onRefresh={serviceState.refresh} />
-            <ThemeControl
-              preference={theme.preference}
-              resolved={theme.resolved}
-              onChange={theme.setPreference}
-            />
-          </div>
-        </header>
-        {skillsView ? (models || !account && !IS_PAGES_DEMO ? <SkillsPage available={!!account||IS_PAGES_DEMO} models={models?.items??[]} defaultModel={models?.defaultModel??"flash"} /> :
-          <section className="skills-page"><p role="status">{modelsNotice || "正在加载模型目录…"}</p><button type="button" onClick={()=>setModelsRevision(value=>value+1)}>重新读取模型目录</button></section>) : <><section
-          className="conversation-scroll"
-          aria-label="对话内容"
-          ref={scrollRegion}
-          onScroll={handleConversationScroll}
+        <h1 className="sr-only">
+          {skillsView ? "Skills 工作台" : mode === "rag" ? "知识问答工作台" : "Agent 工作台"}
+        </h1>
+        <button
+          ref={navigationButton}
+          className="mobile-nav-button"
+          type="button"
+          aria-label="打开导航"
+          aria-controls="workspaceNavigation"
+          aria-expanded={navigationOpen}
+          onClick={() => setNavigationOpen(true)}
         >
-          {IS_PAGES_DEMO && (
-            <aside className="demo-notice" aria-label="模拟演示说明">
-              <strong>静态模拟演示 · 非真实 AI 服务</strong>
-              <p>回答、引用、工具与审批均为预设示例，不连接模型、索引或 MCP，不执行工具。输入仅在当前页面内存中使用，请勿输入敏感信息。刷新会清空对话。</p>
-              {mode === "agent" && <p>输入“审批”“表单”“URL”“超时”或“错误”可体验对应流程；其他任务展示模拟工具过程。</p>}
-            </aside>
-          )}
-          {notice && <div className="page-error" role="alert">{notice}</div>}
-          {modelsNotice && <div className="page-error" role="alert">{modelsNotice}<button type="button" onClick={()=>setModelsRevision(value=>value+1)}>重新读取模型目录</button></div>}
-          {account && <div className="history-actions">
-            <p>{activeConversation.summary?.title || "新对话"}</p>
-            <button ref={renameButton} type="button" disabled={resetting || !activeConversation.summary || isConversationActive(state.status)} onClick={() => { setTitleDraft(activeConversation.summary?.title || ""); setRenaming(true); }}>重命名</button>
-            <button type="button" disabled={resetting || !activeConversation.summary} onClick={() => void activeConversation.mutate("clear").then((saved) => { if (saved) workspace.current?.focus(); })}>清空内容</button>
-            <button className="danger-button" type="button" disabled={resetting || !activeConversation.summary} onClick={() => void activeConversation.mutate("delete").then((saved) => { if (saved) workspace.current?.focus(); })}>删除会话</button>
-            {renaming && <form onSubmit={(event) => { event.preventDefault(); void activeConversation.mutate("rename",titleDraft).then((saved) => { if (saved) { focusRenameAfterClose.current=true; setRenaming(false); } }); }}>
-              <label>会话标题<input autoFocus disabled={resetting} value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} minLength={1} maxLength={80} required /></label>
-              <button type="submit" disabled={resetting}>保存标题</button><button type="button" disabled={resetting} onClick={() => { focusRenameAfterClose.current=true; setRenaming(false); }}>取消</button>
-            </form>}
-            {activeConversation.unconfirmed && <button type="button" disabled={resetting} onClick={() => void activeConversation.reconcile()}>核对本轮历史</button>}
-            {activeConversation.nextBefore && <button type="button" disabled={resetting || isConversationActive(state.status)} onClick={() => {
-              if (scrollRegion.current) olderAnchor.current = { height:scrollRegion.current.scrollHeight,top:scrollRegion.current.scrollTop };
-              followingLatest.current = false;
-              void activeConversation.loadOlder();
-            }}>加载更早问答</button>}
-          </div>}
-          <ConversationView
-            mode={mode}
-            state={state}
-            onSuggestion={setDraft}
-            onInteractionDecision={respondToInteraction}
-          />
-          {showLatest && (
-            <button className="back-to-latest" type="button" onClick={scrollToLatest}>
-              <ArrowDown size={16} aria-hidden="true" />回到最新
-            </button>
-          )}
-        </section>
-        <Composer
-          mode={mode}
-          status={state.status}
-          resetting={resetting || activeConversation.modelUnconfirmed}
-          modelUnavailable={(!!account || IS_PAGES_DEMO) && !models?.items.some(item=>item.id===activeConversation.model&&item.available)}
-          model={activeConversation.model}
-          models={account || IS_PAGES_DEMO ? models?.items??[] : undefined}
-          onModelChange={value=>void activeConversation.chooseModel(value)}
-          unconfirmed={activeConversation.unconfirmed}
-          value={draft}
-          onValueChange={setDraft}
-          onSend={send}
-          onStop={() => stop(true)}
-        /></>}
+          <Menu size={16} aria-hidden="true" />
+        </button>
+        {skillsView ? (
+          models || (!account && !IS_PAGES_DEMO) ? (
+            <SkillsPage available={!!account || IS_PAGES_DEMO} />
+          ) : (
+            <section className="skills-page">
+              <p role="status">{modelsNotice || "正在加载模型目录…"}</p>
+              <button className="btn" type="button" onClick={() => setModelsRevision(value => value + 1)}>重新读取模型目录</button>
+            </section>
+          )
+        ) : (
+          <>
+            <section
+              className="conversation-scroll"
+              aria-label="对话内容"
+              ref={scrollRegion}
+              onScroll={handleConversationScroll}
+            >
+              {IS_PAGES_DEMO && (
+                <aside className="demo-notice" aria-label="模拟演示说明">
+                  <strong>静态模拟演示 · 非真实 AI 服务</strong>
+                  <p>回答、引用、工具与审批均为预设示例，不连接模型、索引或 MCP，不执行工具。输入仅在当前页面内存中使用，请勿输入敏感信息。刷新会清空对话。</p>
+                  {mode === "agent" && <p>输入“审批”“表单”“URL”“超时”或“错误”可体验对应流程；其他任务展示模拟工具过程。</p>}
+                </aside>
+              )}
+              {notice && <div className="page-error" role="alert">{notice}</div>}
+              {modelsNotice && <div className="page-error" role="alert">{modelsNotice}<button type="button" onClick={() => setModelsRevision(value => value + 1)}>重新读取模型目录</button></div>}
+              {account && activeConversation.nextBefore && (
+                <div className="load-older">
+                  <button type="button" disabled={resetting || isConversationActive(state.status)} onClick={loadOlder}>
+                    加载更早问答
+                  </button>
+                </div>
+              )}
+              <ConversationView
+                mode={mode}
+                state={state}
+                onInteractionDecision={respondToInteraction}
+              />
+              {showLatest && (
+                <button className="back-to-latest" type="button" onClick={scrollToLatest}>
+                  <ArrowDown size={14} aria-hidden="true" />回到最新
+                </button>
+              )}
+            </section>
+            <Composer
+              mode={mode}
+              status={state.status}
+              resetting={resetting || activeConversation.modelUnconfirmed}
+              modelUnavailable={(!!account || IS_PAGES_DEMO) && !models?.items.some(item => item.id === activeConversation.model && item.available)}
+              model={activeConversation.model}
+              models={account || IS_PAGES_DEMO ? models?.items ?? [] : undefined}
+              onModelChange={value => void activeConversation.chooseModel(value)}
+              unconfirmed={activeConversation.unconfirmed}
+              onReconcile={() => void activeConversation.reconcile()}
+              skillsEnabled={!!account || IS_PAGES_DEMO}
+              value={draft}
+              onValueChange={setDraft}
+              onSend={send}
+              onStop={() => stop(true)}
+            />
+          </>
+        )}
       </main>
     </div>
   );
