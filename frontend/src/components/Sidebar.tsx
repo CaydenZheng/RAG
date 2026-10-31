@@ -2,7 +2,7 @@ import { Bot, BookOpen, Database, History, Plus, Settings2, X } from "lucide-rea
 import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
 
 import type { WorkspaceMode } from "../api/types";
-import { IS_PAGES_DEMO, modeHref, skillsHref } from "../app/runtime";
+import { IS_PAGES_DEMO, knowledgeHref, modeHref, skillsHref } from "../app/runtime";
 import type { ServiceState } from "../app/useServiceStatus";
 import { ServiceStatus } from "./ServiceStatus";
 
@@ -20,6 +20,8 @@ interface SidebarProps {
   account?: boolean;
   skillsActive?: boolean;
   onSkills?: () => void;
+  knowledgeActive?: boolean;
+  onKnowledge?: () => void;
   username?: string;
   onLogout?: () => void;
 }
@@ -38,6 +40,8 @@ export function Sidebar({
   account = false,
   skillsActive = false,
   onSkills,
+  knowledgeActive = false,
+  onKnowledge,
   username,
   onLogout,
 }: SidebarProps): React.JSX.Element {
@@ -81,11 +85,11 @@ export function Sidebar({
       </button>
 
       <nav className="mode-nav" aria-label="对话模式">
-        <a className="mode-link" data-active={!skillsActive && mode === "rag"} href={modeHref("rag")} aria-current={!skillsActive && mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
+        <a className="mode-link" data-active={!skillsActive && !knowledgeActive && mode === "rag"} href={modeHref("rag")} aria-current={!skillsActive && !knowledgeActive && mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
           <BookOpen size={16} aria-hidden="true" />
           <span>知识问答</span>
         </a>
-        <a className="mode-link" data-active={!skillsActive && mode === "agent"} href={modeHref("agent")} aria-current={!skillsActive && mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
+        <a className="mode-link" data-active={!skillsActive && !knowledgeActive && mode === "agent"} href={modeHref("agent")} aria-current={!skillsActive && !knowledgeActive && mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
           <Bot size={16} aria-hidden="true" />
           <span>Agent</span>
         </a>
@@ -106,11 +110,14 @@ export function Sidebar({
 
       <div className="sidebar-spacer" />
 
-      <button className="sidebar-disabled" type="button" disabled aria-describedby="knowledgeHint">
+      {(account || IS_PAGES_DEMO) ? <a className="mode-link" href={knowledgeHref()} aria-current={knowledgeActive ? "page" : undefined} data-active={knowledgeActive} onClick={event => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault(); onKnowledge?.();
+      }}><Database size={15} aria-hidden="true" /><span>知识库浏览</span></a> : <button className="sidebar-disabled" type="button" disabled aria-describedby="knowledgeHint">
         <Database size={15} aria-hidden="true" />
         <span>知识库管理</span>
         <span className="soon-badge" id="knowledgeHint">即将支持</span>
-      </button>
+      </button>}
       <a className="sidebar-link" href={IS_PAGES_DEMO ? "https://github.com/CaydenZheng/RAG" : "/docs"}>
         <Settings2 size={15} aria-hidden="true" />
         <span>{IS_PAGES_DEMO ? "源码与部署说明" : "API 文档"}</span>

@@ -79,7 +79,7 @@ def skills() -> dict[str, Any]:
     return {"items": SkillStore(stores.session_store).listing()}
 
 
-async def _upload(request: Request, maximum: int, allowed_fields: set[str]) -> tuple[bytes, str, dict[str, str]]:
+async def _upload(request: Request, maximum: int, allowed_fields: set[str], *, include_filename: bool = False) -> tuple[bytes, str, dict[str, str]]:
     """Bound the whole multipart message before parsing; never spool to disk."""
     body: bytearray = bytearray()
     async for chunk in request.stream():
@@ -116,6 +116,8 @@ async def _upload(request: Request, maximum: int, allowed_fields: set[str]) -> t
                     raise WorkspaceError("document_too_large", 413)
                 data = payload
                 suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+                if include_filename:
+                    fields["_filename"] = filename
             elif name in allowed_fields and name not in fields and len(payload) <= 128:
                 fields[name] = payload.decode("utf8")
             else:

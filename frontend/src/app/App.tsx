@@ -9,11 +9,13 @@ import { Composer } from "../components/Composer";
 import { ConversationView } from "../components/ConversationView";
 import { Sidebar } from "../components/Sidebar";
 import { SkillsPage } from "../components/SkillsPage";
+import { KnowledgePage } from "../components/KnowledgePage";
+import { AttachmentPanel } from "../components/AttachmentPanel";
 import { readModels, type ModelCatalog } from "../api/workspaceClient";
 import { toPublicMessage } from "../api/errors";
 import { useConversation } from "./useConversation";
 import { useServiceStatus } from "./useServiceStatus";
-import { currentMode, IS_PAGES_DEMO, isSkillsRoute, modeHref, skillsHref } from "./runtime";
+import { currentMode, IS_PAGES_DEMO, isKnowledgeRoute, isSkillsRoute, knowledgeHref, modeHref, skillsHref } from "./runtime";
 
 const AUTO_FOLLOW_THRESHOLD_PX = 80;
 const COMPACT_NAVIGATION_QUERY = "(max-width: 899px)";
@@ -21,6 +23,10 @@ const COMPACT_NAVIGATION_QUERY = "(max-width: 899px)";
 export function App({ account, onLogout }: { account?: AccountUser; onLogout?: () => void }): React.JSX.Element {
   const [mode, setMode] = useState(currentMode);
   const [skillsView, setSkillsView] = useState(isSkillsRoute);
+  const [knowledgeView, setKnowledgeView] = useState(isKnowledgeRoute);
+  const utilityView = skillsView || knowledgeView;
+  const view = skillsView ? "skills" : knowledgeView ? "knowledge" : "conversation";
+  const [attachmentSelection, setAttachmentSelection] = useState<{sessionId:string; ids:string[]; pending:boolean}>({sessionId:"", ids:[], pending:false});
   const [models, setModels] = useState<ModelCatalog | null>(null);
   const [modelsNotice, setModelsNotice] = useState("");
   const [modelsRevision, setModelsRevision] = useState(0);
@@ -37,7 +43,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
   ));
   const [navigationOpen, setNavigationOpen] = useState(false);
   const previousMode = useRef(mode);
-  const previousView = useRef(skillsView);
+  const previousView = useRef(view);
   const serviceState = useServiceStatus();
   const ragConversation = useConversation("rag", !!account, models?.defaultModel);
   const agentConversation = useConversation("agent", !!account, models?.defaultModel);
@@ -66,19 +72,27 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
   const agentOpen = agentConversation.open;
   useEffect(() => { if (account) workspace.current?.focus({ preventScroll: true }); }, [account]);
   useEffect(() => {
-    if (!account || !routeConversation || skillsView) return;
+    if (!account || !routeConversation || utilityView) return;
     void (mode === "rag" ? ragOpen : agentOpen)(routeConversation);
-  }, [account, agentOpen, mode, ragOpen, routeConversation, skillsView]);
+  }, [account, agentOpen, mode, ragOpen, routeConversation, utilityView]);
+
+  const selectionSession = `${mode}:${activeConversation.sessionId}:${activeConversation.summary?.epoch ?? 0}`;
+  const receiveAttachments = useCallback((ids: string[], pending: boolean): void => {
+    setAttachmentSelection({sessionId:selectionSession, ids, pending});
+  }, [selectionSession]);
+  const selectedAttachments = attachmentSelection.sessionId === selectionSession ? attachmentSelection.ids : [];
+  const attachmentsPending = attachmentSelection.sessionId === selectionSession && attachmentSelection.pending;
 
   const navigate = useCallback((nextMode: WorkspaceMode): void => {
-    if (nextMode === mode && !skillsView) return;
+    if (nextMode === mode && !utilityView) return;
     activeConversation.stop(true);
     const nextId = account ? (nextMode === "rag" ? ragConversation : agentConversation).summary?.id : undefined;
     window.history.pushState({}, "", `${modeHref(nextMode)}${nextId ? `?conversation=${encodeURIComponent(nextId)}` : ""}`);
     setRouteConversation(nextId ?? null);
     setMode(nextMode);
     setSkillsView(false);
-  }, [account, activeConversation, agentConversation, ragConversation, mode, skillsView]);
+    setKnowledgeView(false);
+  }, [account, activeConversation, agentConversation, ragConversation, mode, utilityView]);
 
   const closeNavigation = useCallback((): void => {
     focusAfterNavigationClose.current = "navigation";
@@ -134,10 +148,12 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
       activeConversation.stop(true);
       const nextMode = currentMode();
       const nextSkillsView = isSkillsRoute();
+      const nextKnowledgeView = isKnowledgeRoute();
       const nextId = account ? new URLSearchParams(window.location.search).get("conversation") : null;
-      if (account && !nextId && !nextSkillsView) (nextMode === "rag" ? ragConversation : agentConversation).forget();
+      if (account && !nextId && !nextSkillsView && !nextKnowledgeView) (nextMode === "rag" ? ragConversation : agentConversation).forget();
       setMode(nextMode);
       setSkillsView(nextSkillsView);
+      setKnowledgeView(nextKnowledgeView);
       setRouteConversation(nextId);
     };
     window.addEventListener("popstate", handlePopState);
@@ -176,12 +192,12 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
   useEffect(() => {
     followingLatest.current = true;
     setShowLatest(false);
-    if (previousMode.current !== mode || previousView.current !== skillsView) {
+    if (previousMode.current !== mode || previousView.current !== view) {
       workspace.current?.focus({ preventScroll: true });
       previousMode.current = mode;
-      previousView.current = skillsView;
+      previousView.current = view;
     }
-  }, [mode, skillsView]);
+  }, [mode, view]);
 
   function handleConversationScroll(): void {
     if (state.turns.length === 0) return;
@@ -209,11 +225,21 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
       >跳到主要内容</a>
       <Sidebar
         skillsActive={skillsView}
+        knowledgeActive={knowledgeView}
+        onKnowledge={() => {
+          if (knowledgeView) { if (navigationOpen) closeNavigation(); return; }
+          activeConversation.stop(true);
+          window.history.pushState({}, "", knowledgeHref());
+          setKnowledgeView(true); setSkillsView(false); setRouteConversation(null);
+          if (navigationOpen) closeNavigationToWorkspace();
+          else window.requestAnimationFrame(() => workspace.current?.focus());
+        }}
         onSkills={() => {
           if (skillsView) { if (navigationOpen) closeNavigation(); return; }
           activeConversation.stop(true);
           window.history.pushState({}, "", skillsHref());
           setSkillsView(true);
+          setKnowledgeView(false);
           setRouteConversation(null);
           if (navigationOpen) closeNavigationToWorkspace();
           else window.requestAnimationFrame(() => workspace.current?.focus());
@@ -235,6 +261,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
           onDelete={(item) => void activeConversation.mutateConversation(item, "delete")}
           onOpen={(id) => {
             setSkillsView(false);
+            setKnowledgeView(false);
             activeConversation.stop(true);
             window.history.pushState({}, "", `${modeHref(mode)}?conversation=${encodeURIComponent(id)}`);
             if (id === routeConversation) void activeConversation.open(id);
@@ -247,9 +274,9 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         resetting={resetting}
         compact={compactNavigation}
         open={!compactNavigation || navigationOpen}
-        onReset={() => { if (skillsView) navigate(mode); setRouteConversation(null); void reset(); }}
+        onReset={() => { if (utilityView) navigate(mode); setRouteConversation(null); void reset(); }}
         onNavigate={(nextMode) => {
-          if (nextMode === mode && !skillsView) {
+          if (nextMode === mode && !utilityView) {
             if (navigationOpen) closeNavigation();
             return;
           }
@@ -276,7 +303,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         inert={compactNavigation && navigationOpen ? true : undefined}
       >
         <h1 className="sr-only">
-          {skillsView ? "Skills 工作台" : mode === "rag" ? "知识问答工作台" : "Agent 工作台"}
+          {knowledgeView ? "知识库浏览" : skillsView ? "Skills 工作台" : mode === "rag" ? "知识问答工作台" : "Agent 工作台"}
         </h1>
         <button
           ref={navigationButton}
@@ -289,7 +316,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         >
           <Menu size={16} aria-hidden="true" />
         </button>
-        {skillsView ? (
+        {knowledgeView ? <KnowledgePage available={!!account || IS_PAGES_DEMO} /> : skillsView ? (
           models || (!account && !IS_PAGES_DEMO) ? (
             <SkillsPage available={!!account || IS_PAGES_DEMO} models={models?.items} defaultModel={models?.defaultModel} />
           ) : (
@@ -334,6 +361,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
               )}
             </section>
             <Composer
+              attachmentsPending={attachmentsPending}
               mode={mode}
               status={state.status}
               resetting={resetting || activeConversation.modelUnconfirmed}
@@ -346,8 +374,12 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
               skillsEnabled={!!account || IS_PAGES_DEMO}
               value={draft}
               onValueChange={setDraft}
-              onSend={send}
+              onSend={(message, skillIds) => attachmentsPending ? Promise.resolve() : send(message, skillIds, selectedAttachments)}
               onStop={() => stop(true)}
+              attachments={(account || IS_PAGES_DEMO) && <AttachmentPanel key={selectionSession}
+                sessionId={activeConversation.sessionId} exists={!!activeConversation.summary || IS_PAGES_DEMO}
+                disabled={resetting || isConversationActive(state.status) || activeConversation.unconfirmed || activeConversation.modelUnconfirmed}
+                ensure={activeConversation.ensure} onSelection={receiveAttachments} onDeleted={activeConversation.markAttachmentDeleted} />}
             />
           </>
         )}

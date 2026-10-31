@@ -66,6 +66,8 @@ def completion_metadata() -> dict:
         "used_model": completed_model.get(),
         "skills": [{"id": skill.id, "name": skill.name, "version": skill.version}
                    for skill in options.skills],
+        "attachments": [{"id": item.id, "name": item.name, "checksum": item.checksum, "page_count": len(item.pages)}
+                        for item in options.attachments],
     }
 
 

@@ -174,11 +174,15 @@ class AnswerService:
 
     @staticmethod
     def _messages(answer_input: AnswerInput) -> list[dict[str, str]]:
-        return build_answer_messages(
+        messages = build_answer_messages(
             answer_input.query,
             answer_input.context,
             answer_input.history,
         )
+        from src.core.attachments import attachment_output_limit
+
+        attachment_output_limit(messages, AnswerService._config()["max_tokens"], answer_input.options)
+        return messages
 
     @staticmethod
     def _config() -> dict:
@@ -206,12 +210,15 @@ class AnswerService:
         from src.infra.fallback import chat_with_fallback_async
 
         config = self._config()
+        from src.core.attachments import attachment_output_limit
+
+        messages = self._messages(answer_input)
         with tracer.stage("answer_generation"):
             answer = await chat_with_fallback_async(
-                self._messages(answer_input),
+                messages,
                 model=answer_input.options.model if answer_input.options else config["model"],
                 temperature=config["temperature"],
-                max_tokens=config["max_tokens"],
+                max_tokens=attachment_output_limit(messages, config["max_tokens"], answer_input.options),
                 index_version=answer_input.index_version,
             )
         return sanitize_answer_citations(
@@ -227,15 +234,18 @@ class AnswerService:
             return
 
         config = self._config()
+        from src.core.attachments import attachment_output_limit
+
+        messages = self._messages(answer_input)
         citation_guard = CitationStreamGuard(
             set(answer_input.valid_citation_refs)
         )
         with tracer.stage("answer_generation"):
             provider_stream = llm_client.chat_stream_async(
-                self._messages(answer_input),
+                messages,
                 model=answer_input.options.model if answer_input.options else config["model"],
                 temperature=config["temperature"],
-                max_tokens=config["max_tokens"],
+                max_tokens=attachment_output_limit(messages, config["max_tokens"], answer_input.options),
             )
         try:
             with tracer.stage("answer_generation"):

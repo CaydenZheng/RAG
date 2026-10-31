@@ -45,10 +45,12 @@ export async function streamRagAnswer(
   onUpdate: (update: StreamUpdate) => void,
   clientTurnId?: string,
   model?: ModelChoice,
+  attachmentIds?: readonly string[],
 ): Promise<RagCompletion> {
   const search = new URLSearchParams({ query, session_id: sessionId });
   if (clientTurnId) { search.set("conversation_id", sessionId); search.set("client_turn_id", clientTurnId); }
   if (model) search.set("model", model);
+  for (const id of attachmentIds ?? []) search.append("attachment_ids", id);
   const response = await fetch(`/query/stream?${search.toString()}`, {
     method: "GET",
     headers: { Accept: "text/event-stream" },

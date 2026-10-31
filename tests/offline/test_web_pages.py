@@ -79,7 +79,7 @@ def test_browser_pages_discover_and_serve_built_assets(
 ) -> None:
     try:
         page_bodies: list[str] = []
-        for page_path in ("/", "/agent"):
+        for page_path in ("/", "/agent", "/settings/skills", "/knowledge"):
             page = web_client.get(page_path)
             assert page.status_code == 200
             assert page.headers["content-type"].startswith("text/html")
@@ -103,7 +103,7 @@ def test_pages_enforce_external_only_active_content(
     web_client: TestClient,
 ) -> None:
     try:
-        for page_path in ("/", "/agent"):
+        for page_path in ("/", "/agent", "/settings/skills", "/knowledge"):
             response = web_client.get(page_path)
             policy = response.headers["content-security-policy"]
             assert "script-src 'self'" in policy
@@ -147,7 +147,7 @@ def test_missing_build_returns_503_without_breaking_business_routes(
     monkeypatch.setattr(pages, "APP_INDEX_PATH", tmp_path / "missing.html")
     try:
         assert web_client.get("/health").status_code == 200
-        for page_path in ("/", "/agent"):
+        for page_path in ("/", "/agent", "/settings/skills", "/knowledge"):
             response = web_client.get(page_path)
             assert response.status_code == 503
             assert "npm ci" in response.text

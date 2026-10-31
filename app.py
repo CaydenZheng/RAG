@@ -25,6 +25,7 @@ FastAPI 服务入口。
     uvicorn app:app --host 0.0.0.0 --port 8000
 """
 
+import asyncio
 import logging
 import sys
 import time
@@ -69,9 +70,12 @@ from src.agent.mcp_oauth import (
 )
 from src.agent.tool_approval import MAX_TOOL_APPROVAL_RESPONSE_BODY_BYTES
 from src.api.admin_auth import AdminAuthMiddleware
+from src.api.attachments import close_attachments, open_attachments
+from src.api.attachments import router as attachments_router
 from src.api.client_identity import ClientIdentityMiddleware, scope_request_session
 from src.api.conversations import begin_exchange
 from src.api.conversations import router as conversations_router
+from src.api.knowledge import router as knowledge_router
 from src.api.observability import RequestTracingMiddleware
 from src.api.public_errors import public_error
 from src.api.reliability import RAGRequestReliabilityMiddleware
@@ -93,7 +97,8 @@ from src.api.user_auth import UserAuthBoundaryMiddleware, open_user_auth
 from src.api.user_auth import router as user_auth_router
 from src.api.workspace import router as workspace_router
 from src.core.agent_runtime import AgentRuntime
-from src.core.generation import AnswerInput, answer_service
+from src.core.attachments import prepare_attachment_rag
+from src.core.generation import AnswerInput, answer_service, persist_completed_answer
 from src.core.index_jobs import (
     IndexCommand,
     IndexJobConflictError,
@@ -105,6 +110,7 @@ from src.core.knowledge import (
     MAX_RETRIEVAL_TOP_K,
     RetrievalMode,
 )
+from src.core.run_options import WorkspaceError, current_run_options
 from src.infra.chroma_clients import close_chroma_clients
 from src.infra.index_jobs import get_index_jobs
 from src.infra.uploads import read_upload, validate_document_filename
@@ -189,6 +195,8 @@ app.add_middleware(UserAuthBoundaryMiddleware)
 app.include_router(user_auth_router)
 app.include_router(conversations_router)
 app.include_router(workspace_router)
+app.include_router(attachments_router)
+app.include_router(knowledge_router)
 
 
 @app.exception_handler(RequestValidationError)
@@ -203,6 +211,7 @@ app.mount(
     name="web-app",
 )
 app.router.add_event_handler("startup", partial(open_user_auth, app))
+app.router.add_event_handler("startup", open_attachments)
 app.router.add_event_handler("startup", warm_up_runtime)
 app.router.add_event_handler(
     "startup", tool_approval_module.open_tool_approval_manager
@@ -213,6 +222,7 @@ app.router.add_event_handler(
 )
 app.router.add_event_handler("shutdown", mcp_runtime_module.close_mcp_runtime)
 app.router.add_event_handler("shutdown", close_chroma_clients)
+app.router.add_event_handler("shutdown", close_attachments)
 
 
 # ================================================================
@@ -226,6 +236,7 @@ def index():
 
 @app.get("/agent", response_class=HTMLResponse)
 @app.get("/settings/skills", response_class=HTMLResponse)
+@app.get("/knowledge", response_class=HTMLResponse)
 def agent_page():
     return web_entrypoint_response()
 
@@ -416,7 +427,7 @@ async def cancel_mcp_oauth_authorization(
 async def query(req: QueryRequest, request: Request):
     """检索问答（异步）"""
     session = begin_exchange(
-        request, req.session_id, req.conversation_id, req.client_turn_id, "rag", req.query, allow_empty=True, model=req.model
+        request, req.session_id, req.conversation_id, req.client_turn_id, "rag", req.query, allow_empty=True, model=req.model, attachment_ids=req.attachment_ids
     )
     query_id = request.state.request_id
     started_at = time.perf_counter()
@@ -428,6 +439,15 @@ async def query(req: QueryRequest, request: Request):
         "filter": req.filter,
         "retrieval_mode": req.retrieval_mode,
     }
+
+    options = current_run_options.get()
+    if options and options.attachments:
+        shared = await asyncio.to_thread(prepare_attachment_rag, req.query, session.storage_id, options)
+        answer_input = AnswerInput.from_shared(shared)
+        shared["answer"] = await answer_service.generate(answer_input)
+        if not await persist_completed_answer(answer_service, answer_input, shared["answer"]):
+            raise HTTPException(409, detail=public_error("conversation_conflict"))
+        return QueryResponse(query_id=query_id,answer=shared["answer"],sources=shared["sources"],index_version="attachments",latency_ms=round((time.perf_counter()-started_at)*1000,1))
 
     try:
         flow = get_online_flow()
@@ -575,6 +595,7 @@ async def query_stream(
     retrieval_mode: RetrievalMode = DEFAULT_RETRIEVAL_MODE,
     filter_json: str | None = Query(default=None, alias="filter"),
     skill_ids: str | None = None,
+    attachment_ids: list[str] = Query(default=[], max_length=5),
 ):
     """
     流式检索问答（SSE）。
@@ -593,7 +614,7 @@ async def query_stream(
     started_at = time.perf_counter()
     query_id = request.state.request_id
     session = begin_exchange(
-        request, session_id, conversation_id, client_turn_id, "rag", query, allow_empty=True, model=model
+        request, session_id, conversation_id, client_turn_id, "rag", query, allow_empty=True, model=model, attachment_ids=attachment_ids
     )
 
     try:
@@ -609,9 +630,15 @@ async def query_stream(
         "retrieval_mode": retrieval_mode,
     }
     try:
-        retrieval_flow = get_retrieval_flow()
-        await retrieval_flow.run_async(shared)
+        options = current_run_options.get()
+        if options and options.attachments:
+            shared = await asyncio.to_thread(prepare_attachment_rag, query, session.storage_id, options)
+        else:
+            retrieval_flow = get_retrieval_flow()
+            await retrieval_flow.run_async(shared)
     except AccountLimitExceeded:
+        raise
+    except WorkspaceError:
         raise
     except Exception as exc:
         from src.infra.tracer import tracer
@@ -705,6 +732,7 @@ async def agent_chat(req: AgentChatRequest, request: Request):
         request, req.session_id or req.conversation_id or uuid.uuid4().hex, req.conversation_id,
         req.client_turn_id, "agent", req.message, model=req.model,
         skill_ids=req.skill_ids, skill_ids_provided="skill_ids" in req.model_fields_set,
+        attachment_ids=req.attachment_ids,
     )
     result = await agent_runtime.execute(session.storage_id, req.message)
     payload = result.to_dict()
@@ -732,6 +760,7 @@ async def agent_chat_stream(
         request, req.session_id or req.conversation_id or uuid.uuid4().hex, req.conversation_id,
         req.client_turn_id, "agent", req.message, model=req.model,
         skill_ids=req.skill_ids, skill_ids_provided="skill_ids" in req.model_fields_set,
+        attachment_ids=req.attachment_ids,
     )
 
     return ClosingStreamingResponse(

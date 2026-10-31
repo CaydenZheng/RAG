@@ -3,6 +3,8 @@ import { isRecord } from "./sse";
 
 // 后端明确返回的公开错误码 -> 用户可读文案；未列入的仍按状态码兜底。
 const RESPONSE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  context_too_large: "资料无法完整放入本轮上下文，请拆分文件。",
+  attachment_not_ready: "附件不存在、已删除或尚未解析完成，请刷新核对。",
   retrieval_failed: "检索服务暂时不可用，请稍后重试。",
   query_capacity_exceeded: "服务繁忙，请稍后重试。",
   skill_not_selected: "所选技能不可用，请刷新技能列表后重试。",

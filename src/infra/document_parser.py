@@ -10,7 +10,10 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from src.core.run_options import WorkspaceError
-from src.security.request_authorization import current_authorization
+from src.security.request_authorization import (
+    current_authorization,
+    require_active_authorization,
+)
 
 MAX_DOCUMENT_BYTES: int = 10 * 1024 * 1024
 MAX_DOCUMENT_CHARS: int = 200_000
@@ -104,13 +107,24 @@ def _worker(data: bytes, suffix: str, channel: Any) -> None:
         channel.close()
 
 
-async def parse_document(data: bytes, suffix: str) -> dict[str, Any]:
+def reserve_parser() -> str:
     authorization = current_authorization()
     owner: str = authorization.user_id if authorization is not None else "local-diagnostic"
     with _OWNERS_LOCK:
         if owner in _PARSING_OWNERS or not _PARSER_SLOTS.acquire(blocking=False):
             raise WorkspaceError("document_busy", 503)
         _PARSING_OWNERS.add(owner)
+    return owner
+
+
+def release_parser(owner: str) -> None:
+    with _OWNERS_LOCK:
+        _PARSING_OWNERS.discard(owner)
+        _PARSER_SLOTS.release()
+
+
+async def parse_document(data: bytes, suffix: str, *, reservation: str | None = None) -> dict[str, Any]:
+    owner: str = reservation if reservation is not None else reserve_parser()
     reader = writer = process = None
     started: bool = False
     try:
@@ -122,6 +136,7 @@ async def parse_document(data: bytes, suffix: str) -> dict[str, Any]:
         writer.close()
         deadline: float = time.monotonic() + PARSER_TIMEOUT_SECONDS
         while not reader.poll():
+            require_active_authorization()
             if not process.is_alive():
                 raise WorkspaceError("document_invalid")
             if time.monotonic() >= deadline:
@@ -152,6 +167,5 @@ async def parse_document(data: bytes, suffix: str) -> dict[str, Any]:
                 reader.close()
             if writer is not None:
                 writer.close()
-            with _OWNERS_LOCK:
-                _PARSING_OWNERS.discard(owner)
-                _PARSER_SLOTS.release()
+            if reservation is None:
+                release_parser(owner)

@@ -210,3 +210,20 @@ test("creator modal restores its complete simulated flow, keyboard focus and nar
   await page.keyboard.press("Escape"); await expect(open).toBeFocused();
   expect(connections).toEqual([]);
 });
+
+test("attachments and knowledge browsing remain explicit local simulations", async ({page}) => {
+  const network: string[] = [];
+  page.on("request", request => { if (["fetch","xhr","eventsource","websocket"].includes(request.resourceType())) network.push(request.url()); });
+  await page.getByLabel("添加聊天附件").setInputFiles({name:"private-name.txt",mimeType:"text/plain",buffer:Buffer.from("PRIVATE_CONTENT_MUST_NOT_BE_READ")});
+  await expect(page.getByRole("checkbox", {name:"本轮使用 模拟短文档.txt"})).toBeChecked();
+  await expect(page.getByText("PRIVATE_CONTENT_MUST_NOT_BE_READ")).toHaveCount(0);
+  await expect(page.getByText("private-name.txt")).toHaveCount(0);
+  await page.getByRole("link", {name:"知识库浏览",exact:true}).click();
+  await expect(page).toHaveURL(/view=knowledge/);
+  await page.reload();
+  await page.getByRole("button", {name:"查看来源摘录：示例使用手册.md",exact:true}).click();
+  await expect(page.getByRole("region", {name:"来源摘录"})).toContainText("预设示例");
+  await page.setViewportSize({width:375,height:812});
+  expect(await page.locator("body").evaluate(element => element.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(network).toEqual([]);
+});
