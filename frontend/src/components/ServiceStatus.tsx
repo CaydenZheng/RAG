@@ -9,8 +9,9 @@ const LABELS: Readonly<Record<ServiceState, string>> = Object.freeze({
   unavailable: "服务暂不可用",
 });
 
-export function ServiceStatus({ state, onRefresh }: {
+export function ServiceStatus({ state, onRefresh, detail }: {
   state: ServiceState;
+  detail?: string;
   onRefresh: () => void;
 }): React.JSX.Element {
   const canRefresh = state === "degraded" || state === "starting" || state === "unavailable";
@@ -20,6 +21,7 @@ export function ServiceStatus({ state, onRefresh }: {
         <span className="status-dot" aria-hidden="true" />
         <span>{LABELS[state]}</span>
       </span>
+      {canRefresh&&detail&&<p className="service-detail">{detail}</p>}
       {canRefresh && (
         <button type="button" onClick={onRefresh}>重新检查服务</button>
       )}

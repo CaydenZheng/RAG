@@ -154,11 +154,11 @@ test("locks an unconfirmed Approval after the 25 second client request boundary"
   await page.clock.fastForward(350);
   await expect(page.getByRole("button", { name: "允许一次" })).toBeVisible();
   await page.getByRole("button", { name: "允许一次" }).click();
-  await expect(page.getByText("正在提交")).toBeVisible();
+  await expect(page.getByText("正在提交", {exact:true})).toBeVisible();
 
   await page.clock.fastForward(25_000);
 
-  await expect(page.getByText("结果未知")).toBeVisible();
+  await expect(page.getByText("结果未知", {exact:true})).toBeVisible();
   await expect(page.getByRole("button", { name: "允许一次" })).toBeDisabled();
 });
 

@@ -1,12 +1,13 @@
-import { Bot, BookOpen, Database, History, Plus, Settings2, X } from "lucide-react";
+import { Bot, BookOpen, Database, History, Plus, Settings2, Wrench, X } from "lucide-react";
 import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
 
 import type { WorkspaceMode } from "../api/types";
-import { IS_PAGES_DEMO, knowledgeHref, modeHref, skillsHref } from "../app/runtime";
+import { extraHref, IS_PAGES_DEMO, knowledgeHref, modeHref, skillsHref } from "../app/runtime";
 import type { ServiceState } from "../app/useServiceStatus";
 import { ServiceStatus } from "./ServiceStatus";
 
 interface SidebarProps {
+  toolsActive?: boolean; settingsActive?: boolean; onTools?:()=>void; onSettings?:()=>void;
   mode: WorkspaceMode;
   resetting: boolean;
   compact: boolean;
@@ -15,6 +16,7 @@ interface SidebarProps {
   onNavigate: (mode: WorkspaceMode) => void;
   onClose: () => void;
   serviceState: ServiceState;
+  serviceDetail?: string;
   onRefreshService: () => void;
   history?: ReactNode;
   account?: boolean;
@@ -27,6 +29,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({
+  toolsActive=false,settingsActive=false,onTools,onSettings,
   mode,
   resetting,
   compact,
@@ -35,6 +38,7 @@ export function Sidebar({
   onNavigate,
   onClose,
   serviceState,
+  serviceDetail,
   onRefreshService,
   history,
   account = false,
@@ -85,11 +89,11 @@ export function Sidebar({
       </button>
 
       <nav className="mode-nav" aria-label="对话模式">
-        <a className="mode-link" data-active={!skillsActive && !knowledgeActive && mode === "rag"} href={modeHref("rag")} aria-current={!skillsActive && !knowledgeActive && mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
+        <a className="mode-link" data-active={!toolsActive && !settingsActive && !skillsActive && !knowledgeActive && mode === "rag"} href={modeHref("rag")} aria-current={!toolsActive && !settingsActive && !skillsActive && !knowledgeActive && mode === "rag" ? "page" : undefined} onClick={(event) => navigate(event, "rag")}>
           <BookOpen size={16} aria-hidden="true" />
           <span>知识问答</span>
         </a>
-        <a className="mode-link" data-active={!skillsActive && !knowledgeActive && mode === "agent"} href={modeHref("agent")} aria-current={!skillsActive && !knowledgeActive && mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
+        <a className="mode-link" data-active={!toolsActive && !settingsActive && !skillsActive && !knowledgeActive && mode === "agent"} href={modeHref("agent")} aria-current={!toolsActive && !settingsActive && !skillsActive && !knowledgeActive && mode === "agent" ? "page" : undefined} onClick={(event) => navigate(event, "agent")}>
           <Bot size={16} aria-hidden="true" />
           <span>Agent</span>
         </a>
@@ -109,6 +113,10 @@ export function Sidebar({
       </section>
 
       <div className="sidebar-spacer" />
+      {(account||IS_PAGES_DEMO)&&<>
+        <a className="mode-link" href={extraHref("tools")} data-active={toolsActive} aria-current={toolsActive?"page":undefined} onClick={event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;event.preventDefault();onTools?.();}}><Wrench size={15} aria-hidden="true" /><span>工具与 MCP</span></a>
+        <a className="mode-link" href={extraHref("settings")} data-active={settingsActive} aria-current={settingsActive?"page":undefined} onClick={event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;event.preventDefault();onSettings?.();}}><Settings2 size={15} aria-hidden="true" /><span>工作台设置</span></a>
+      </>}
 
       {(account || IS_PAGES_DEMO) ? <a className="mode-link" href={knowledgeHref()} aria-current={knowledgeActive ? "page" : undefined} data-active={knowledgeActive} onClick={event => {
         if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -130,7 +138,7 @@ export function Sidebar({
             <button type="button" onClick={onLogout}>退出</button>
           </div>
         )}
-        <ServiceStatus state={serviceState} onRefresh={onRefreshService} />
+        <ServiceStatus state={serviceState} detail={serviceDetail} onRefresh={onRefreshService} />
       </div>
     </aside>
   );

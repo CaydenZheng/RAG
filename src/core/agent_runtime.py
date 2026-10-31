@@ -30,6 +30,7 @@ class ToolResult:
     error_code: str = ""
     tool_name: str = ""
     latency_ms: float = 0.0
+    public_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,7 @@ class AgentEvent:
                 "call_id": self.tool_result.call_id,
                 "success": self.tool_result.success,
                 "error_code": self.tool_result.error_code,
+                "summary": self.tool_result.public_summary[:500] if self.tool_result.success and self.tool_result.public_summary else None,
             }
         if self.kind is AgentEventKind.CHUNK:
             return {"chunk": self.chunk}

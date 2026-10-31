@@ -1,6 +1,7 @@
 """Stable public errors for RAG HTTP and SSE responses."""
 
 PUBLIC_ERRORS = {
+    "export_too_large": "此会话超过 2 MiB 导出上限，请保留现有记录并联系管理员",
     "attachment_limit": "每个会话最多保留 5 个附件，请先删除不需要的文件",
     "attachment_quota": "附件存储已达 100 MiB，请先清理文件",
     "attachment_not_ready": "附件不存在、已删除或尚未解析完成，请刷新核对",

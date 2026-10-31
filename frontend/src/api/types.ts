@@ -42,6 +42,7 @@ export interface AgentToolStep {
   tool: string;
   params: Record<string, unknown> | null;
   success: boolean | null;
+  summary?: string;
 }
 
 export interface AgentCompletion extends CompletionMetadata {

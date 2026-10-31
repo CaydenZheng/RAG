@@ -27,7 +27,7 @@ function EmptyConversation() {
   );
 }
 
-function ToolProcess({ turn }: { turn: ConversationTurn }) {
+function ToolProcess({ turn }: { turn: ConversationTurn }): React.JSX.Element | null {
   if (!turn.steps.length) return null;
   return (
     <details className="process-panel">
@@ -41,17 +41,12 @@ function ToolProcess({ turn }: { turn: ConversationTurn }) {
               {step.kind === "tool_call" && (
                 <>
                   <span>调用工具：<strong>{step.tool}</strong></span>
-                  {step.params && (
-                    <details className="parameter-details">
-                      <summary>查看参数</summary>
-                      <pre>{JSON.stringify(step.params, null, 2)}</pre>
-                    </details>
-                  )}
                 </>
               )}
               {step.kind === "tool_done" && (
                 <span>工具 <strong>{step.tool}</strong>{step.success ? " 已完成" : " 执行失败"}</span>
               )}
+              {step.summary && <p className="tool-summary">{step.summary}</p>}
             </div>
           </li>
         ))}
@@ -111,7 +106,7 @@ export function ConversationView({
   mode: WorkspaceMode;
   state: ConversationState;
   onInteractionDecision: (decision: InteractionDecision) => Promise<void>;
-}) {
+}): React.JSX.Element {
   const [copyFeedback, setCopyFeedback] = useState<{
     mode: WorkspaceMode;
     turn: ConversationTurn;
@@ -120,6 +115,10 @@ export function ConversationView({
   const visibleCopyFeedback = copyFeedback?.mode === mode && state.turns.includes(copyFeedback.turn)
     ? copyFeedback
     : null;
+  const interactions=state.turns.flatMap(turn=>turn.interactions);
+  const pending=interactions.filter(item=>item.status==="pending");
+  const submitting=interactions.filter(item=>item.status==="submitting").length;
+  const unknown=interactions.filter(item=>item.status==="outcome_unknown").length;
 
   async function copyAnswer(turn: ConversationTurn): Promise<void> {
     try {
@@ -136,6 +135,10 @@ export function ConversationView({
 
   return (
     <div className="conversation" aria-busy={isConversationActive(state.status)}>
+      {mode==="agent"&&(pending.length>0||submitting>0||unknown>0)&&<div className="pending-actions" aria-label="当前任务交互状态">
+        {pending.length>0&&<button className="skills-action" onClick={()=>{const first=pending[0];const target=document.getElementById(`interaction-${first.kind}-${first.id}`);target?.scrollIntoView({block:"center"});target?.focus({preventScroll:true});}}>待处理 {pending.length} 项，前往处理</button>}
+        {submitting>0&&<span role="status">{submitting} 项正在提交</span>}{unknown>0&&<span role="status">{unknown} 项结果未知；保持锁定，不自动重放</span>}
+      </div>}
       {state.turns.map((turn) => {
         const active = isConversationActive(turn.status);
         return (

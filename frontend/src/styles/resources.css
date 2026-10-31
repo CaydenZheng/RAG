@@ -9,3 +9,12 @@
 .resource-search label { display: grid; gap: 4px; flex: 1; min-width: 160px; }
 .resource-search input { min-height: 36px; border: 1px solid var(--hairline); border-radius: var(--r-ctl); padding: 6px 10px; background: var(--soft); color: var(--text); }
 .knowledge-documents li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 0; border-bottom: 1px solid var(--hairline); overflow-wrap: anywhere; }
+.settings-field { display: grid; gap: 8px; max-width: 380px; margin-block: 18px; }
+.settings-field select { padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.history-search { display: flex; gap: 4px; padding: 6px; }
+.history-search input { width: 100%; min-width: 0; padding: 4px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.conversation-export { display: flex; flex-wrap: wrap; gap: 8px; padding-block: 10px; color: var(--muted); font-size: 12px; }
+.pending-actions { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.tool-summary { margin-block: 4px; color: var(--text); }
+.demo-history-search { width: calc(100% - 12px); margin: 6px; padding: 5px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.service-detail { margin: 6px 0; max-width: 210px; font-size: 12px; color: var(--muted); }

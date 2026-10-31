@@ -131,6 +131,7 @@ class ToolStatusSnapshot(TypedDict):
     """Public tool metadata safe for status responses."""
 
     name: str
+    description: str
     source: Literal["native", "mcp"]
     provider: str | None
     category: str
@@ -337,6 +338,7 @@ class ToolRegistry:
         return tuple(
             {
                 "name": tool.name,
+                "description": tool.description[:500] if tool.source == "native" else "外部 MCP 工具；用途与参数请结合 Provider 说明及实际审批核对。",
                 "source": tool.source,
                 "provider": tool.provider,
                 "category": tool.category,
@@ -1557,6 +1559,7 @@ def _create_calculator_tool() -> ToolDef:
         return ToolResult(
             success=True,
             data={"result": result, "expression": expression},
+            public_summary=f"计算结果：{str(result)[:160]}",
         )
 
     return ToolDef(
@@ -1606,7 +1609,12 @@ def _create_weather_tool() -> ToolDef:
                 "wind_speed_kmh": current.get("windspeedKmph"),
                 "feels_like_c": current.get("FeelsLikeC"),
             }
-            return ToolResult(success=True, data=result)
+            numeric: list[str] = []
+            for key, label in (("temperature_c", "气温 °C"), ("humidity", "湿度 %"), ("wind_speed_kmh", "风速 km/h")):
+                value = result.get(key)
+                if isinstance(value, str) and re.fullmatch(r"-?\d{1,4}(?:\.\d{1,2})?", value):
+                    numeric.append(f"{label}：{value}")
+            return ToolResult(success=True, data=result, public_summary="；".join(numeric) or None)
 
         except urllib.error.HTTPError:
             return ToolResult(
@@ -1674,7 +1682,7 @@ def _create_search_web_tool() -> ToolDef:
                 results = future.result(timeout=5)
 
             if results:
-                return ToolResult(success=True, data={"query": query, "results": results})
+                return ToolResult(success=True, data={"query": query, "results": results}, public_summary=f"搜索完成：返回 {len(results)} 条来源；请在最终回答中核对引用。")
         except ImportError:
             logger.debug("duckduckgo_search not installed, using fallback")
         except Exception as e:
@@ -1726,7 +1734,7 @@ def _create_search_web_tool() -> ToolDef:
                 })
 
             if results:
-                return ToolResult(success=True, data={"query": query, "results": results})
+                return ToolResult(success=True, data={"query": query, "results": results}, public_summary=f"搜索完成：返回 {len(results)} 条来源；请在最终回答中核对引用。")
             return ToolResult(success=False, error="No results found")
 
         except Exception:

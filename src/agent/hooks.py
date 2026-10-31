@@ -246,7 +246,7 @@ def create_default_pipeline() -> HookPipeline:
         r"delete_.*",
         r"execute_code",
         r"exec\b",
-        r"rm\b",
+        r"(?<![A-Za-z0-9])rm\b",  # Match command boundaries, not form/confirm suffixes.
         r"sudo\b",
     ])
     pipeline.register(HookEvent.PRE_TOOL_USE, blacklist, priority=5)

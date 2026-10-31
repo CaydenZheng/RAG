@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 import { listConversations, type ConversationSummary } from "../api/conversationClient";
 import { toPublicMessage } from "../api/errors";
@@ -6,6 +6,7 @@ import type { WorkspaceMode } from "../api/types";
 import { RowMenu } from "./RowMenu";
 
 interface HistoryDirectoryProps {
+  searchRef?: RefObject<HTMLInputElement | null>;
   mode: WorkspaceMode;
   activeId: string;
   revision: number;
@@ -19,6 +20,7 @@ interface HistoryDirectoryProps {
 }
 
 export function HistoryDirectory({
+  searchRef,
   mode,
   activeId,
   revision,
@@ -37,6 +39,8 @@ export function HistoryDirectory({
   const [refresh, setRefresh] = useState(0);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [query,setQuery]=useState("");
+  const [titleQuery,setTitleQuery]=useState("");
   const operation = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -47,7 +51,7 @@ export function HistoryDirectory({
     setNextCursor(null);
     setLoading(true);
     setNotice("");
-    void listConversations(mode, controller.signal).then((page) => {
+    void listConversations(mode, controller.signal, undefined, titleQuery).then((page) => {
       if (!controller.signal.aborted) {
         setItems(page.items);
         setNextCursor(page.nextCursor);
@@ -58,7 +62,7 @@ export function HistoryDirectory({
       if (!controller.signal.aborted) setLoading(false);
     });
     return () => controller.abort();
-  }, [mode, revision, refresh]);
+  }, [mode, revision, refresh, titleQuery]);
 
   useEffect(() => () => operation.current?.abort(), []);
 
@@ -75,7 +79,7 @@ export function HistoryDirectory({
     setLoading(true);
     setNotice("");
     try {
-      const page = await listConversations(mode, controller.signal, nextCursor);
+      const page = await listConversations(mode, controller.signal, nextCursor, titleQuery);
       if (!controller.signal.aborted) {
         setItems((previous) => [...previous, ...page.items.filter((item) => !previous.some((old) => old.id === item.id))]);
         setNextCursor(page.nextCursor);
@@ -99,12 +103,17 @@ export function HistoryDirectory({
 
   return (
     <div className="history-directory" aria-busy={loading || busy}>
+      <form className="history-search" onSubmit={event=>{event.preventDefault();setTitleQuery(query.trim());setRefresh(value=>value+1);}}>
+        <label className="sr-only" htmlFor="historySearch">搜索历史标题</label>
+        <input ref={searchRef} id="historySearch" value={query} maxLength={80} placeholder="搜索标题" onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Enter"&&(event.nativeEvent.isComposing||event.keyCode===229))event.preventDefault();}} />
+        <button className="history-refresh" type="submit" disabled={busy}>搜索</button>
+      </form>
       <button className="history-refresh" type="button" disabled={loading} onClick={() => setRefresh((value) => value + 1)}>
         刷新目录
       </button>
       {notice && <p role="alert" className="coming-soon">{notice}</p>}
       {loading && <p role="status" className="coming-soon">正在加载目录</p>}
-      {!loading && !notice && items.length === 0 && <p className="coming-soon">还没有此模式的对话</p>}
+      {!loading && !notice && items.length === 0 && <p className="coming-soon">{titleQuery?"没有匹配标题的对话":"还没有此模式的对话"}</p>}
       <ul>
         {items.map((item) => {
           const active = item.id === activeId;

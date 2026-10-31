@@ -1,12 +1,16 @@
 // Pages-only, explicitly simulated state. No authentication or network client imports.
-import type { CreatorResult, ModelCatalog, ModelChoice, SkillItem } from "../api/workspaceClient";
+import type { CreatorResult, ModelCatalog, ModelChoice, SkillItem, WorkspacePreferences } from "../api/workspaceClient";
 import { PublicClientError } from "../api/errors";
 
 const creator: SkillItem = {id:"skill-creator",name:"skill-creator",description:"预设模拟：将资料整理为技能，不调用模型。",builtin:true,enabled:false,revision:0,version:"simulated-creator"};
 const concise: SkillItem = {id:"demo-concise",name:"concise-writing",description:"预设模拟：先给结论，再补充依据。",builtin:false,enabled:true,revision:0,version:"simulated-demo",content:"---\nschema_version: 1\nname: concise-writing\ndescription: 预设模拟技能\n---\n先给结论，再补充依据。\n"};
 const items=new Map<string,SkillItem>([[creator.id,creator],[concise.id,concise]]);
+let preference: WorkspacePreferences={defaultModel:"flash",revision:0};
 function check(signal:AbortSignal):void {if(signal.aborted)throw new DOMException("Aborted","AbortError");}
-export async function readModels(signal:AbortSignal):Promise<ModelCatalog>{check(signal);return {items:[{id:"flash",label:"DeepSeek V4-Flash · 模拟",available:true},{id:"pro",label:"DeepSeek V4-Pro · 模拟",available:true}],defaultModel:"flash"};}
+export async function response(_path:string,signal:AbortSignal,_init:RequestInit={}):Promise<Response>{check(signal);throw new PublicClientError("validation","模拟演示不连接后端。");}
+export async function readModels(signal:AbortSignal):Promise<ModelCatalog>{check(signal);return {items:[{id:"flash",label:"DeepSeek V4-Flash · 模拟",available:true},{id:"pro",label:"DeepSeek V4-Pro · 模拟",available:true}],defaultModel:preference.defaultModel};}
+export async function readPreferences(signal:AbortSignal):Promise<WorkspacePreferences>{check(signal);return {...preference};}
+export async function savePreferences(current:WorkspacePreferences,choice:ModelChoice,signal:AbortSignal):Promise<WorkspacePreferences>{check(signal);if(current.revision!==preference.revision)throw new PublicClientError("validation","模拟设置已变化，请重新读取。");preference={defaultModel:choice,revision:preference.revision+1};return {...preference};}
 export async function readSkills(signal:AbortSignal):Promise<SkillItem[]>{check(signal);return [...items.values()].map(item=>({...item}));}
 export async function readSkill(id:string,signal:AbortSignal):Promise<SkillItem>{check(signal);const item=items.get(id);if(!item)throw new PublicClientError("validation","模拟技能不存在。");return {...item,content:item.content??"这是预设模拟技能，不会执行或访问外部服务。"};}
 export async function setSkill(item:SkillItem,enabled:boolean,signal:AbortSignal):Promise<SkillItem>{check(signal);const saved={...item,enabled,revision:item.revision+1};items.set(item.id,saved);return saved;}

@@ -269,11 +269,13 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
     resetController.current = controller;
     try {
       const nextSessionId = account ? createSessionId() : await resetAndRotateSession(mode,sessionId,controller.signal);
-      const created = account ? await createConversation(nextSessionId,mode,controller.signal,modelRef.current) : null;
+      const created = account ? await createConversation(nextSessionId,mode,controller.signal) : null;
       if (controller.signal.aborted) return;
       stop(false);
       setSessionId(nextSessionId);
       setSummary(created);
+      manualModel.current=false;
+      applyModel(created?.model??defaultModel);
       setNextBefore(null);
       uncertainTurnRef.current = null; setUncertainTurn(null);
       modelUnconfirmedRef.current = false; setModelUnconfirmed(false);
@@ -293,7 +295,7 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
         setResetting(false);
       }
     }
-  }, [account, mode, sessionId, stop]);
+  }, [account, applyModel, defaultModel, mode, sessionId, stop]);
 
   const open = useCallback(async (id: string): Promise<void> => {
     if (!account) return;

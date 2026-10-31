@@ -154,7 +154,7 @@ describe("ConversationView", () => {
     expect(screen.getByText("引用来源 · 2")).toBeVisible();
   });
 
-  it("keeps Agent tool progress collapsible and associates call parameters with the step", async () => {
+  it("keeps Agent tool progress collapsible and shows only the approved result summary", async () => {
     const user = userEvent.setup();
     const state: ConversationState = {
       status: "completed",
@@ -165,7 +165,7 @@ describe("ConversationView", () => {
         steps: [
           { id: "plan", kind: "planning", iteration: 1, tool: "", params: null, success: null },
           { id: "call", kind: "tool_call", iteration: 1, tool: "calculator", params: { expression: "1+1" }, success: null },
-          { id: "done", kind: "tool_done", iteration: 1, tool: "calculator", params: null, success: true },
+          { id: "done", kind: "tool_done", iteration: 1, tool: "calculator", params: null, success: true, summary:"计算结果：2" },
         ],
       }],
     };
@@ -174,7 +174,7 @@ describe("ConversationView", () => {
     const process = screen.getByText("执行过程 · 3 个步骤").closest("details");
     expect(process).not.toHaveAttribute("open");
     await user.click(screen.getByText("执行过程 · 3 个步骤"));
-    await user.click(screen.getByText("查看参数"));
-    expect(screen.getByText(/"expression": "1\+1"/)).toBeVisible();
+    expect(screen.getByText("计算结果：2")).toBeVisible();
+    expect(screen.queryByText(/"expression"/)).not.toBeInTheDocument();
   });
 });

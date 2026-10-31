@@ -237,6 +237,8 @@ def index():
 @app.get("/agent", response_class=HTMLResponse)
 @app.get("/settings/skills", response_class=HTMLResponse)
 @app.get("/knowledge", response_class=HTMLResponse)
+@app.get("/tools", response_class=HTMLResponse)
+@app.get("/settings", response_class=HTMLResponse)
 def agent_page():
     return web_entrypoint_response()
 
