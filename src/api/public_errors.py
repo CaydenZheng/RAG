@@ -1,6 +1,15 @@
 """Stable public errors for RAG HTTP and SSE responses."""
 
 PUBLIC_ERRORS = {
+    "attachment_limit": "每个会话最多保留 5 个附件，请先删除不需要的文件",
+    "attachment_quota": "附件存储已达 100 MiB，请先清理文件",
+    "attachment_not_ready": "附件不存在、已删除或尚未解析完成，请刷新核对",
+    "attachment_unavailable": "附件存储暂不可用，请稍后重试",
+    "upload_id_conflict": "上传标识已用于不同文件，请明确选择新的上传",
+    "upload_deleted": "该次上传已删除，请重新选择文件上传",
+    "parse_interrupted": "解析因服务重启中断，请删除后重新上传",
+    "knowledge_unavailable": "当前索引没有可浏览的完整目录，请先由管理员准备版本化索引",
+    "knowledge_changed": "索引已更新，请刷新文档列表",
     "skill_not_selected": "所选技能不可用，请刷新技能列表后重试",
     "skill_selection_limit": "单轮选择技能数量超过上限（32 个）",
     "model_invalid": "请选择 Flash 或 Pro",

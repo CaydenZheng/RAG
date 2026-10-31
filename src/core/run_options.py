@@ -28,10 +28,20 @@ class SkillSnapshot:
 
 
 @dataclass(frozen=True)
+class AttachmentSnapshot:
+    id: str
+    name: str
+    checksum: str
+    text: str
+    pages: tuple[dict[str, int], ...] = ()
+
+
+@dataclass(frozen=True)
 class RunOptions:
     choice: ModelChoice
     model: str
     skills: tuple[SkillSnapshot, ...] = ()
+    attachments: tuple[AttachmentSnapshot, ...] = ()
 
 
 current_run_options: ContextVar[RunOptions | None] = ContextVar("run_options", default=None)

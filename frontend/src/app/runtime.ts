@@ -2,6 +2,14 @@ import type { WorkspaceMode } from "../api/types";
 
 export const IS_PAGES_DEMO: boolean = import.meta.env.MODE === "pages";
 
+export function isKnowledgeRoute(): boolean {
+  return IS_PAGES_DEMO ? new URLSearchParams(window.location.search).get("view") === "knowledge" : window.location.pathname === "/knowledge";
+}
+
+export function knowledgeHref(): string {
+  return IS_PAGES_DEMO ? `${import.meta.env.BASE_URL}?view=knowledge` : "/knowledge";
+}
+
 export function isSkillsRoute(): boolean {
   return IS_PAGES_DEMO ? new URLSearchParams(window.location.search).get("view") === "skills" : window.location.pathname === "/settings/skills";
 }

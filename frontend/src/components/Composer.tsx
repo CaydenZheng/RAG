@@ -1,5 +1,5 @@
 import { ArrowUp, Paperclip, Square } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { isConversationActive, type ConversationStatus, type WorkspaceMode } from "../api/types";
 import type { ModelChoice, ModelOption } from "../api/workspaceClient";
@@ -21,6 +21,8 @@ function parseSkillCommand(value: string): SkillCommand | null {
 }
 
 interface ComposerProps {
+  attachments?: ReactNode;
+  attachmentsPending?: boolean;
   mode: WorkspaceMode;
   status: ConversationStatus;
   resetting: boolean;
@@ -38,6 +40,8 @@ interface ComposerProps {
 }
 
 export function Composer({
+  attachments,
+  attachmentsPending = false,
   mode,
   status,
   resetting,
@@ -56,11 +60,12 @@ export function Composer({
   const textarea = useRef<HTMLTextAreaElement>(null);
   const running = isConversationActive(status);
   const modelLocked = running || resetting || unconfirmed;
-  const blocked = modelLocked || modelUnavailable;
+  const blocked = modelLocked || modelUnavailable || attachmentsPending;
   const blockedMessage = unconfirmed
     ? "本轮保存状态未确认，请先核对历史"
     : resetting ? "会话操作中，暂不可发送"
-    : modelUnavailable ? "当前模型未配置，请选择可用模型" : "";
+    : modelUnavailable ? "当前模型未配置，请选择可用模型"
+    : attachmentsPending ? "附件正在上传或解析，请稍候再发送" : "";
   const wasBlocked = useRef(blocked);
 
   const [skills, setSkills] = useState<SkillItem[]>([]);
@@ -137,6 +142,7 @@ export function Composer({
 
   return (
     <div className="composer-wrap">
+      {attachments}
       <form
         className="composer"
         aria-busy={blocked}
@@ -215,9 +221,9 @@ export function Composer({
         />
         <div className="composer-actions">
           <div className="composer-placeholders">
-            <button type="button" className="icon-button" disabled aria-label="添加附件，即将支持">
+            {!attachments && <button type="button" className="icon-button" disabled aria-label="添加附件，即将支持">
               <Paperclip size={15} aria-hidden="true" />
-            </button>
+            </button>}
             {models && onModelChange ? (
               <ModelSelect value={model} items={models} disabled={modelLocked} onChange={onModelChange} />
             ) : (

@@ -234,6 +234,9 @@ class SessionStore:
             from src.infra.skill_store import initialize_workspace_schema
 
             initialize_workspace_schema(connection)
+            from src.infra.attachment_store import initialize_attachment_schema
+
+            initialize_attachment_schema(connection)
 
     def reserve_model_units(self, units: int) -> None:
         authorization = current_authorization()
@@ -357,7 +360,7 @@ class SessionStore:
             parameters.append(sequence)
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                "SELECT id,client_turn_id,seq,question,answer,completed_at,used_model,index_version,sources,warnings,requested_model,skills "
+                "SELECT id,client_turn_id,seq,question,answer,completed_at,used_model,index_version,sources,warnings,requested_model,skills,attachments "
                 "FROM transcript_exchanges WHERE " + " AND ".join(clauses) + " ORDER BY seq DESC LIMIT ?",
                 (*parameters, limit + 1),
             ).fetchall()
@@ -365,9 +368,13 @@ class SessionStore:
         items: list[dict[str, Any]] = [
             dict(id=row[0],client_turn_id=row[1],seq=row[2],question=row[3],answer=row[4],
                  completed_at=self._iso(row[5]),requested_model=row[10],used_model=row[6],
-                 index_version=row[7],sources=json.loads(row[8]),attachments=[],skills=json.loads(row[11]),warnings=json.loads(row[9]))
+                 index_version=row[7],sources=json.loads(row[8]),attachments=json.loads(row[12]),skills=json.loads(row[11]),warnings=json.loads(row[9]))
             for row in reversed(page)
         ]
+        with closing(self._connect()) as connection:
+            for item in items:
+                for attachment in item["attachments"]:
+                    attachment["deleted"] = not connection.execute("SELECT 1 FROM conversation_attachments WHERE storage_id=? AND id=? AND state='ready'", (storage_id, attachment["id"])).fetchone()
         return {"items": items, "next_before": self._cursor(["turns", public_id, page[-1][2]]) if len(rows)>limit else None}
 
     def ensure_new_turn(self, storage_id: str, client_turn_id: str) -> None:
@@ -399,6 +406,7 @@ class SessionStore:
                 cancel_session_generation(row[0])
                 connection.execute("DELETE FROM sessions WHERE session_id=?", (row[0],))
                 connection.execute("DELETE FROM transcript_exchanges WHERE storage_id=?", (row[0],))
+                connection.execute("UPDATE conversation_attachments SET state='deleted',cleanup=1 WHERE storage_id=?", (row[0],))
                 self._invalidate_older_operations(connection, row[0])
             if model is not None:
                 from src.core.run_options import resolve_model
@@ -411,6 +419,10 @@ class SessionStore:
             )
             if not self._commit_if_permitted(connection, _ModelChangePermit(row[0]) if model is not None else None):
                 raise AuthorizationRevoked("auth_required")
+            if clear or delete:
+                from src.infra.attachment_store import AttachmentStore
+
+                AttachmentStore(self).cleanup()
             return self._summary(connection, public_id, deleted=delete)
 
     def _commit_completed_exchange(self, connection: sqlite3.Connection, session_id: str,
@@ -428,14 +440,17 @@ class SessionStore:
             raise ConversationConflict("conversation_conflict")
         if not turns or turns[-1].role != "assistant":
             raise ValueError("Incomplete exchange")
+        for attachment in context.attachments:
+            if not connection.execute("SELECT 1 FROM conversation_attachments WHERE storage_id=? AND id=? AND checksum=? AND state='ready'", (session_id, attachment["id"], attachment["checksum"])).fetchone():
+                raise ConversationConflict("conversation_conflict")
         sequence: int = row[2] + 1
         now: float = time.time()
         connection.execute(
-            "INSERT INTO transcript_exchanges(id,storage_id,seq,client_turn_id,question,answer,completed_at,used_model,index_version,sources,warnings,requested_model,skills) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO transcript_exchanges(id,storage_id,seq,client_turn_id,question,answer,completed_at,used_model,index_version,sources,warnings,requested_model,skills,attachments) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (uuid.uuid4().hex,session_id,sequence,context.client_turn_id,
              context.question,turns[-1].content,now,context.used_model,context.index_version,
              json.dumps(context.sources,ensure_ascii=False),json.dumps(context.warnings),
-             context.requested_model,json.dumps(context.skills)),
+             context.requested_model,json.dumps(context.skills),json.dumps(context.attachments)),
         )
         title: str = row[0] or " ".join(context.question.split())[:80]
         connection.execute(
@@ -482,6 +497,10 @@ class SessionStore:
             """, (user_id, public_id, mode, storage_id, now, now, model))
             if not self._commit_if_permitted(connection, None):
                 raise AuthorizationRevoked("auth_required")
+            if current_authorization() is not None:
+                from src.infra.attachment_store import AttachmentStore
+
+                AttachmentStore(self).cleanup()
         return storage_id
 
     def _authorized_session_id(self, session_id: str) -> str:
@@ -873,9 +892,14 @@ class SessionStore:
             self._invalidate_older_operations(connection, session_id)
             if current_authorization() is not None:
                 connection.execute("DELETE FROM transcript_exchanges WHERE storage_id=?", (session_id,))
+                connection.execute("UPDATE conversation_attachments SET state='deleted',cleanup=1 WHERE storage_id=?", (session_id,))
                 connection.execute("UPDATE conversations SET updated_at=?,revision=revision+1 WHERE storage_id=?", (time.time(),session_id))
             if not self._commit_if_permitted(connection, None):
                 raise AuthorizationRevoked("auth_required")
+        if current_authorization() is not None:
+            from src.infra.attachment_store import AttachmentStore
+
+            AttachmentStore(self).cleanup()
         existed = cursor.rowcount > 0
         logger.info("Session cleared")
         return existed

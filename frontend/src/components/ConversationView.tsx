@@ -161,6 +161,7 @@ export function ConversationView({
                     <div className="answer-meta" aria-label="回答元信息">
                       {turn.usedModel && <span>实际模型 {turn.usedModel}</span>}
                       {turn.skills?.map(skill => <span key={skill.id}>技能 {skill.name} · {skill.version.slice(0, 8)}</span>)}
+                      {turn.attachments?.map((item, index) => <span key={item.id}>附件 [{index + 1}] {item.name}{item.deleted ? "（已删除）" : ""}</span>)}
                       <span>耗时 {formatLatency(turn.latencyMs)}</span>
                       {mode === "rag" ? <span>索引 {turn.indexVersion}</span> : <span>迭代 {turn.iterations ?? "—"}</span>}
                     </div>

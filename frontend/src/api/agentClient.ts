@@ -10,6 +10,7 @@ import { completionMetadata } from "./completionMetadata";
 const AGENT_FAILURE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
   account_quota_exceeded: "今日模型使用额度已达上限，请明日再试或联系管理员。",
   agent_timeout: "任务处理超时，请精简任务后重试。",
+  context_too_large: "资料无法完整放入本轮上下文，请拆分文件。",
   agent_token_budget_exceeded: "本轮任务已达到处理预算，请拆分任务后重试。",
   agent_tool_budget_exceeded: "本轮工具调用已达上限，请拆分任务后重试。",
   agent_repeated_tool_call: "规划持续请求重复工具，已停止本轮任务；请核对已有工具结果后调整任务。",
@@ -52,6 +53,7 @@ export async function streamAgentAnswer(
   clientTurnId?: string,
   model?: ModelChoice,
   skillIds?: readonly string[],
+  attachmentIds?: readonly string[],
 ): Promise<AgentCompletion> {
   const response = await fetch("/agent/chat/stream", {
     method: "POST",
@@ -65,6 +67,7 @@ export async function streamAgentAnswer(
       ...(clientTurnId ? { conversation_id: sessionId, client_turn_id: clientTurnId } : {}),
       ...(model ? { model } : {}),
       ...(skillIds && skillIds.length ? { skill_ids: [...skillIds] } : {}),
+      ...(attachmentIds?.length ? { attachment_ids: [...attachmentIds] } : {}),
     }),
     signal,
   });

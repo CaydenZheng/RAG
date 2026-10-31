@@ -7,6 +7,7 @@ Pydantic Settings — 读取 .env 的所有配置项，提供类型校验与默�
 """
 
 import math
+import os
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Annotated, Literal, Optional, Self
@@ -170,6 +171,9 @@ class Settings(BaseSettings):
     # HuggingFace 镜像 (国内加速)
     # ================================================================
     hf_endpoint: Optional[str] = Field(default=None, alias="HF_ENDPOINT")
+    hf_deactivate_async_load: bool = Field(
+        default=True, alias="HF_DEACTIVATE_ASYNC_LOAD"
+    )
 
     # ================================================================
     # Rerank (本地模型)
@@ -549,3 +553,9 @@ class Settings(BaseSettings):
 
 # 全局单例
 settings = Settings()
+# Transformers reads the process environment, not Pydantic's .env mapping.
+# Apply before embedding/reranker loading in every entry point. This mitigates
+# the observed Windows weight-loading crash; its native root cause is unknown.
+os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = (
+    "1" if settings.hf_deactivate_async_load else "0"
+)

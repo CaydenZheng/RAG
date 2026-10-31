@@ -24,6 +24,7 @@ export interface CompletionMetadata {
   requestedModel?: "flash" | "pro";
   usedModel?: string;
   skills?: { id: string; name: string; version: string }[];
+  attachments?: { id: string; name: string; checksum: string; deleted?: boolean }[];
 }
 
 export interface RagCompletion extends CompletionMetadata {

@@ -16,6 +16,7 @@ class ExchangeContext:
     warnings: tuple[str, ...] = ()
     requested_model: str | None = None
     skills: tuple[dict[str, str], ...] = ()
+    attachments: tuple[dict[str, Any], ...] = ()
 
 
 exchange_context: ContextVar[ExchangeContext | None] = ContextVar(
@@ -44,6 +45,10 @@ def safe_sources(sources: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
             "source_kind": "knowledge",
             "label": "知识库来源 " + str(ref),
         }
+        if source.get("source_kind") == "attachment":
+            item["source_kind"] = "attachment"
+            item["label"] = str(source.get("source", "附件"))[:255]
+            item["attachment_id"] = str(source.get("attachment_id", ""))[:64]
         # Free source paths/URLs are deliberately not copied into the snapshot.
         for key in ("document_id", "version"):
             value: Any = source.get(key)

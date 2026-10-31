@@ -60,6 +60,7 @@ def _account_path(path: str) -> bool:
                 "/agent/elicitation/",
                 "/conversations",
                 "/skills",
+                "/knowledge/",
             )
         )
     )
@@ -99,7 +100,7 @@ class ClientIdentityMiddleware:
                 await self.app(scope, receive, send)
             return
 
-        if get_route_path(scope).startswith(("/conversations", "/skills")) or (
+        if get_route_path(scope).startswith(("/conversations", "/skills", "/knowledge/")) or (
             get_route_path(scope).startswith("/workspace/") and get_route_path(scope) != "/workspace/config"
         ):
             await JSONResponse({"detail": public_error("auth_required")},status_code=401,

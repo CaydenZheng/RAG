@@ -49,6 +49,7 @@ export type ConversationAction =
   | { type: "complete_agent"; completion: AgentCompletion }
   | { type: "fail"; message: string }
   | { type: "cancel" }
+  | { type: "attachment_deleted"; id: string }
   | { type: "clear" };
 
 function interactionIsTerminal(status: InteractionStatus): boolean {
@@ -83,6 +84,10 @@ export function conversationReducer(
   action: ConversationAction,
 ): ConversationState {
   switch (action.type) {
+    case "attachment_deleted":
+      return {...state, turns:state.turns.map(turn => ({...turn,
+        attachments:turn.attachments?.map(item => item.id === action.id ? {...item, deleted:true} : item),
+      }))};
     case "history": {
       const turns = action.prepend ? [...action.turns, ...state.turns] : action.turns;
       return { status: "idle", turns, nextTurnId: Math.max(0, ...turns.map((turn) => turn.id)) + 1 };
@@ -170,6 +175,7 @@ export function conversationReducer(
         requestedModel: action.completion.requestedModel,
         usedModel: action.completion.usedModel,
         skills: action.completion.skills,
+        attachments: action.completion.attachments,
         status: "completed",
         answer: action.completion.answer,
         sources: action.completion.sources,
@@ -183,6 +189,7 @@ export function conversationReducer(
         requestedModel: action.completion.requestedModel,
         usedModel: action.completion.usedModel,
         skills: action.completion.skills,
+        attachments: action.completion.attachments,
         status: "completed",
         answer: action.completion.answer,
         iterations: action.completion.iterations,

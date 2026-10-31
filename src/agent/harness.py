@@ -14,6 +14,7 @@ from typing import Any, Literal
 from loguru import logger
 from openai import APIError
 
+from config.settings import settings
 from src.agent.hooks import (
     HookContext,
     HookEvent,
@@ -35,6 +36,7 @@ from src.core.agent_runtime import (
 )
 from src.core.run_options import (
     RunOptions,
+    WorkspaceError,
     current_run_options,
     selected_model,
     skill_instructions,
@@ -147,14 +149,9 @@ class _RunBudget:
     @staticmethod
     def estimate_text(text: str) -> int:
         """Approximate input tokens with headroom, never provider billing data."""
-        from src.utils.token_counter import count_tokens
+        from src.utils.token_counter import count_untrusted_tokens
 
-        try:
-            tokens: int = count_tokens(text)
-        except ValueError:
-            # Tokenizer special-token spellings are ordinary untrusted text.
-            # A byte upper bound is safer than accepting an uncounted input.
-            tokens = len(text.encode("utf-8"))
+        tokens: int = count_untrusted_tokens(text)
         return max(math.ceil(tokens * _INPUT_TOKEN_MARGIN), 1)
 
     def require_tokens(self, amount: int) -> None:
@@ -245,6 +242,7 @@ _MAX_DUPLICATE_REJECTIONS = 2  # One correction opportunity, then fail closed.
 _INPUT_TOKEN_MARGIN = 1.1
 _TOOL_RESULT_TOKENS_PER_CHAR = 4  # Conservative reserve for bounded UTF-8 output.
 _TOOL_CONTROL_RESERVE_TOKENS = 128  # Trusted duplicate-control feedback.
+_MIN_ATTACHMENT_TOOL_RESULT_CHARS = 64
 
 
 class AgentHarness:
@@ -325,6 +323,21 @@ class AgentHarness:
                 system_prompt=self._build_planner_prompt() + skill_instructions(options, planning=True),
                 user_message=user_message,
             )
+            from src.core.attachments import (
+                MIN_ATTACHMENT_OUTPUT,
+                attachment_context,
+                attachment_output_limit,
+                require_attachment_context,
+            )
+
+            # Add full files after memory selects history, so they are never trimmed.
+            if options and options.attachments:
+                answer_context[0] = {**answer_context[0], "content": answer_context[0]["content"] + attachment_context(options)}
+                try:
+                    require_attachment_context(answer_context, self.config.planner_max_tokens,
+                                               options, self.tools.get_model_tools())
+                except WorkspaceError as error:
+                    raise _AgentExecutionError(error.code, "Attachment context exceeds the configured limit.") from None
             messages = self._build_planning_messages(answer_context)
             planning_context_length: int = len(messages)
             final_answer_requested = False
@@ -346,9 +359,13 @@ class AgentHarness:
                     [*answer_context, *messages[planning_context_length:]],
                     step_limit_reached=True, budget_limited=True, options=options,
                 )
+                try:
+                    final_output_limit: int = attachment_output_limit(final_context, self.config.final_max_tokens, options)
+                except WorkspaceError as error:
+                    raise _AgentExecutionError(error.code, "Attachment context exceeds the configured limit.") from None
                 final_allowance: int = (
                     budget.estimate_text(json.dumps(final_context, ensure_ascii=False, default=str))
-                    + self.config.final_max_tokens
+                    + final_output_limit
                 )
                 planning_allowance: int = (
                     sum(budget.estimate_text(text) for text in planning_inputs)
@@ -360,6 +377,11 @@ class AgentHarness:
                     budget_limited = True
                     break
                 budget.require_tokens(planning_allowance + final_allowance)
+                if options and options.attachments:
+                    try:
+                        require_attachment_context(messages, self.config.planner_max_tokens, options, self.tools.get_model_tools())
+                    except WorkspaceError as error:
+                        raise _AgentExecutionError(error.code, "Attachment context exceeds the configured limit.") from None
                 iterations = iteration
                 yield AgentEvent(AgentEventKind.PLANNING, iteration=iteration)
                 for text in planning_inputs:
@@ -405,12 +427,28 @@ class AgentHarness:
                          projected_tool_message],
                         step_limit_reached=True, budget_limited=True, options=options,
                     )
+                    tool_result_limit: int = self.config.max_tool_result_length
+                    try:
+                        if options and options.attachments:
+                            available_result: int = (attachment_output_limit(projected_final, settings.max_context_tokens, options)
+                                                     - MIN_ATTACHMENT_OUTPUT - _TOOL_CONTROL_RESERVE_TOKENS)
+                            tool_result_limit = min(tool_result_limit, math.floor(available_result / (_INPUT_TOKEN_MARGIN * _TOOL_RESULT_TOKENS_PER_CHAR)))
+                            if tool_result_limit < min(self.config.max_tool_result_length, _MIN_ATTACHMENT_TOOL_RESULT_CHARS):
+                                raise WorkspaceError("context_too_large")
+                        require_attachment_context(projected_final,
+                            MIN_ATTACHMENT_OUTPUT + math.ceil(_INPUT_TOKEN_MARGIN * _TOOL_RESULT_TOKENS_PER_CHAR * tool_result_limit) + _TOOL_CONTROL_RESERVE_TOKENS,
+                            options)
+                    except WorkspaceError as error:
+                        if calls:
+                            budget_limited = True
+                            break
+                        raise _AgentExecutionError(error.code, "Insufficient context to safely finish after a tool call.") from None
                     # Check before emitting TOOL_CALL or invoking hooks/Registry.
                     # Future planning must preserve this final-answer allowance too.
                     tool_allowance: int = (
                         budget.estimate_text(json.dumps(projected_final, ensure_ascii=False, default=str))
-                        + self.config.final_max_tokens
-                        + math.ceil(_INPUT_TOKEN_MARGIN * _TOOL_RESULT_TOKENS_PER_CHAR * self.config.max_tool_result_length)
+                        + final_output_limit
+                        + math.ceil(_INPUT_TOKEN_MARGIN * _TOOL_RESULT_TOKENS_PER_CHAR * tool_result_limit)
                         + _TOOL_CONTROL_RESERVE_TOKENS
                     )
                     if calls and budget.tokens_remaining < tool_allowance:
@@ -539,9 +577,12 @@ class AgentHarness:
                             + (result.error_code or "tool_failed")
                         )
                     )
+                    if options and options.attachments and len(result_content) > tool_result_limit:
+                        marker: str = "\n[工具结果摘录已截短]"
+                        result_content = result_content[:max(0, tool_result_limit - len(marker))] + marker
                     result_content = self.memory.truncate_tool_result(
-                        result_content[: self.config.max_tool_result_length]
-                    )[: self.config.max_tool_result_length]
+                        result_content[:tool_result_limit]
+                    )[:tool_result_limit]
                     tool_message = self._wrap_tool_result(
                         tool_name, result_content
                     )
@@ -626,11 +667,15 @@ class AgentHarness:
                 budget_limited=budget_limited,
                 options=options,
             )
+            try:
+                final_output_limit = attachment_output_limit(answer_messages, self.config.final_max_tokens, options)
+            except WorkspaceError as error:
+                raise _AgentExecutionError(error.code, "Attachment context exceeds the configured limit.") from None
             budget.consume_text(
                 json.dumps(answer_messages, ensure_ascii=False, default=str)
             )
             answer_max_tokens = budget.reserve_output(
-                self.config.final_max_tokens
+                final_output_limit
             )
             answer_chunks: list[str] = []
             from src.llm import llm_client
@@ -846,7 +891,9 @@ class AgentHarness:
         messages: list[dict], *, step_limit_reached: bool,
         budget_limited: bool = False, options: RunOptions | None = None,
     ) -> list[dict]:
-        prompt = FINAL_ANSWER_SYSTEM_PROMPT + skill_instructions(options)
+        from src.core.attachments import attachment_context
+
+        prompt = FINAL_ANSWER_SYSTEM_PROMPT + skill_instructions(options) + attachment_context(options)
         if budget_limited:
             prompt += (
                 "\nThe planning token budget cannot cover another step. Answer only "

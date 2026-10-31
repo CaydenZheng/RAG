@@ -10,6 +10,15 @@ export interface SkillItem { id: string; name: string; description: string; buil
 export interface CreatorResult { filename: string; content: string; checksum: string }
 
 const MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  attachment_limit: "每个会话最多保留 5 个附件，请先删除文件。",
+  attachment_quota: "附件存储已达 100 MiB，请先清理文件。",
+  attachment_not_ready: "附件不存在、已删除或尚未解析完成，请刷新核对。",
+  attachment_unavailable: "附件存储暂不可用，请稍后重试。",
+  upload_id_conflict: "此上传标识对应另一份文件，请重新选择文件。",
+  upload_deleted: "该次上传已删除，请重新选择文件。",
+  parse_interrupted: "解析因服务重启中断，请删除后重新上传。",
+  knowledge_unavailable: "当前索引没有可浏览的完整目录，请由管理员准备版本化索引。",
+  knowledge_changed: "索引已更新，请刷新文档列表。",
   model_not_configured: "所选模型尚未配置，不能自动切换其他模型。",
   skill_invalid: "技能格式无效，请检查规定的 Markdown 元数据和正文。",
   skill_too_large: "技能文件超过 64 KiB，请精简后重试。",
@@ -38,7 +47,7 @@ function errorMessage(code: unknown): string {
   return typeof code === "string" && Object.hasOwn(MESSAGES, code) ? MESSAGES[code] : "操作结果未确认，请刷新核对；不会自动重发。";
 }
 
-async function response(path: string, signal: AbortSignal, init: RequestInit = {}): Promise<Response> {
+export async function response(path: string, signal: AbortSignal, init: RequestInit = {}): Promise<Response> {
   const result = await workspaceFetch(path, { ...init, signal });
   if (!result.ok) {
     const payload: unknown = await result.json().catch(() => null);

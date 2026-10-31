@@ -1,5 +1,6 @@
 """Owner-scoped directory and immutable completed-exchange views."""
 
+from dataclasses import replace
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -77,9 +78,10 @@ def begin_exchange(
     model: ModelChoice | None = None,
     skill_ids: list[str] | None = None,
     skill_ids_provided: bool = False,
+    attachment_ids: list[str] | None = None,
 ) -> RequestSession:
     """Validate duplicate keys before retrieval, planning or tool side effects."""
-    if (model is not None or skill_ids_provided or skill_ids is not None) and not settings.auth_enabled:
+    if (model is not None or skill_ids_provided or skill_ids is not None or attachment_ids) and not settings.auth_enabled:
         raise HTTPException(401, detail=public_error("auth_required"))
     if client_turn_id is not None:
         client_turn_id = identifier(client_turn_id)
@@ -101,9 +103,18 @@ def begin_exchange(
         )
         stores.session_store.ensure_new_turn(session.storage_id, turn_id)
         options = SkillStore(stores.session_store).snapshot(session.public_id, model, agent=mode == "agent", skill_ids=skill_ids)
+        if attachment_ids:
+            from src.infra.attachment_store import AttachmentStore
+
+            options = replace(options, attachments=AttachmentStore(stores.session_store).snapshot(session.public_id, [identifier(item) for item in attachment_ids]))
         current_run_options.set(options)
+        from src.core.attachments import attachment_sources
+        from src.infra.exchange_context import safe_sources
+
         exchange_context.set(ExchangeContext(turn_id, question, requested_model=options.choice,
-            skills=tuple({"id": skill.id, "name": skill.name, "version": skill.version} for skill in options.skills)))
+            sources=safe_sources(attachment_sources(options)),
+            skills=tuple({"id": skill.id, "name": skill.name, "version": skill.version} for skill in options.skills),
+            attachments=tuple({"id": item.id, "name": item.name, "checksum": item.checksum, "page_count": len(item.pages)} for item in options.attachments)))
         completed_model.set(None)
     return session
 

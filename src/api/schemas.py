@@ -35,6 +35,7 @@ class QueryRequest(BaseModel):
     conversation_id: str | None = None
     client_turn_id: str | None = None
     model: ModelChoice | None = None
+    attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     query: str = Field(
         ...,
         min_length=USER_INPUT_MIN_LENGTH,
@@ -92,6 +93,7 @@ class AgentChatRequest(BaseModel):
     conversation_id: str | None = None
     client_turn_id: str | None = None
     model: ModelChoice | None = None
+    attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     skill_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] | None = None
     session_id: str = Field(default="", description="会话 ID，空则自动生成")
     message: str = Field(

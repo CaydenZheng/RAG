@@ -32,7 +32,9 @@ const INTERACTION_POLL_MS = 350;
 
 interface ConversationController {
   state: ConversationState;
-  send: (rawMessage: string, skillIds?: readonly string[]) => Promise<void>;
+  send: (rawMessage: string, skillIds?: readonly string[], attachmentIds?: readonly string[]) => Promise<void>;
+  ensure: (signal: AbortSignal) => Promise<void>;
+  markAttachmentDeleted: (id: string) => void;
   stop: (markCancelled?: boolean) => void;
   reset: () => Promise<void>;
   respondToInteraction: (decision: InteractionDecision) => Promise<void>;
@@ -137,7 +139,7 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
   }, [applyModel,defaultModel,stop]);
 
   const send = useCallback(
-    async (rawMessage: string, skillIds?: readonly string[]): Promise<void> => {
+    async (rawMessage: string, skillIds?: readonly string[], attachmentIds?: readonly string[]): Promise<void> => {
       const message = rawMessage.trim();
       if (resettingRef.current || uncertainTurnRef.current || modelUnconfirmedRef.current || !message || message.length > 2000) return;
 
@@ -187,6 +189,7 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
             onUpdate,
             clientTurnId,
             account || IS_PAGES_DEMO ? requestedModel : undefined,
+            attachmentIds,
           );
           if (runSequence.current === runId && !controller.signal.aborted) {
             dispatch({ type: "complete_rag", completion });
@@ -201,6 +204,7 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
             clientTurnId,
             account || IS_PAGES_DEMO ? requestedModel : undefined,
             skillIds,
+            attachmentIds,
           );
           if (runSequence.current === runId && !controller.signal.aborted) {
             dispatch({ type: "complete_agent", completion });
@@ -437,7 +441,22 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
     [],
   );
 
-  return { state, send, stop, reset, respondToInteraction, resetting, notice, draft, setDraft,
+  const ensure = useCallback(async (signal: AbortSignal): Promise<void> => {
+    if (IS_PAGES_DEMO) return;
+    if (!account || resettingRef.current || uncertainTurnRef.current || modelUnconfirmedRef.current || isConversationActive(state.status)) throw new PublicClientError("validation", "请先完成当前会话操作。");
+    if (summary) return;
+    resettingRef.current = true; setResetting(true);
+    try {
+      const created = await createConversation(sessionId, mode, signal, modelRef.current);
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      setSummary(created); setDirectoryRevision(value => value + 1);
+      window.history.replaceState({}, "", `${modeHref(mode)}?conversation=${encodeURIComponent(sessionId)}`);
+    } finally { resettingRef.current = false; setResetting(false); }
+  }, [account, mode, sessionId, summary, state.status]);
+
+  const markAttachmentDeleted = useCallback((id: string): void => dispatch({type:"attachment_deleted", id}), []);
+
+  return { state, send, stop, reset, respondToInteraction, resetting, notice, draft, setDraft, ensure, markAttachmentDeleted,
     sessionId, summary, directoryRevision, nextBefore, open, loadOlder, mutate, mutateConversation, reconcile, forget, unconfirmed:uncertainTurn !== null,
     model, chooseModel, modelUnconfirmed };
 }

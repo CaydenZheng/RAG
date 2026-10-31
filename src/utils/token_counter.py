@@ -16,6 +16,14 @@ def count_tokens(text: str) -> int:
     return len(_ENCODING.encode(text))
 
 
+def count_untrusted_tokens(text: str) -> int:
+    """Special-token spellings in ordinary user data use a byte upper bound."""
+    try:
+        return count_tokens(text)
+    except ValueError:
+        return len(text.encode("utf-8"))
+
+
 def count_tokens_batch(texts: list[str]) -> list[int]:
     """批量计数。"""
     return [count_tokens(t) for t in texts]
