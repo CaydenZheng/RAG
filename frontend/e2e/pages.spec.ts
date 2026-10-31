@@ -4,6 +4,20 @@ test.beforeEach(async ({ page }) => {
   await page.goto("");
 });
 
+test("tools, preferences, theme, title filtering and export are explicitly simulated",async({page})=>{
+  const connections:string[]=[];page.on("request",request=>{if(["fetch","xhr","eventsource","websocket"].includes(request.resourceType()))connections.push(new URL(request.url()).pathname);});
+  await page.getByRole("link",{name:"工具与 MCP",exact:true}).click();await expect(page.getByRole("heading",{name:"工具与 MCP",exact:true})).toBeVisible();await expect(page.getByText("预设模拟目录，不连接 Provider 或执行工具。",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"将计算示例填入 Agent",exact:true}).click();await expect(page.getByRole("textbox",{name:"向 Agent 发送任务"})).toHaveValue(/12 \+ 21/);expect(connections).toEqual([]);
+  await page.getByRole("link",{name:"工作台设置",exact:true}).click();await page.getByRole("combobox",{name:"主题",exact:true}).selectOption("dark");await expect(page.locator("html")).toHaveCSS("color-scheme","dark");await page.reload();await expect(page.getByRole("combobox",{name:"主题",exact:true})).toHaveValue("dark");
+  await page.getByRole("combobox",{name:"新对话默认模型",exact:true}).selectOption("pro");await page.getByRole("button",{name:"保存默认模型",exact:true}).click();await expect(page.getByText(/默认模型已保存/)).toBeVisible();
+  page.once("dialog",dialog=>dialog.accept());await page.getByRole("button",{name:"新建对话",exact:true}).click();await expect(page.getByRole("combobox",{name:"模型",exact:true})).toHaveValue("pro");
+  await page.getByRole("textbox",{name:"搜索历史标题"}).fill("表单");await page.getByRole("button",{name:"表单示例（模拟）",exact:true}).click();await page.getByRole("button",{name:"发送",exact:true}).click();await page.getByRole("button",{name:"待处理 1 项，前往处理",exact:true}).click();await expect(page.getByRole("heading",{name:"需要你的输入",exact:true})).toBeFocused();
+  await page.getByLabel("示例主题",{exact:false}).fill("合成主题");await page.getByRole("button",{name:"提交并继续",exact:true}).click();await expect(page.locator(".answer-footer")).toBeVisible();
+  const pending=page.waitForEvent("download");await page.getByRole("button",{name:"导出演示对话",exact:true}).click();expect((await pending).suggestedFilename()).toBe("simulated-conversation.md");
+  await page.keyboard.press("Control+Alt+i");await expect(page.getByRole("textbox",{name:"向 Agent 发送任务"})).toBeFocused();
+  expect(connections).toEqual([]);
+});
+
 test("static assets, CSP and RAG streaming work without any backend", async ({ page }) => {
   const errors: string[] = [];
   const connections: string[] = [];
@@ -20,7 +34,7 @@ test("static assets, CSP and RAG streaming work without any backend", async ({ p
   const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute("content");
   expect(policy).toContain("connect-src 'none'");
   expect(policy).not.toMatch(/unsafe-inline|unsafe-eval/);
-  await page.getByRole("textbox").fill("总结知识库");
+  await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("总结知识库");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.locator(".markdown-content")).toContainText("预设模拟回答");
   await expect(page.getByRole("button", { name: "停止", exact: true })).toBeVisible();
@@ -32,7 +46,7 @@ test("static assets, CSP and RAG streaming work without any backend", async ({ p
 });
 
 test("Agent link supports refresh, history and cancels the previous stream", async ({ page }) => {
-  await page.getByRole("textbox").fill("开始输出");
+  await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("开始输出");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await page.getByRole("link", { name: "Agent", exact: true }).click();
   await expect(page).toHaveURL(/\/RAG\/\?mode=agent$/);
@@ -70,18 +84,18 @@ test("approval, form and URL interactions are explicitly simulated", async ({ pa
 
 test("stop, error, reset and timeout cannot appear as successful answers", async ({ page }) => {
   test.setTimeout(45_000);
-  await page.getByRole("textbox").fill("停止演示");
+  await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("停止演示");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await page.getByRole("button", { name: "停止", exact: true }).click();
   await expect(page.getByText("已停止，本轮未确认为成功回答。")).toBeVisible();
-  await page.getByRole("textbox").fill("错误");
+  await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("错误");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("模拟错误终态");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "新建对话", exact: true }).click();
   await expect(page.locator(".conversation-turn")).toHaveCount(0);
   await page.getByRole("link", { name: "Agent", exact: true }).click();
-  await page.getByRole("textbox").fill("超时");
+  await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("超时");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("模拟 25 秒超时", { timeout: 30_000 });
   await expect(page.getByRole("button", { name: "复制回答" })).toHaveCount(0);
@@ -101,7 +115,7 @@ test("narrow drawer restores focus and never overflows horizontally", async ({ p
 
 test("reset restores auto-follow after scrolling a long conversation", async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 460 });
-  await page.getByRole("textbox").fill("预设回答");
+  await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("预设回答");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.getByText("引用来源 · 2")).toBeVisible();
   const region = page.getByRole("region", { name: "对话内容" });
@@ -111,7 +125,7 @@ test("reset restores auto-follow after scrolling a long conversation", async ({ 
   await page.getByRole("button", { name: "新建对话", exact: true }).click();
   await expect(page.getByText("静态模拟演示 · 非真实 AI 服务", { exact: true })).toBeInViewport({ ratio: 1 });
   await expect(page.getByRole("button", { name: "回到最新" })).toHaveCount(0);
-  await page.getByRole("textbox").fill("新会话回答");
+  await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("新会话回答");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.getByText("引用来源 · 2")).toBeVisible();
   await expect.poll(() => region.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(80);
@@ -131,14 +145,14 @@ test("models and Skills are explicitly simulated and never contact a backend",as
   await page.locator('input[type="file"]').setInputFiles({name:"demo.md",mimeType:"text/markdown",buffer:Buffer.from("demo")});
   await expect(page.getByText("技能已上传，当前关闭；请明确启用后使用。",{exact:true})).toBeVisible();
   await page.getByRole("link",{name:"Agent",exact:true}).click();
-  await page.getByRole("textbox").fill("/");
+  await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("/");
   const picker=page.getByRole("listbox",{name:"选择技能"});
   await expect(picker).toBeVisible();
   await expect(picker.getByText("concise-writing")).toBeVisible();
   await expect(picker.getByText("skill-creator")).toHaveCount(0);
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("textbox")).toHaveValue("/concise-writing ");
-  await page.getByRole("textbox").fill("/concise-writing\n模拟任务");
+  await expect(page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/})).toHaveValue("/concise-writing ");
+  await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("/concise-writing\n模拟任务");
   await expect(picker).toHaveCount(0);
   await expect(page.getByRole("button",{name:"发送",exact:true})).toBeEnabled();
   await page.getByRole("button",{name:"发送",exact:true}).click();
@@ -179,6 +193,23 @@ test("creator modal restores its complete simulated flow, keyboard focus and nar
   await dialog.getByRole("button", {name:"开始整理", exact:true}).click();
   await expect(dialog.getByRole("status")).toContainText("模拟转换完成");
   await expect(dialog.getByRole("status")).not.toContainText("技能校验通过");
+  expect(await dialog.evaluate(element => element.tagName)).toBe("DIALOG");
+  await expect(dialog).toHaveAttribute("open");
+  await expect(dialog).not.toHaveAttribute("role");
+  const creatorUrl = page.url();
+  const preview = await dialog.getByLabel("技能转换预览").innerText();
+  const close = dialog.getByRole("button", {name:"关闭生成窗口", exact:true});
+  await close.focus();
+  for (const modifier of ["Control", "Meta"]) {
+    for (const key of ["n", "h", "i"]) {
+      await page.keyboard.press(`${modifier}+Alt+${key}`);
+      await expect(page).toHaveURL(creatorUrl);
+      await expect(dialog).toBeVisible();
+      await expect(close).toBeFocused();
+      await expect(dialog.getByLabel("技能转换预览")).toHaveText(preview);
+      await expect(dialog.getByRole("combobox", {name:"模型", exact:true})).toHaveValue("pro");
+    }
+  }
   await expect(page.locator(".skill-row")).toHaveCount(2);
   await dialog.getByLabel("导入原始资料").setInputFiles({name:"replacement.txt", mimeType:"text/plain", buffer:Buffer.from("replacement synthetic notes")});
   await expect(dialog.getByLabel("技能转换预览")).toHaveCount(0);

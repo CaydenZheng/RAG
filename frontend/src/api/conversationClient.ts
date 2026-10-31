@@ -54,10 +54,10 @@ export async function readConversation(id: string, signal: AbortSignal): Promise
   return summary(await request(`/conversations/${encodeURIComponent(id)}`, signal));
 }
 
-export async function listConversations(mode: WorkspaceMode, signal: AbortSignal, cursor?: string): Promise<DirectoryPage> {
+export async function listConversations(mode: WorkspaceMode, signal: AbortSignal, cursor?: string, titleQuery = ""): Promise<DirectoryPage> {
   const search = new URLSearchParams({ mode });
   if (cursor) search.set("cursor", cursor);
-  const payload = await request(`/conversations?${search}`, signal);
+  const payload = titleQuery ? await request("/conversations/search",signal,{method:"POST",body:JSON.stringify({mode,title_query:titleQuery,...(cursor?{cursor}:{})})}) : await request(`/conversations?${search}`, signal);
   if (!isRecord(payload) || !Array.isArray(payload.items)) throw new PublicClientError("protocol", "目录信息无效。");
   return { items: payload.items.map(summary), nextCursor: typeof payload.next_cursor === "string" ? payload.next_cursor : null };
 }

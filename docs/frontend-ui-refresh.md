@@ -76,3 +76,17 @@ uv run pytest tests/offline    894 passed
 Pages 新增能力使用明确标识的预设模拟，不读取用户文件字节或文件名，不连接模型、索引、MCP 或私有接口。此轮生产浏览器测试包含真实本地解析与账号/SQLite，服务夹具未开启模型与索引 lifespan；不代表真实模型回答质量或完整运行验收通过。
 
 正式入口默认同步加载 Transformers 权重（`HF_DEACTIVATE_ASYNC_LOAD=true`），同时覆盖 Embedding 和精排；由配置模块将经校验的值写入 Transformers 实际读取的进程环境，支持 `.env` 配置及进程环境优先覆盖。不需要更改启动命令或关闭精排。显式设为 `false` 会恢复上游异步加载，不建议在曾出现访问冲突的 Windows 环境使用。同步加载是已验证的运行缓解方式，原生 `0xC0000005` 的唯一根因仍未知；不构成无崩溃保证。
+
+## 六、工具目录与便利操作
+
+`/tools` 只读展示当前账号可见的工具及 MCP Provider 状态，不提供 Server 配置或执行接口。“已登记可用”不等于有权执行或外部服务调用成功；执行仍走 Registry 的 Policy、Schema、审批及审计。Provider 自由消息、端点和原始结果不展示；MCP 用途显示安全的通用说明，详细语义应由部署者另行说明。未知 MCP 只显示执行状态，原生计算器/天气/搜索分别提供数字结果、白名单天气数值和来源数量摘要，不转储原始参数或结果；审批卡片仍保留后端真实参数快照。
+
+当前任务显示待处理数量，可跳到审批/form/URL卡片；提交中和结果未知分别显示，未知保持锁定，不自动重放。服务异常提供固定恢复建议与重新检查，不进行付费模型周期探测。
+
+`/settings` 复用账号 preferences 的 revision 更新默认模型，保存未确认时须重新读取核对；新建会话由后端读取账号默认，已有选择不改写。主题提供 system/light/dark，保存在本浏览器的 `ragflow_theme`，通过外部CSS的color-scheme控制原有light-dark变量，不含身份数据或内联样式。
+
+侧栏标题搜索用 POST 正文，不把标题放URL。`GET /conversations/{id}/export` 按账号在单次SQLite读快照导出所有已完成问答，最多2 MiB，超限在发送任何文件前返回413。仅含可见正文、实际模型、引用编号/类型和附件名称/删除状态，不含隐藏过程、工具参数、远端结果、来源路径或OAuth查询。正文和名称置于动态长度文本代码围栏，避免外部Markdown阅读器执行原始HTML/链接。下载固定文件名conversation.md，使用no-store、attachment、nosniff；不批量导出、不导出未完成流。
+
+Ctrl/⌘ + Alt + I聚焦输入、+N新建、+H聚焦历史标题搜索；组词、AltGraph、重复按键及弹窗内忽略。原抽屉焦点和路由取消行为保持。Pages的新目录、偏好、标题筛选与导出是明确模拟，不读取个人历史或联网；主题仍可按浏览器保存。
+
+可选受控 MCP 示例：`scripts/mcp_workspace_demo.py` 使用官方SDK，只返回固定状态、不写文件、不访问外部服务。部署者可显式将它配置为stdio Server `workspace_demo`，并在MEMBER_MCP_ALLOWLIST中允许 `mcp__workspace_demo__confirm_preview`、`mcp__workspace_demo__request_form`、`mcp__workspace_demo__request_url`。前端只在真实发现这些工具后提供填入Agent的按钮，仍须用户发送并审批；默认不注册、不更改.env。URL指向example.org，仅演示URL交互，不代表真实OAuth；只有用户点击才打开。

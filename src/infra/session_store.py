@@ -38,6 +38,7 @@ _COMMIT_RETRY_INTERVAL_SECONDS: float = 0.005
 MAX_ACCOUNT_CONVERSATIONS: int = 200
 MAX_CONVERSATION_EXCHANGES: int = 2000
 MAX_SQLITE_SEQUENCE: int = (1 << 63) - 1
+MAX_EXPORT_BYTES: int = 2 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -376,6 +377,45 @@ class SessionStore:
                 for attachment in item["attachments"]:
                     attachment["deleted"] = not connection.execute("SELECT 1 FROM conversation_attachments WHERE storage_id=? AND id=? AND state='ready'", (storage_id, attachment["id"])).fetchone()
         return {"items": items, "next_before": self._cursor(["turns", public_id, page[-1][2]]) if len(rows)>limit else None}
+
+    def export_conversation(self, public_id: str) -> bytes:
+        """One owner-scoped read snapshot, bounded before sending any bytes."""
+        import re
+
+        from src.core.run_options import WorkspaceError
+
+        output: bytearray = bytearray()
+        def append(text: str) -> None:
+            encoded: bytes = text.encode("utf8")
+            if len(output) + len(encoded) > MAX_EXPORT_BYTES:
+                raise WorkspaceError("export_too_large", 413)
+            output.extend(encoded)
+        def literal(text: str) -> str:
+            # Literal blocks keep external Markdown viewers from interpreting
+            # untrusted HTML or links as active content.
+            fence: str = "`" * max(3, max((len(item) + 1 for item in re.findall(r"`+", text)), default=3))
+            return f"{fence}text\n{text}\n{fence}\n\n"
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN")
+            summary: dict[str, Any] = self._summary(connection, public_id)
+            row = connection.execute("SELECT storage_id FROM conversations WHERE owner_user_id=? AND public_id=? AND deleted=0",
+                                     (self._owner_id(), public_id)).fetchone()
+            append("# 会话导出\n\n" + literal(summary["title"]) + "仅包含已完成问答；正文以原样文本保存，不重放工具或隐藏过程。\n\n")
+            for turn in connection.execute("SELECT seq,question,answer,used_model,sources,attachments FROM transcript_exchanges WHERE storage_id=? ORDER BY seq", (row[0],)):
+                require_active_authorization()
+                append(f"## 回合 {turn[0]}\n\n### 问题\n\n" + literal(turn[1]) + "### 回答\n\n" + literal(turn[2]))
+                if turn[3]:
+                    append("实际模型\n\n" + literal(turn[3]))
+                for source in json.loads(turn[4]):
+                    ref: Any = source.get("ref")
+                    if isinstance(ref, int) and not isinstance(ref, bool) and ref > 0:
+                        label: str = "附件来源" if source.get("source_kind") == "attachment" else "知识库来源"
+                        append(literal(f"引用 [{ref}] {label}"))
+                for attachment in json.loads(turn[5]):
+                    exists: bool = connection.execute("SELECT 1 FROM conversation_attachments WHERE storage_id=? AND id=? AND state='ready'", (row[0], attachment["id"])).fetchone() is not None
+                    append(literal("附件 " + attachment["name"] + ("" if exists else "（已删除）")))
+            require_active_authorization()
+        return bytes(output)
 
     def ensure_new_turn(self, storage_id: str, client_turn_id: str) -> None:
         storage_id = self._authorized_session_id(storage_id)

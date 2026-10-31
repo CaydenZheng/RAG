@@ -27,6 +27,9 @@ export default defineConfig({
   }],
   resolve: {
     alias: [{
+      find: /^\.\.\/api\/toolClient$/,
+      replacement: fileURLToPath(new URL("./src/demo/tools.ts", import.meta.url)),
+    }, {
       find: /^\.\.\/api\/resourceClient$/,
       replacement: fileURLToPath(new URL("./src/demo/resources.ts", import.meta.url)),
     }, {

@@ -73,6 +73,7 @@ describe("Vite development routing", () => {
     expect(pageHtml).toContain("/@vite/client");
     expect(new URL(page.url).pathname).toBe("/agent");
     expect(backendPaths).not.toContain("/agent");
+    for(const path of ["/tools","/settings"]){const page=await fetch(`${origin}${path}`);expect(page.status).toBe(200);expect(await page.text()).toContain("/@vite/client");expect(backendPaths).not.toContain(path);}
 
     const api = await fetch(`${origin}/agent/chat/stream`, { method: "POST" });
     expect(await api.json()).toEqual({ proxied: true });

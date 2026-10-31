@@ -114,7 +114,7 @@ export async function streamAgentAnswer(
     if (allowed) {
       onUpdate({ type: "tool_step", step: { id: "demo-call", kind: "tool_call", iteration: 1, tool: "demo.preview（模拟）", params: { example: "预设示例，无实际执行" }, success: null } });
       await delay(600, signal);
-      onUpdate({ type: "tool_step", step: { id: "demo-result", kind: "tool_done", iteration: 1, tool: "demo.preview（模拟）", params: null, success: true } });
+      onUpdate({ type: "tool_step", step: { id: "demo-result", kind: "tool_done", iteration: 1, tool: "demo.preview（模拟）", params: null, success: true, summary:"预设模拟结果，未执行真实工具。" } });
     }
     const answer: string = allowed
       ? "**模拟任务完成**。上方展示的是预设工具过程，不是实际执行结果。\n\n此演示没有调用模型或 MCP，也没有提交表单数据或进行 OAuth 授权。真实工具仍须通过后端安全链。\n\n你可以继续体验“审批”“表单”“URL”“错误”或“超时”，也可以在输出期间点击停止。"

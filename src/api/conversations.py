@@ -3,7 +3,7 @@
 from dataclasses import replace
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.settings import settings
@@ -175,6 +175,15 @@ def turns(
         if client_turn_id is not None
         else None,
     )
+
+
+@router.get("/{conversation_id}/export")
+def export(conversation_id: str) -> Response:
+    content: bytes = stores.session_store.export_conversation(resource_identifier(conversation_id))
+    return Response(content, media_type="text/markdown", headers={
+        "Content-Disposition": 'attachment; filename="conversation.md"',
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+    })
 
 
 @router.patch("/{conversation_id}")

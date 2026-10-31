@@ -33,7 +33,7 @@ function InteractionFrame({ interaction, children }: InteractionProps & { childr
   return (
     <section className="interaction-card" aria-labelledby={headingId}>
       <div className="interaction-heading">
-        <h2 id={headingId}>
+        <h2 id={headingId} tabIndex={-1}>
           {interaction.kind === "approval" ? "需要工具审批" : "需要你的输入"}
         </h2>
         <span data-status={interaction.status}>{STATUS_LABELS[interaction.status]}</span>

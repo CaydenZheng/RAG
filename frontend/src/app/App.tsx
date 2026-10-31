@@ -11,11 +11,16 @@ import { Sidebar } from "../components/Sidebar";
 import { SkillsPage } from "../components/SkillsPage";
 import { KnowledgePage } from "../components/KnowledgePage";
 import { AttachmentPanel } from "../components/AttachmentPanel";
-import { readModels, type ModelCatalog } from "../api/workspaceClient";
+import { ToolsPage } from "../components/ToolsPage";
+import { WorkspaceSettings } from "../components/WorkspaceSettings";
+import { ConversationExport } from "../components/ConversationExport";
+import { DemoHistory } from "../components/DemoHistory";
+import { useTheme } from "./useTheme";
+import { readModels, type ModelCatalog, type ModelChoice } from "../api/workspaceClient";
 import { toPublicMessage } from "../api/errors";
 import { useConversation } from "./useConversation";
 import { useServiceStatus } from "./useServiceStatus";
-import { currentMode, IS_PAGES_DEMO, isKnowledgeRoute, isSkillsRoute, knowledgeHref, modeHref, skillsHref } from "./runtime";
+import { currentMode, extraHref, extraRoute, IS_PAGES_DEMO, isKnowledgeRoute, isSkillsRoute, knowledgeHref, modeHref, skillsHref } from "./runtime";
 
 const AUTO_FOLLOW_THRESHOLD_PX = 80;
 const COMPACT_NAVIGATION_QUERY = "(max-width: 899px)";
@@ -24,8 +29,10 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
   const [mode, setMode] = useState(currentMode);
   const [skillsView, setSkillsView] = useState(isSkillsRoute);
   const [knowledgeView, setKnowledgeView] = useState(isKnowledgeRoute);
-  const utilityView = skillsView || knowledgeView;
-  const view = skillsView ? "skills" : knowledgeView ? "knowledge" : "conversation";
+  const [extraView,setExtraView]=useState(extraRoute);
+  const {theme,changeTheme}=useTheme();
+  const utilityView = skillsView || knowledgeView || extraView!==null;
+  const view = skillsView ? "skills" : knowledgeView ? "knowledge" : extraView??"conversation";
   const [attachmentSelection, setAttachmentSelection] = useState<{sessionId:string; ids:string[]; pending:boolean}>({sessionId:"", ids:[], pending:false});
   const [models, setModels] = useState<ModelCatalog | null>(null);
   const [modelsNotice, setModelsNotice] = useState("");
@@ -51,11 +58,14 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
   const scrollRegion = useRef<HTMLElement | null>(null);
   const workspace = useRef<HTMLElement | null>(null);
   const navigationButton = useRef<HTMLButtonElement>(null);
+  const historySearch=useRef<HTMLInputElement>(null);
+  const confirmDefaultModel=useCallback((choice:ModelChoice)=>setModels(previous=>previous?{...previous,defaultModel:choice}:null),[]);
   const focusAfterNavigationClose = useRef<"navigation" | "workspace" | null>(null);
   const followingLatest = useRef(true);
   const [showLatest, setShowLatest] = useState(false);
   const [routeConversation, setRouteConversation] = useState(() => account ? new URLSearchParams(window.location.search).get("conversation") : null);
   const olderAnchor = useRef<{ height: number; top: number } | null>(null);
+  const queuedAgentDraft=useRef<string | null>(null);
   const {
     state,
     send,
@@ -73,7 +83,11 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
   useEffect(() => { if (account) workspace.current?.focus({ preventScroll: true }); }, [account]);
   useEffect(() => {
     if (!account || !routeConversation || utilityView) return;
-    void (mode === "rag" ? ragOpen : agentOpen)(routeConversation);
+    let current=true;
+    void (mode === "rag" ? ragOpen : agentOpen)(routeConversation).then(()=>{
+      if(current&&mode==="agent"&&queuedAgentDraft.current!==null){agentConversation.setDraft(queuedAgentDraft.current);queuedAgentDraft.current=null;}
+    });
+    return ()=>{current=false;queuedAgentDraft.current=null;};
   }, [account, agentOpen, mode, ragOpen, routeConversation, utilityView]);
 
   const selectionSession = `${mode}:${activeConversation.sessionId}:${activeConversation.summary?.epoch ?? 0}`;
@@ -92,6 +106,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
     setMode(nextMode);
     setSkillsView(false);
     setKnowledgeView(false);
+    setExtraView(null);
   }, [account, activeConversation, agentConversation, ragConversation, mode, utilityView]);
 
   const closeNavigation = useCallback((): void => {
@@ -149,11 +164,13 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
       const nextMode = currentMode();
       const nextSkillsView = isSkillsRoute();
       const nextKnowledgeView = isKnowledgeRoute();
+      const nextExtraView=extraRoute();
       const nextId = account ? new URLSearchParams(window.location.search).get("conversation") : null;
-      if (account && !nextId && !nextSkillsView && !nextKnowledgeView) (nextMode === "rag" ? ragConversation : agentConversation).forget();
+      if (account && !nextId && !nextSkillsView && !nextKnowledgeView && !nextExtraView) (nextMode === "rag" ? ragConversation : agentConversation).forget();
       setMode(nextMode);
       setSkillsView(nextSkillsView);
       setKnowledgeView(nextKnowledgeView);
+      setExtraView(nextExtraView);
       setRouteConversation(nextId);
     };
     window.addEventListener("popstate", handlePopState);
@@ -199,6 +216,37 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
     }
   }, [mode, view]);
 
+  function openExtra(next:"tools"|"settings"): void {
+    if(extraView===next){if(navigationOpen)closeNavigation();return;}
+    activeConversation.stop(true);window.history.pushState({},"",extraHref(next));setExtraView(next);setSkillsView(false);setKnowledgeView(false);setRouteConversation(null);
+    if(navigationOpen)closeNavigationToWorkspace();else window.requestAnimationFrame(()=>workspace.current?.focus());
+  }
+
+  function prepareAgentExample(text:string): void {
+    if(account&&agentConversation.summary)queuedAgentDraft.current=text;
+    else agentConversation.setDraft(text);
+    navigate("agent");window.requestAnimationFrame(()=>document.getElementById("messageInput")?.focus());
+  }
+
+  const newConversation=useCallback(():void=>{
+    if(resetting)return;
+    if(utilityView)navigate(mode);
+    setRouteConversation(null);
+    void reset();
+    if(navigationOpen)closeNavigationToWorkspace();
+  },[closeNavigationToWorkspace,mode,navigate,navigationOpen,reset,resetting,utilityView]);
+
+  useEffect(()=>{
+    function shortcuts(event:KeyboardEvent): void {
+      if(event.isComposing||event.keyCode===229||event.repeat||event.getModifierState("AltGraph")||!event.altKey||!(event.ctrlKey||event.metaKey)||event.shiftKey||document.querySelector('dialog[open], [role="dialog"]'))return;
+      const key=event.key.toLowerCase();
+      if(key==="h"&&(account||IS_PAGES_DEMO)){event.preventDefault();if(compactNavigation)setNavigationOpen(true);window.requestAnimationFrame(()=>historySearch.current?.focus());}
+      if(key==="i"&&!utilityView){event.preventDefault();if(navigationOpen)closeNavigationToWorkspace();window.requestAnimationFrame(()=>document.getElementById("messageInput")?.focus());}
+      if(key==="n"&&!resetting){event.preventDefault();newConversation();}
+    }
+    window.addEventListener("keydown",shortcuts);return ()=>window.removeEventListener("keydown",shortcuts);
+  },[account,closeNavigationToWorkspace,compactNavigation,navigationOpen,newConversation,resetting,utilityView]);
+
   function handleConversationScroll(): void {
     if (state.turns.length === 0) return;
     const region = scrollRegion.current;
@@ -224,13 +272,14 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         tabIndex={compactNavigation && navigationOpen ? -1 : undefined}
       >跳到主要内容</a>
       <Sidebar
+        toolsActive={extraView==="tools"} settingsActive={extraView==="settings"} onTools={()=>openExtra("tools")} onSettings={()=>openExtra("settings")}
         skillsActive={skillsView}
         knowledgeActive={knowledgeView}
         onKnowledge={() => {
           if (knowledgeView) { if (navigationOpen) closeNavigation(); return; }
           activeConversation.stop(true);
           window.history.pushState({}, "", knowledgeHref());
-          setKnowledgeView(true); setSkillsView(false); setRouteConversation(null);
+          setKnowledgeView(true); setSkillsView(false); setExtraView(null); setRouteConversation(null);
           if (navigationOpen) closeNavigationToWorkspace();
           else window.requestAnimationFrame(() => workspace.current?.focus());
         }}
@@ -240,6 +289,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
           window.history.pushState({}, "", skillsHref());
           setSkillsView(true);
           setKnowledgeView(false);
+          setExtraView(null);
           setRouteConversation(null);
           if (navigationOpen) closeNavigationToWorkspace();
           else window.requestAnimationFrame(() => workspace.current?.focus());
@@ -248,8 +298,10 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         username={account?.username}
         onLogout={onLogout}
         serviceState={serviceState.state}
+        serviceDetail={serviceState.detail}
         onRefreshService={serviceState.refresh}
         history={account ? <HistoryDirectory
+          searchRef={historySearch}
           mode={mode}
           activeId={activeConversation.sessionId}
           revision={activeConversation.directoryRevision}
@@ -262,6 +314,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
           onOpen={(id) => {
             setSkillsView(false);
             setKnowledgeView(false);
+            setExtraView(null);
             activeConversation.stop(true);
             window.history.pushState({}, "", `${modeHref(mode)}?conversation=${encodeURIComponent(id)}`);
             if (id === routeConversation) void activeConversation.open(id);
@@ -269,12 +322,12 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
             if (navigationOpen) closeNavigationToWorkspace();
             else workspace.current?.focus();
           }}
-        /> : undefined}
+        /> : IS_PAGES_DEMO?<DemoHistory searchRef={historySearch} onExample={text=>{navigate("agent");agentConversation.setDraft(text);if(navigationOpen)closeNavigationToWorkspace();}} />:undefined}
         mode={mode}
         resetting={resetting}
         compact={compactNavigation}
         open={!compactNavigation || navigationOpen}
-        onReset={() => { if (utilityView) navigate(mode); setRouteConversation(null); void reset(); }}
+        onReset={newConversation}
         onNavigate={(nextMode) => {
           if (nextMode === mode && !utilityView) {
             if (navigationOpen) closeNavigation();
@@ -303,7 +356,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         inert={compactNavigation && navigationOpen ? true : undefined}
       >
         <h1 className="sr-only">
-          {knowledgeView ? "知识库浏览" : skillsView ? "Skills 工作台" : mode === "rag" ? "知识问答工作台" : "Agent 工作台"}
+          {extraView==="tools"?"工具目录工作台":extraView==="settings"?"偏好设置工作台":knowledgeView ? "知识库浏览" : skillsView ? "Skills 工作台" : mode === "rag" ? "知识问答工作台" : "Agent 工作台"}
         </h1>
         <button
           ref={navigationButton}
@@ -316,7 +369,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         >
           <Menu size={16} aria-hidden="true" />
         </button>
-        {knowledgeView ? <KnowledgePage available={!!account || IS_PAGES_DEMO} /> : skillsView ? (
+        {extraView==="tools"?<ToolsPage available={!!account||IS_PAGES_DEMO} onExample={prepareAgentExample} />:extraView==="settings"?(account||IS_PAGES_DEMO?<WorkspaceSettings models={models} onSaved={confirmDefaultModel} onReloadModels={()=>setModelsRevision(value=>value+1)} theme={theme} onTheme={changeTheme} />:<p>登录后可设置账号默认模型。</p>):knowledgeView ? <KnowledgePage available={!!account || IS_PAGES_DEMO} /> : skillsView ? (
           models || (!account && !IS_PAGES_DEMO) ? (
             <SkillsPage available={!!account || IS_PAGES_DEMO} models={models?.items} defaultModel={models?.defaultModel} />
           ) : (
@@ -354,6 +407,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
                 state={state}
                 onInteractionDecision={respondToInteraction}
               />
+              {(account||IS_PAGES_DEMO)&&<ConversationExport key={selectionSession} id={activeConversation.sessionId} disabled={resetting||isConversationActive(state.status)||activeConversation.unconfirmed||(!activeConversation.summary&&!IS_PAGES_DEMO)} turns={state.turns} />}
               {showLatest && (
                 <button className="back-to-latest" type="button" onClick={scrollToLatest}>
                   <ArrowDown size={14} aria-hidden="true" />回到最新

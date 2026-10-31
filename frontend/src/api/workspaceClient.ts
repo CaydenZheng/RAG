@@ -8,8 +8,10 @@ export interface ModelOption { id: ModelChoice; label: string; available: boolea
 export interface ModelCatalog { items: ModelOption[]; defaultModel: ModelChoice }
 export interface SkillItem { id: string; name: string; description: string; builtin: boolean; enabled: boolean; revision: number; version: string; content?: string }
 export interface CreatorResult { filename: string; content: string; checksum: string }
+export interface WorkspacePreferences { defaultModel: ModelChoice; revision: number }
 
 const MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  export_too_large: "此会话导出超过 2 MiB 上限，请保留现有记录并联系管理员。",
   attachment_limit: "每个会话最多保留 5 个附件，请先删除文件。",
   attachment_quota: "附件存储已达 100 MiB，请先清理文件。",
   attachment_not_ready: "附件不存在、已删除或尚未解析完成，请刷新核对。",
@@ -76,6 +78,18 @@ export async function readModels(signal: AbortSignal): Promise<ModelCatalog> {
   });
   if (items.length !== 2 || new Set(items.map(item => item.id)).size !== 2) throw new PublicClientError("protocol", "模型目录暂不可用。");
   return { items, defaultModel: payload.default_model === "pro" ? "pro" : "flash" };
+}
+
+function parsePreferences(value: unknown): WorkspacePreferences {
+  if (!isRecord(value) || (value.default_model !== "flash" && value.default_model !== "pro") || !Number.isInteger(value.revision) || typeof value.revision !== "number" || value.revision < 0) throw new PublicClientError("protocol", "设置响应无效，请重新读取。");
+  return {defaultModel:value.default_model,revision:value.revision};
+}
+
+export async function readPreferences(signal: AbortSignal): Promise<WorkspacePreferences> {
+  return parsePreferences(await (await response("/workspace/preferences",signal)).json());
+}
+export async function savePreferences(preferences: WorkspacePreferences, choice: ModelChoice, signal: AbortSignal): Promise<WorkspacePreferences> {
+  return parsePreferences(await (await response("/workspace/preferences",signal,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({default_model:choice,expected_revision:preferences.revision})})).json());
 }
 
 export async function readSkills(signal: AbortSignal): Promise<SkillItem[]> {

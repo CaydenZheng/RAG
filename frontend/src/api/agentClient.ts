@@ -42,6 +42,7 @@ function stepFromEvent(
     tool: typeof event.tool === "string" ? event.tool : "未知工具",
     params: kind === "tool_call" ? safeParams(event.params) : null,
     success: kind === "tool_done" && typeof event.success === "boolean" ? event.success : null,
+    summary: kind === "tool_done" && event.success === true && typeof event.summary === "string" ? event.summary.slice(0,500) : undefined,
   };
 }
 

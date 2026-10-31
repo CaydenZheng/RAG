@@ -38,7 +38,7 @@ function localWorkspaceRoutes(): Plugin {
     configureServer(server) {
       server.middlewares.use((request, _response, next) => {
         const [pathname, search = ""] = (request.url ?? "").split("?", 2);
-        if (pathname === "/" || pathname === "/agent" || pathname === "/settings/skills" || pathname === "/knowledge") {
+        if (pathname === "/" || pathname === "/agent" || pathname === "/settings/skills" || pathname === "/knowledge" || pathname === "/tools" || pathname === "/settings") {
           request.url = `/static/app/${search ? `?${search}` : ""}`;
         }
         next();

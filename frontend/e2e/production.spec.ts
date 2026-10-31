@@ -78,7 +78,16 @@ test("real local parser stores an owned attachment and separates selection from 
   expect((await after.json()).items).toHaveLength(0);
 });
 
-for (const route of ["/", "/agent", "/settings/skills", "/knowledge"] as const) {
+test("owned preferences, catalog and title search work through the production frontend",async({page})=>{
+  const origin="http://127.0.0.1:8002";await page.goto(origin+"/");await page.getByLabel("账号",{exact:true}).fill("browser-check");await page.getByLabel("密码",{exact:true}).fill("verified-browser-password");await page.getByRole("button",{name:"登录",exact:true}).click();
+  await page.getByRole("link",{name:"工作台设置",exact:true}).click();const selector=page.getByRole("combobox",{name:"新对话默认模型",exact:true});await expect(selector).toBeEnabled();await selector.selectOption("pro");await page.getByRole("button",{name:"保存默认模型",exact:true}).click();await expect(page.getByText(/默认模型已保存/)).toBeVisible();
+  await page.getByRole("combobox",{name:"主题",exact:true}).selectOption("light");await page.reload();await expect(page.getByRole("combobox",{name:"主题",exact:true})).toHaveValue("light");await expect(selector).toHaveValue("pro");
+  await page.getByRole("button",{name:"新建对话",exact:true}).click();await expect(page.getByRole("combobox",{name:"模型",exact:true})).toHaveValue("pro");
+  await page.getByRole("textbox",{name:"搜索历史标题"}).fill("no-such-synthetic-title");await page.getByRole("button",{name:"搜索",exact:true}).click();await expect(page.getByText("没有匹配标题的对话",{exact:true})).toBeVisible();
+  await page.getByRole("link",{name:"工具与 MCP",exact:true}).click();await expect(page.getByText("calculator",{exact:true})).toBeVisible();await page.getByRole("button",{name:"将计算示例填入 Agent",exact:true}).click();await expect(page.getByRole("textbox",{name:"向 Agent 发送任务"})).toHaveValue(/12 \+ 21/);
+});
+
+for (const route of ["/", "/agent", "/settings/skills", "/knowledge", "/tools", "/settings"] as const) {
   test(`executes the production React entry at ${route} under the strict CSP`, async ({ page }) => {
     const policyErrors: string[] = [];
     page.on("console", (message: ConsoleMessage) => {
@@ -96,7 +105,7 @@ for (const route of ["/", "/agent", "/settings/skills", "/knowledge"] as const) 
     expect(policy).not.toContain("'unsafe-inline'");
     expect(policy).not.toContain("'unsafe-eval'");
     await expect(page.getByRole("heading", {
-      name: route === "/" ? "知识问答工作台" : route === "/agent" ? "Agent 工作台" : route === "/knowledge" ? "知识库浏览" : "Skills 工作台",
+      name: route === "/" ? "知识问答工作台" : route === "/agent" ? "Agent 工作台" : route === "/knowledge" ? "知识库浏览" : route==="/tools"?"工具目录工作台":route==="/settings"?"偏好设置工作台":"Skills 工作台",
     })).toBeAttached();
     await expect(page.locator("#root > .app-shell")).toBeVisible();
     expect(policyErrors).toEqual([]);

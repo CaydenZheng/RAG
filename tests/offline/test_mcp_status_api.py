@@ -147,6 +147,7 @@ def test_tool_status_snapshot_is_sorted_and_detached() -> None:
     assert [item["name"] for item in snapshot] == ["native_probe", "zeta"]
     assert snapshot[0] == {
         "name": "native_probe",
+        "description": "A native status probe.",
         "source": "native",
         "provider": None,
         "category": "diagnostic",
@@ -155,6 +156,7 @@ def test_tool_status_snapshot_is_sorted_and_detached() -> None:
     }
     assert snapshot[1] == {
         "name": "zeta",
+        "description": "外部 MCP 工具；用途与参数请结合 Provider 说明及实际审批核对。",
         "source": "mcp",
         "provider": "remote",
         "category": "mcp",
@@ -185,6 +187,7 @@ def test_empty_mcp_configuration_preserves_native_tools() -> None:
         "tools": [
             {
                 "name": "native_probe",
+                "description": "A native status probe.",
                 "source": "native",
                 "provider": None,
                 "category": "diagnostic",
@@ -263,6 +266,7 @@ def test_application_starts_reports_and_closes_real_mcp_server(
     assert payload["tools"] == [
         {
             "name": "mcp__clock__get_current_time",
+            "description": "外部 MCP 工具；用途与参数请结合 Provider 说明及实际审批核对。",
             "source": "mcp",
             "provider": "clock",
             "category": "mcp",
@@ -271,6 +275,7 @@ def test_application_starts_reports_and_closes_real_mcp_server(
         },
         {
             "name": "native_probe",
+            "description": "A native status probe.",
             "source": "native",
             "provider": None,
             "category": "diagnostic",
@@ -418,6 +423,7 @@ def test_failed_mcp_server_degrades_without_blocking_application(
         "tools": [
             {
                 "name": "native_probe",
+                "description": "A native status probe.",
                 "source": "native",
                 "provider": None,
                 "category": "diagnostic",

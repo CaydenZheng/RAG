@@ -79,7 +79,7 @@ def test_browser_pages_discover_and_serve_built_assets(
 ) -> None:
     try:
         page_bodies: list[str] = []
-        for page_path in ("/", "/agent", "/settings/skills", "/knowledge"):
+        for page_path in ("/", "/agent", "/settings/skills", "/knowledge", "/tools", "/settings"):
             page = web_client.get(page_path)
             assert page.status_code == 200
             assert page.headers["content-type"].startswith("text/html")
