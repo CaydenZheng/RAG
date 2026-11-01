@@ -1,5 +1,6 @@
 import { useState, type RefObject } from "react";
 import { RowMenu } from "./RowMenu";
+import { useConfirm } from "./ConfirmDialog";
 
 interface DemoEntry {
   id: string;
@@ -22,6 +23,7 @@ export function DemoHistory({ searchRef, onExample }: {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
+  const confirm = useConfirm();
   const visible = entries.filter((entry) => entry.title.includes(query));
 
   function closeRename(id: string): void {
@@ -72,16 +74,31 @@ export function DemoHistory({ searchRef, onExample }: {
                   {
                     label: "清空内容",
                     onSelect: () => {
-                      setEntries((previous) => previous.map((item) => item.id === entry.id ? { ...item, cleared: true } : item));
-                      setNotice(`「${entry.title}」已清空（模拟），刷新恢复。`);
+                      void confirm({
+                        title: "清空会话内容",
+                        message: `清空「${entry.title}」的问答？标题会保留。`,
+                        confirmLabel: "清空",
+                      }).then((ok) => {
+                        if (!ok) return;
+                        setEntries((previous) => previous.map((item) => item.id === entry.id ? { ...item, cleared: true } : item));
+                        setNotice(`「${entry.title}」已清空（模拟），刷新恢复。`);
+                      });
                     },
                   },
                   {
                     label: "删除会话",
                     danger: true,
                     onSelect: () => {
-                      setEntries((previous) => previous.filter((item) => item.id !== entry.id));
-                      setNotice("模拟会话已从示例目录移除，刷新会恢复。");
+                      void confirm({
+                        title: "删除会话",
+                        message: `删除「${entry.title}」及历史？此操作不能撤销。`,
+                        confirmLabel: "删除",
+                        danger: true,
+                      }).then((ok) => {
+                        if (!ok) return;
+                        setEntries((previous) => previous.filter((item) => item.id !== entry.id));
+                        setNotice("模拟会话已从示例目录移除，刷新会恢复。");
+                      });
                     },
                   },
                 ]}

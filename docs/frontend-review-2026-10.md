@@ -93,22 +93,24 @@ Pages 侧新增两处 alias（`toolClient`→`demo/tools.ts`、`resourceClient`�
 **GitHub Pages 注释精简**：只保留顶部一条横幅（两行），删掉 Skills / Tools / Knowledge / Settings / 附件面板 /
 技能生成弹窗里重复的"模拟…不连接…刷新会重置"，Composer 底部改为一句"预设模拟内容。"，示例目录不再标注"非个人历史"。
 
-## 三、未处理，需要产品／后续决定
+## 三、确认弹窗与隐私性收口
 
-1. **匿名本地模式下没有主题入口**：侧栏的「工作台设置」只在登录或 Pages 演示时出现，
-   但 `main.tsx` 仍会读取并应用 `localStorage.ragflow_theme`。曾选过深色的用户会停在深色且无处可改。
-   建议匿名模式也提供主题，或忽略该偏好。
-2. **从工具／设置页点「新建对话」会多压一条历史记录**：`newConversation` 先 `navigate(mode)`（push `/`），
-   `reset()` 再 push `/?conversation=<new>`。返回键会先落到 `/?`，触发 `forget()` 清空，
-   上一次会话要按三次返回才回得去。建议工具页场景改用 `replaceState`。
-3. **降级原因未覆盖 bm25**：`/ready` 的 `components` 含 `embedding/index/bm25/reranker`，
-   前端只对前三个给专属文案，bm25 异常会落到「部分服务尚未就绪」。
+- **统一确认弹窗**：新增 `frontend/src/components/ConfirmDialog.tsx`（`ConfirmProvider` + `useConfirm()`），
+  基于原生 `<dialog>` + `showModal()`，支持标题/说明/自定义按钮文案/危险样式；危险操作默认聚焦“取消”，
+  Esc、点遮罩、点取消都返回 false。未挂 Provider 时退回 `window.confirm`，所以只渲染 hook 的测试不受影响。
+  替换了全部 `window.confirm`：新建对话、清空会话、删除会话、删除附件、删除技能，以及演示目录的清空/删除。
+  文案去掉了与标题重复的前缀（标题“新建对话” + 说明“将清除当前检索历史，是否继续？”）。
+- **删除演示版导出**：`ConversationExport` 去掉 `IS_PAGES_DEMO` 分支，只在登录账号下渲染；演示页不再出现导出按钮与假下载。
+- **三条遗留**：
+  1. 匿名本地模式现在也能打开「工作台设置」，只显示主题（默认模型需要登录），并降级说明原因。
+  2. 从功能页新建对话改用 `replaceState` 回会话路由，返回键不再多出一层空白记录。
+  3. `/ready` 的 `bm25` 组件异常有了专属文案（“关键词检索暂不可用，当前仅使用向量检索”）。
 
-## 四、验证
+## 四、验证## 四、验证
 
 ```
 npx tsc -b                     ok
-npm run test                   168 passed
+npm run test                   169 passed
 npm run build / build:pages    ok
 npm run test:e2e               15 passed
 npm run test:e2e:pages         10 passed

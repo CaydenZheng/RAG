@@ -64,15 +64,15 @@ test("real local parser stores an owned attachment and separates selection from 
   await page.getByRole("button", {name:"下载 synthetic-notes.txt",exact:true}).click();
   expect((await pending).suggestedFilename()).toBe("synthetic-notes.txt");
   await page.locator(`[data-history-menu="${id}"]`).click();
-  page.once("dialog", dialog => dialog.accept());
   await page.getByRole("menuitem", {name:"清空内容",exact:true}).click();
+  await page.locator("dialog.confirm-dialog").getByRole("button",{name:"清空",exact:true}).click();
   await expect(checkbox).toHaveCount(0);
   expect(new URL(page.url()).searchParams.get("conversation")).toBe(id);
   await page.getByLabel("添加聊天附件").setInputFiles({name:"synthetic-notes.txt",mimeType:"text/plain",buffer:Buffer.from("New synthetic reference after clear.")});
   await expect(checkbox).toBeEnabled({timeout:20_000});
   await expect(checkbox).toBeChecked();
-  page.once("dialog", dialog => dialog.accept());
   await page.getByRole("button", {name:"删除 synthetic-notes.txt",exact:true}).click();
+  await page.locator("dialog.confirm-dialog").getByRole("button",{name:"删除",exact:true}).click();
   await expect(checkbox).toHaveCount(0);
   const after = await page.request.get(`${origin}/conversations/${id}/attachments`);
   expect((await after.json()).items).toHaveLength(0);

@@ -34,14 +34,14 @@ describe("fourth unit public interactions",()=>{
       if(init?.method==="PATCH"){const body=JSON.parse(String(init.body));expect(body.expected_revision).toBe(0);stored=body.default_model;revision++;return Promise.reject(new TypeError("lost response"));}
       return Promise.resolve(json({default_model:stored,revision}));
     }));
-    render(<WorkspaceSettings models={MODELS} onSaved={vi.fn()} theme="system" onTheme={vi.fn()}/>);
+    render(<WorkspaceSettings available models={MODELS} onSaved={vi.fn()} theme="system" onTheme={vi.fn()}/>);
     const selector=screen.getByRole("combobox",{name:"新对话默认模型"});await waitFor(()=>expect(selector).toBeEnabled());await user.selectOptions(selector,"pro");await user.click(screen.getByRole("button",{name:"保存默认模型"}));
     expect(await screen.findByText(/保存结果未确认/)).toBeVisible();expect(selector).toBeDisabled();expect(screen.getByRole("button",{name:"保存默认模型"})).toBeDisabled();
     await user.click(screen.getByRole("button",{name:"重新读取设置"}));await waitFor(()=>expect(selector).toBeEnabled());expect(selector).toHaveValue("pro");
   });
   it("keeps theme preference as the only browser-persisted setting",async()=>{
     vi.stubGlobal("fetch",vi.fn().mockResolvedValue(json({default_model:"flash",revision:0})));
-    function Harness():React.JSX.Element {const {theme,changeTheme}=useTheme();return <WorkspaceSettings models={MODELS} onSaved={vi.fn()} theme={theme} onTheme={changeTheme}/>;}
+    function Harness():React.JSX.Element {const {theme,changeTheme}=useTheme();return <WorkspaceSettings available models={MODELS} onSaved={vi.fn()} theme={theme} onTheme={changeTheme}/>;}
     const user=userEvent.setup();render(<Harness/>);await user.selectOptions(screen.getByRole("combobox",{name:"主题"}),"dark");expect(document.documentElement.dataset.theme).toBe("dark");expect(localStorage.getItem("ragflow_theme")).toBe("dark");await user.selectOptions(screen.getByRole("combobox",{name:"主题"}),"system");expect(document.documentElement.dataset.theme).toBe("system");expect(localStorage.length).toBe(1);
   });
   it("searches titles in POST bodies and retains the query for pagination",async()=>{

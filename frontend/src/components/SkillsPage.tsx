@@ -4,6 +4,7 @@ import { deleteSkill, readSkill, readSkills, setSkill, uploadSkill, type ModelCh
 import { isAbortFailure, toPublicMessage } from "../api/errors";
 import { IS_PAGES_DEMO } from "../app/runtime";
 import { RowMenu } from "./RowMenu";
+import { useConfirm } from "./ConfirmDialog";
 import { SkillCreatorDialog } from "./SkillCreatorDialog";
 
 export function SkillsPage({ available, models = [], defaultModel = "flash" }: {
@@ -19,6 +20,7 @@ export function SkillsPage({ available, models = [], defaultModel = "flash" }: {
   const active = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const detailClose = useRef<HTMLButtonElement>(null);
+  const confirm = useConfirm();
 
   useEffect(() => {
     if (!available) return undefined;
@@ -104,8 +106,12 @@ export function SkillsPage({ available, models = [], defaultModel = "flash" }: {
   }
 
   function remove(item: SkillItem): void {
-    if (!window.confirm(`删除技能 ${item.name}？后续请求将不再使用它。`)) return;
-    void perform(async signal => {
+    void confirm({
+      title: "删除技能",
+      message: `删除技能 ${item.name}？后续请求将不再使用它。`,
+      confirmLabel: "删除",
+      danger: true,
+    }).then(confirmed => { if (!confirmed) return; void perform(async signal => {
       await deleteSkill(item.id, signal);
       await refresh(signal);
       if (!signal.aborted) {
@@ -113,7 +119,7 @@ export function SkillsPage({ available, models = [], defaultModel = "flash" }: {
         setStatus("技能已删除；已完成历史保持原样。");
         heading.current?.focus();
       }
-    });
+    }); });
   }
 
   if (!available) {

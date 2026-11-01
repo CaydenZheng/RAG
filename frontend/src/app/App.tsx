@@ -230,11 +230,16 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
 
   const newConversation=useCallback(():void=>{
     if(resetting)return;
-    if(utilityView)navigate(mode);
+    if(utilityView){
+      // 从功能页回会话：替换当前条目，避免多压一条历史记录。
+      activeConversation.stop(true);
+      window.history.replaceState({}, "", modeHref(mode));
+      setSkillsView(false); setKnowledgeView(false); setExtraView(null);
+    }
     setRouteConversation(null);
     void reset();
     if(navigationOpen)closeNavigationToWorkspace();
-  },[closeNavigationToWorkspace,mode,navigate,navigationOpen,reset,resetting,utilityView]);
+  },[activeConversation,closeNavigationToWorkspace,mode,navigationOpen,reset,resetting,utilityView]);
 
   useEffect(()=>{
     function shortcuts(event:KeyboardEvent): void {
@@ -368,7 +373,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         >
           <Menu size={16} aria-hidden="true" />
         </button>
-        {extraView==="tools"?<ToolsPage available={!!account||IS_PAGES_DEMO} onExample={prepareAgentExample} />:extraView==="settings"?(account||IS_PAGES_DEMO?<WorkspaceSettings models={models} onSaved={confirmDefaultModel} onReloadModels={()=>setModelsRevision(value=>value+1)} theme={theme} onTheme={changeTheme} />:<section className="skills-page" aria-label="工作台设置"><div className="skills-head"><div><h1>工作台设置</h1><p className="skills-sub">登录后可设置账号默认模型。</p></div></div></section>):knowledgeView ? <KnowledgePage available={!!account || IS_PAGES_DEMO} /> : skillsView ? (
+        {extraView==="tools"?<ToolsPage available={!!account||IS_PAGES_DEMO} onExample={prepareAgentExample} />:extraView==="settings"?<WorkspaceSettings available={!!account||IS_PAGES_DEMO} models={models} onSaved={confirmDefaultModel} onReloadModels={()=>setModelsRevision(value=>value+1)} theme={theme} onTheme={changeTheme} />:knowledgeView ? <KnowledgePage available={!!account || IS_PAGES_DEMO} /> : skillsView ? (
           models || (!account && !IS_PAGES_DEMO) ? (
             <SkillsPage available={!!account || IS_PAGES_DEMO} models={models?.items} defaultModel={models?.defaultModel} />
           ) : (
@@ -429,9 +434,9 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
               onSend={(message, skillIds) => attachmentsPending ? Promise.resolve() : send(message, skillIds, selectedAttachments)}
               onStop={() => stop(true)}
               attachments={(account || IS_PAGES_DEMO) && <>
-                <ConversationExport key={`export-${selectionSession}`} id={activeConversation.sessionId}
+                {account && <ConversationExport key={`export-${selectionSession}`} id={activeConversation.sessionId}
                   disabled={resetting || isConversationActive(state.status) || activeConversation.unconfirmed}
-                  turns={state.turns} />
+                  turns={state.turns} />}
                 <AttachmentPanel key={selectionSession}
                   sessionId={activeConversation.sessionId} exists={!!activeConversation.summary || IS_PAGES_DEMO}
                   disabled={resetting || isConversationActive(state.status) || activeConversation.unconfirmed || activeConversation.modelUnconfirmed}

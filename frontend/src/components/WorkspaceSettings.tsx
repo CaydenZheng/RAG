@@ -4,7 +4,7 @@ import { toPublicMessage } from "../api/errors";
 import type { ThemePreference } from "../app/useTheme";
 import { SHORTCUT_LABEL } from "../app/runtime";
 
-export function WorkspaceSettings({models,onSaved,theme,onTheme,onReloadModels}: {models: ModelCatalog | null; onSaved: (choice:ModelChoice) => void; theme: ThemePreference; onTheme:(value:ThemePreference)=>void;onReloadModels?:()=>void}): React.JSX.Element {
+export function WorkspaceSettings({available,models,onSaved,theme,onTheme,onReloadModels}: {available:boolean;models: ModelCatalog | null; onSaved: (choice:ModelChoice) => void; theme: ThemePreference; onTheme:(value:ThemePreference)=>void;onReloadModels?:()=>void}): React.JSX.Element {
   const [preferences,setPreferences]=useState<WorkspacePreferences | null>(null);
   const [choice,setChoice]=useState<ModelChoice>("flash");
   const [busy,setBusy]=useState(true);
@@ -12,12 +12,13 @@ export function WorkspaceSettings({models,onSaved,theme,onTheme,onReloadModels}:
   const [revision,setRevision]=useState(0);
   const operation=useRef<AbortController | null>(null);
   useEffect(()=>{
+    if(!available){setBusy(false);return undefined;}
     const controller=new AbortController();operation.current=controller;setBusy(true);setPreferences(null);setNotice("");
     void readPreferences(controller.signal).then(value=>{if(!controller.signal.aborted){setPreferences(value);setChoice(value.defaultModel);onSaved(value.defaultModel);}})
       .catch(error=>{if(!controller.signal.aborted)setNotice(toPublicMessage(error));})
       .finally(()=>{if(!controller.signal.aborted)setBusy(false);});
     return ()=>operation.current?.abort();
-  },[onSaved,revision]);
+  },[available,onSaved,revision]);
   async function save(): Promise<void> {
     if(!preferences||busy)return;
     const controller=new AbortController();operation.current?.abort();operation.current=controller;setBusy(true);setNotice("");
@@ -25,16 +26,31 @@ export function WorkspaceSettings({models,onSaved,theme,onTheme,onReloadModels}:
     catch{if(!controller.signal.aborted){setPreferences(null);setNotice("保存结果未确认，请重新读取设置核对；不会自动重试。");}}
     finally{if(!controller.signal.aborted)setBusy(false);}
   }
-  return <section className="skills-page" aria-label="工作台设置"><div className="skills-head"><div><h1>工作台设置</h1><p className="skills-sub">只保留实际生效的简单偏好；技能统一在 Skills 页启停。</p></div></div>
-        {!models&&<p className="skills-status" role="status">模型目录尚未确认。<button className="skills-action" onClick={onReloadModels}>重新读取模型目录</button></p>}
-    <label className="settings-field">主题<select aria-label="主题" value={theme} onChange={event=>onTheme(event.target.value==="dark"?"dark":event.target.value==="light"?"light":"system")}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
-    <label className="settings-field">新对话默认模型<select aria-label="新对话默认模型" disabled={busy||!preferences||!models} value={choice} onChange={event=>setChoice(event.target.value==="pro"?"pro":"flash")}>
-      {(models?.items??[]).map(item=><option value={item.id} key={item.id} disabled={!item.available}>{item.label}{item.available?"":"（未配置）"}</option>)}
-    </select></label>
-    
-    <p className="page-note">优先级：本轮明确选择 → 会话已保存选择／最近模型 → 账号默认 → Flash。更改默认不改写已有会话或历史。</p>
-    <div className="interaction-actions"><button disabled={busy||!preferences||!models?.items.some(item=>item.id===choice&&item.available)} onClick={()=>void save()}>保存默认模型</button><button className="skills-action plain" disabled={busy} onClick={()=>setRevision(value=>value+1)}>重新读取设置</button><p className="skills-status" role="status">{busy?"正在核对设置…":notice}</p></div>
-    
-    <h2 className="page-section">快捷操作</h2><p className="page-note">{SHORTCUT_LABEL} + I 聚焦输入，+ N 新建对话，+ H 搜索历史；输入法组词和弹窗内不触发。</p>
+  return <section className="skills-page" aria-label="工作台设置">
+    <div className="skills-head"><div><h1>工作台设置</h1><p className="skills-sub">只保留实际生效的简单偏好；技能统一在 Skills 页启停。</p></div></div>
+    {!available && <p className="page-note">登录后可设置账号默认模型；外观主题保存在本浏览器。</p>}
+    {available && !models && <p className="skills-status" role="status">模型目录尚未确认。<button className="skills-action" onClick={onReloadModels}>重新读取模型目录</button></p>}
+    <label className="settings-field">主题
+      <select aria-label="主题" value={theme} onChange={event => onTheme(event.target.value === "dark" ? "dark" : event.target.value === "light" ? "light" : "system")}>
+        <option value="system">跟随系统</option>
+        <option value="light">浅色</option>
+        <option value="dark">深色</option>
+      </select>
+    </label>
+    {available && <>
+      <label className="settings-field">新对话默认模型
+        <select aria-label="新对话默认模型" disabled={busy || !preferences || !models} value={choice} onChange={event => setChoice(event.target.value === "pro" ? "pro" : "flash")}>
+          {(models?.items ?? []).map(item => <option value={item.id} key={item.id} disabled={!item.available}>{item.label}{item.available ? "" : "（未配置）"}</option>)}
+        </select>
+      </label>
+      <p className="page-note">优先级：本轮明确选择 → 会话已保存选择／最近模型 → 账号默认 → Flash。更改默认不改写已有会话或历史。</p>
+      <div className="interaction-actions">
+        <button disabled={busy || !preferences || !models?.items.some(item => item.id === choice && item.available)} onClick={() => void save()}>保存默认模型</button>
+        <button className="skills-action plain" disabled={busy} onClick={() => setRevision(value => value + 1)}>重新读取设置</button>
+        <p className="skills-status" role="status">{busy ? "正在核对设置…" : notice}</p>
+      </div>
+    </>}
+    <h2 className="page-section">快捷操作</h2>
+    <p className="page-note">{SHORTCUT_LABEL} + I 聚焦输入，+ N 新建对话，+ H 搜索历史；输入法组词和弹窗内不触发。</p>
   </section>;
 }

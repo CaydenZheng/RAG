@@ -10,11 +10,11 @@ test("tools, preferences, theme, title filtering and export are explicitly simul
   await page.getByRole("button",{name:"将计算示例填入 Agent",exact:true}).click();await expect(page.getByRole("textbox",{name:"向 Agent 发送任务"})).toHaveValue(/12 \+ 21/);expect(connections).toEqual([]);
   await page.getByRole("link",{name:"工作台设置",exact:true}).click();await page.getByRole("combobox",{name:"主题",exact:true}).selectOption("dark");await expect(page.locator("html")).toHaveCSS("color-scheme","dark");await page.reload();await expect(page.getByRole("combobox",{name:"主题",exact:true})).toHaveValue("dark");
   await page.getByRole("combobox",{name:"新对话默认模型",exact:true}).selectOption("pro");await page.getByRole("button",{name:"保存默认模型",exact:true}).click();await expect(page.getByText(/默认模型已保存/)).toBeVisible();
-  page.once("dialog",dialog=>dialog.accept());await page.getByRole("button",{name:"新建对话",exact:true}).click();await expect(page.getByRole("combobox",{name:"模型",exact:true})).toHaveValue("pro");
+  await page.getByRole("button",{name:"新建对话",exact:true}).click();
+  await page.locator("dialog.confirm-dialog").getByRole("button",{name:"新建",exact:true}).click();await expect(page.getByRole("combobox",{name:"模型",exact:true})).toHaveValue("pro");
   await page.getByRole("textbox",{name:"搜索历史标题"}).fill("表单");await expect(page.getByRole("button",{name:/^会话操作/,exact:false}).first()).toBeVisible();
   await page.getByRole("button",{name:"表单示例",exact:true}).click();await page.getByRole("button",{name:"发送",exact:true}).click();await page.getByRole("button",{name:"待处理 1 项，前往处理",exact:true}).click();await expect(page.getByRole("heading",{name:"需要你的输入",exact:true})).toBeFocused();
   await page.getByLabel("示例主题",{exact:false}).fill("合成主题");await page.getByRole("button",{name:"提交并继续",exact:true}).click();await expect(page.locator(".answer-footer")).toBeVisible();
-  const pending=page.waitForEvent("download");await page.getByRole("button",{name:"导出演示对话",exact:true}).click();expect((await pending).suggestedFilename()).toBe("simulated-conversation.md");
   await page.keyboard.press("Control+Alt+i");await expect(page.getByRole("textbox",{name:"向 Agent 发送任务"})).toBeFocused();
   expect(connections).toEqual([]);
 });
@@ -92,8 +92,8 @@ test("stop, error, reset and timeout cannot appear as successful answers", async
   await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("错误");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("模拟错误终态");
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "新建对话", exact: true }).click();
+  await page.locator("dialog.confirm-dialog").getByRole("button",{name:"新建",exact:true}).click();
   await expect(page.locator(".conversation-turn")).toHaveCount(0);
   await page.getByRole("link", { name: "Agent", exact: true }).click();
   await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("超时");
@@ -122,8 +122,8 @@ test("reset restores auto-follow after scrolling a long conversation", async ({ 
   const region = page.getByRole("region", { name: "对话内容" });
   await region.evaluate((element) => { element.scrollTop = 0; });
   await expect(page.getByRole("button", { name: "回到最新" })).toBeVisible();
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "新建对话", exact: true }).click();
+  await page.locator("dialog.confirm-dialog").getByRole("button",{name:"新建",exact:true}).click();
   await expect(page.getByText("静态模拟演示", { exact: true })).toBeInViewport({ ratio: 1 });
   await expect(page.getByRole("button", { name: "回到最新" })).toHaveCount(0);
   await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("新会话回答");

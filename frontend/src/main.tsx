@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { AccountBoundary } from "./app/AccountBoundary";
+import { ConfirmProvider } from "./components/ConfirmDialog";
 import { applyTheme, readTheme } from "./app/useTheme";
 import "./styles/index.css";
 import "./styles/skills.css";
@@ -13,6 +14,8 @@ if (!root) throw new Error("Application root is missing");
 
 createRoot(root).render(
   <StrictMode>
-    <AccountBoundary />
+    <ConfirmProvider>
+      <AccountBoundary />
+    </ConfirmProvider>
   </StrictMode>,
 );

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import { Paperclip } from "lucide-react";
 import { deleteAttachment, downloadAttachment, readAttachments, uploadAttachment, type AttachmentItem } from "../api/resourceClient";
 import { toPublicMessage } from "../api/errors";
-import { IS_PAGES_DEMO } from "../app/runtime";
+import { useConfirm } from "./ConfirmDialog";
 
 const FAILURES: Readonly<Record<string, string>> = Object.freeze({
   parse_interrupted:"解析因服务重启中断，请删除后重新上传。", document_timeout:"解析超时，请拆分文件。",
@@ -21,6 +21,7 @@ export function AttachmentPanel({sessionId, exists, disabled, ensure, onSelectio
   const [notice, setNotice] = useState("");
   const [revision, setRevision] = useState(0);
   const [retry, setRetry] = useState<{file:File; id:string} | null>(null);
+  const confirm = useConfirm();
   const operation = useRef<AbortController | null>(null);
   const mounted = useRef(true);
   const urls = useRef(new Set<string>());
@@ -80,7 +81,12 @@ export function AttachmentPanel({sessionId, exists, disabled, ensure, onSelectio
 
   async function act(item: AttachmentItem, remove: boolean): Promise<void> {
     if (disabled || operation.current) return;
-    if (remove && !window.confirm(`删除附件 ${item.name}？已完成的历史回答保留。`)) return;
+    if (remove && !(await confirm({
+      title: "删除附件",
+      message: `删除附件 ${item.name}？已完成的历史回答保留。`,
+      confirmLabel: "删除",
+      danger: true,
+    }))) return;
     const controller = new AbortController(); operation.current = controller; setBusy(true); setNotice("");
     try {
       if (remove) {

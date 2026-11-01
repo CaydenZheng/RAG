@@ -48,7 +48,7 @@ export function useServiceStatus(): ServiceStatusController {
           if(reported!=="ready"){
             const components=isRecord(body)&&isRecord(body.components)?body.components:{};
             const failed=(key:string):boolean=>isRecord(components[key])&&components[key].status!=="ready";
-            setDetail(failed("embedding")?"本地模型尚未就绪，请等待初始化或由管理员检查模型文件与资源。":failed("index")?"知识库索引未就绪，请由管理员准备有效版本化索引。":failed("reranker")?"精排暂不可用，请稍后重新检查。":"部分服务尚未就绪，请稍后重新检查；外部工具可能不可用。");
+            setDetail(failed("embedding")?"本地模型尚未就绪，请等待初始化或由管理员检查模型文件与资源。":failed("index")?"知识库索引未就绪，请由管理员准备有效版本化索引。":failed("bm25")?"关键词检索暂不可用，当前仅使用向量检索。":failed("reranker")?"精排暂不可用，请稍后重新检查。":"部分服务尚未就绪，请稍后重新检查；外部工具可能不可用。");
           }else setDetail("");
         } else {
           setServiceState(response.ok ? "ready" : "unavailable");

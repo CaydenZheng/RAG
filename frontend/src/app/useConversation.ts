@@ -22,10 +22,11 @@ import {
   type ConversationState,
 } from "./conversationState";
 import { IS_PAGES_DEMO, modeHref } from "./runtime";
+import { useConfirm } from "../components/ConfirmDialog";
 
 const RESET_CONFIRMATION: Readonly<Record<WorkspaceMode, string>> = Object.freeze({
-  rag: "新建对话会清除当前检索历史，是否继续？",
-  agent: "新建对话会清除当前 Agent 历史，是否继续？",
+  rag: "将清除当前检索历史，是否继续？",
+  agent: "将清除当前 Agent 历史，是否继续？",
 });
 
 const INTERACTION_POLL_MS = 350;
@@ -93,6 +94,7 @@ function interactionError(error: unknown): string {
 }
 
 export function useConversation(mode: WorkspaceMode, account = false, defaultModel: ModelChoice = "flash"): ConversationController {
+  const confirm = useConfirm();
   const [state, dispatch] = useReducer(conversationReducer, initialConversationState);
   const [sessionId, setSessionId] = useState(() => account ? createSessionId() : loadOrCreateSessionId(mode));
   const [summary, setSummary] = useState<ConversationSummary | null>(null);
@@ -259,7 +261,11 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
 
   const reset = useCallback(async (): Promise<void> => {
     if (resettingRef.current) return;
-    if (!account && !window.confirm(RESET_CONFIRMATION[mode])) return;
+    if (!account && !(await confirm({
+      title: "新建对话",
+      message: RESET_CONFIRMATION[mode],
+      confirmLabel: "新建",
+    }))) return;
 
     stop(true);
     resettingRef.current = true;
@@ -375,7 +381,16 @@ export function useConversation(mode: WorkspaceMode, account = false, defaultMod
     if (!account || resettingRef.current) return false;
     const isActive = summary?.id === item.id;
     if (action === "rename" && isActive && isConversationActive(state.status)) return false;
-    if (action !== "rename" && !window.confirm(action === "clear" ? "清空该会话的所有问答？目录和标题将保留。" : "删除整个会话及历史？此操作不能撤销。")) return false;
+    if (action !== "rename" && !(await confirm(action === "clear" ? {
+      title: "清空会话内容",
+      message: "清空该会话的所有问答？目录和标题将保留。",
+      confirmLabel: "清空",
+    } : {
+      title: "删除会话",
+      message: "删除整个会话及历史？此操作不能撤销。",
+      confirmLabel: "删除",
+      danger: true,
+    }))) return false;
     if (isActive) stop(true);
     resettingRef.current = true; setResetting(true); setNotice("");
     const controller = new AbortController(); resetController.current = controller;

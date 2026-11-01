@@ -125,12 +125,13 @@ test("fake API: rename, clear and delete are explicit; logout cancels connecting
   await page.getByLabel("会话标题",{exact:true}).fill("Named history");
   await page.getByRole("button",{name:"保存",exact:true}).click();
   await expect(page.getByRole("button",{name:/^Named history/})).toBeVisible();
-  page.on("dialog",(dialog) => void dialog.accept());
   await page.locator('.history-item[data-active="true"] [aria-haspopup="menu"]').click();
   await page.getByRole("menuitem",{name:"清空内容",exact:true}).click();
+  await page.locator("dialog.confirm-dialog").getByRole("button",{name:"清空",exact:true}).click();
   await expect(page.getByRole("button",{name:/^Named history/})).toBeVisible();
   await page.locator('.history-item[data-active="true"] [aria-haspopup="menu"]').click();
   await page.getByRole("menuitem",{name:"删除会话",exact:true}).click();
+  await page.locator("dialog.confirm-dialog").getByRole("button",{name:"删除",exact:true}).click();
   await expect(page.getByRole("button",{name:/^Named history/})).toHaveCount(0);
   await page.getByRole("textbox",{name:/向知识库提问/}).fill("delayed private question");
   await page.getByRole("button",{name:"发送",exact:true}).click();
