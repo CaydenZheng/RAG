@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { ExternalLink, ShieldCheck } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 
 import { safeExternalUrl } from "../api/safeUrls";
 import { isRecord } from "../api/sse";
@@ -9,7 +9,6 @@ import type {
   InteractionDecision,
 } from "../api/types";
 import { agentInteractionKey } from "../api/types";
-import { IS_PAGES_DEMO } from "../app/runtime";
 
 interface InteractionProps {
   interaction: AgentInteraction;
@@ -28,18 +27,49 @@ const STATUS_LABELS = Object.freeze({
   outcome_unknown: "结果未知",
 });
 
+function isTerminal(status: AgentInteraction["status"]): boolean {
+  return status !== "pending" && status !== "submitting";
+}
+
+function interactionHeading(interaction: AgentInteraction): string {
+  return interaction.kind === "approval" ? "需要工具审批" : "需要你的输入";
+}
+
+function interactionTarget(interaction: AgentInteraction): string {
+  return interaction.kind === "approval" ? interaction.toolName : interaction.serverId;
+}
+
 function InteractionFrame({ interaction, children }: InteractionProps & { children: React.ReactNode }): React.JSX.Element {
   const headingId = `interaction-${interaction.kind}-${interaction.id}`;
+  const heading = interactionHeading(interaction);
+  const error = interaction.error && <p className="interaction-error" role="alert">{interaction.error}</p>;
+
+  // 处理完的请求折叠成一行，避免整块卡片长期占据版面。
+  if (isTerminal(interaction.status)) {
+    return (
+      <details className="interaction-done" data-status={interaction.status} id={headingId}>
+        <summary>
+          <span className="interaction-dot" aria-hidden="true" />
+          <span className="interaction-done-title">{heading}</span>
+          <span className="interaction-done-status">{STATUS_LABELS[interaction.status]}</span>
+          <span className="interaction-done-target">{interactionTarget(interaction)}</span>
+        </summary>
+        <div className="interaction-done-body">
+          {children}
+          {error}
+        </div>
+      </details>
+    );
+  }
+
   return (
     <section className="interaction-card" aria-labelledby={headingId}>
       <div className="interaction-heading">
-        <h2 id={headingId} tabIndex={-1}>
-          {interaction.kind === "approval" ? "需要工具审批" : "需要你的输入"}
-        </h2>
+        <h2 id={headingId} tabIndex={-1}>{heading}</h2>
         <span data-status={interaction.status}>{STATUS_LABELS[interaction.status]}</span>
       </div>
       {children}
-      {interaction.error && <p className="interaction-error" role="alert">{interaction.error}</p>}
+      {error}
     </section>
   );
 }
@@ -59,11 +89,13 @@ function ApprovalCard(props: InteractionProps & { interaction: Extract<AgentInte
         <summary>查看参数快照</summary>
         <pre>{JSON.stringify(interaction.params, null, 2)}</pre>
       </details>
-      <div className="interaction-actions">
-        <button type="button" disabled={locked} onClick={() => void onDecision({ kind: "approval", id: interaction.id, action: "approve" })}>允许一次</button>
-        <button type="button" disabled={locked} onClick={() => void onDecision({ kind: "approval", id: interaction.id, action: "reject" })}>拒绝</button>
-        <button className="danger-action" type="button" disabled={locked} onClick={() => void onDecision({ kind: "approval", id: interaction.id, action: "cancel" })}>取消任务</button>
-      </div>
+      {!isTerminal(interaction.status) && (
+        <div className="interaction-actions">
+          <button type="button" onClick={() => void onDecision({ kind: "approval", id: interaction.id, action: "approve" })}>允许一次</button>
+          <button type="button" onClick={() => void onDecision({ kind: "approval", id: interaction.id, action: "reject" })}>拒绝</button>
+          <button className="danger-action" type="button" onClick={() => void onDecision({ kind: "approval", id: interaction.id, action: "cancel" })}>取消任务</button>
+        </div>
+      )}
     </InteractionFrame>
   );
 }
@@ -202,17 +234,19 @@ function FormCard(props: InteractionProps & { interaction: FormElicitationIntera
               </div>
             );
           })}
-          <div className="interaction-actions">
-            <button type="submit" disabled={locked || !fields}>提交并继续</button>
-            <button type="button" disabled={locked} onClick={() => void onDecision({ kind: "form", id: interaction.id, action: "decline" })}>拒绝</button>
-            <button className="danger-action" type="button" disabled={locked} onClick={() => void onDecision({ kind: "form", id: interaction.id, action: "cancel" })}>取消任务</button>
-          </div>
+          {!isTerminal(interaction.status) && (
+            <div className="interaction-actions">
+              <button type="submit" disabled={!fields}>提交并继续</button>
+              <button type="button" onClick={() => void onDecision({ kind: "form", id: interaction.id, action: "decline" })}>拒绝</button>
+              <button className="danger-action" type="button" onClick={() => void onDecision({ kind: "form", id: interaction.id, action: "cancel" })}>取消任务</button>
+            </div>
+          )}
         </form>
       )}
-      {!fields && (
+      {!fields && !isTerminal(interaction.status) && (
         <div className="interaction-actions">
-          <button type="button" disabled={locked} onClick={() => void onDecision({ kind: "form", id: interaction.id, action: "decline" })}>拒绝</button>
-          <button className="danger-action" type="button" disabled={locked} onClick={() => void onDecision({ kind: "form", id: interaction.id, action: "cancel" })}>取消任务</button>
+          <button type="button" onClick={() => void onDecision({ kind: "form", id: interaction.id, action: "decline" })}>拒绝</button>
+          <button className="danger-action" type="button" onClick={() => void onDecision({ kind: "form", id: interaction.id, action: "cancel" })}>取消任务</button>
         </div>
       )}
     </InteractionFrame>
@@ -234,14 +268,16 @@ function UrlCard(props: InteractionProps & { interaction: Extract<AgentInteracti
       <div className="interaction-actions">
         <button
           type="button"
-          disabled={locked || !safeUrl}
+          disabled={!safeUrl}
           onClick={() => { if (safeUrl) window.open(safeUrl.href, "_blank", "noopener,noreferrer"); }}
         >
           <ExternalLink size={16} aria-hidden="true" />打开安全页面
         </button>
-        <button type="button" disabled={locked} onClick={() => void onDecision({ kind: "url", id: interaction.id, action: "accept" })}>已完成，继续</button>
-        <button type="button" disabled={locked} onClick={() => void onDecision({ kind: "url", id: interaction.id, action: "decline" })}>拒绝</button>
-        <button className="danger-action" type="button" disabled={locked} onClick={() => void onDecision({ kind: "url", id: interaction.id, action: "cancel" })}>取消任务</button>
+        {!isTerminal(interaction.status) && (<>
+          <button type="button" onClick={() => void onDecision({ kind: "url", id: interaction.id, action: "accept" })}>已完成，继续</button>
+          <button type="button" onClick={() => void onDecision({ kind: "url", id: interaction.id, action: "decline" })}>拒绝</button>
+          <button className="danger-action" type="button" onClick={() => void onDecision({ kind: "url", id: interaction.id, action: "cancel" })}>取消任务</button>
+        </>)}
       </div>
     </InteractionFrame>
   );
@@ -254,7 +290,6 @@ export function AgentInteractions({ interactions, onDecision }: {
   if (!interactions.length) return null;
   return (
     <div className="agent-interactions" aria-label="Agent 待处理请求">
-      <div className="interaction-intro"><ShieldCheck size={18} aria-hidden="true" />{IS_PAGES_DEMO ? "模拟交互：不执行工具、不提交信息，也不进行真实授权。" : "所有工具仍由后端策略、Schema、审批与审计链控制。"}</div>
       {interactions.map((interaction) => {
         const props = { interaction, onDecision };
         const key = agentInteractionKey(interaction);

@@ -12,9 +12,13 @@ test("tools, preferences, theme, title filtering and export are explicitly simul
   await page.getByRole("combobox",{name:"新对话默认模型",exact:true}).selectOption("pro");await page.getByRole("button",{name:"保存默认模型",exact:true}).click();await expect(page.getByText(/默认模型已保存/)).toBeVisible();
   await page.getByRole("button",{name:"新建对话",exact:true}).click();
   await page.locator("dialog.confirm-dialog").getByRole("button",{name:"新建",exact:true}).click();await expect(page.getByRole("combobox",{name:"模型",exact:true})).toHaveValue("pro");
-  await page.getByRole("textbox",{name:"搜索历史标题"}).fill("表单");await expect(page.getByRole("button",{name:/^会话操作/,exact:false}).first()).toBeVisible();
+  await page.getByRole("textbox",{name:"搜索历史标题"}).fill("表单");await page.getByRole("button",{name:"搜索",exact:true}).click();await expect(page.getByRole("button",{name:"表单示例",exact:true})).toBeVisible();
   await page.getByRole("button",{name:"表单示例",exact:true}).click();await page.getByRole("button",{name:"发送",exact:true}).click();await page.getByRole("button",{name:"待处理 1 项，前往处理",exact:true}).click();await expect(page.getByRole("heading",{name:"需要你的输入",exact:true})).toBeFocused();
   await page.getByLabel("示例主题",{exact:false}).fill("合成主题");await page.getByRole("button",{name:"提交并继续",exact:true}).click();await expect(page.locator(".answer-footer")).toBeVisible();
+  // 新建对话应把当前会话归档到“最近对话”，而不是弹一个“清除历史”的警告。
+  await page.getByRole("button",{name:"新建对话",exact:true}).click();
+  await page.locator("dialog.confirm-dialog").getByRole("button",{name:"新建",exact:true}).click();
+  await expect(page.getByRole("button",{name:/^会话操作/}).first()).toBeVisible();
   await page.keyboard.press("Control+Alt+i");await expect(page.getByRole("textbox",{name:"向 Agent 发送任务"})).toBeFocused();
   expect(connections).toEqual([]);
 });

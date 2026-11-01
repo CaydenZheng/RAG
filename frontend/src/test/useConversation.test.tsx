@@ -87,7 +87,8 @@ describe("useConversation interaction outcomes", () => {
 
         render(<AgentInteractions interactions={[interaction]} onDecision={vi.fn()} />);
         expect(screen.getByText("结果未知")).toBeVisible();
-        for (const button of screen.getAllByRole("button")) expect(button).toBeDisabled();
+        // 终态卡片折叠，只保留“打开安全页面”这类非决策操作，避免误以为还能重试。
+        expect(screen.queryByRole("button", { name: /已完成，继续|拒绝|取消任务/ })).not.toBeInTheDocument();
 
         await act(async () => { await vi.advanceTimersByTimeAsync(350); });
         expect(conversation.result.current.state.turns[0].interactions[0].status).toBe("outcome_unknown");

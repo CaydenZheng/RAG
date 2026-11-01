@@ -21,6 +21,7 @@ function parseSkillCommand(value: string): SkillCommand | null {
 }
 
 interface ComposerProps {
+  replay?: { onExit: () => void };
   attachments?: ReactNode;
   attachmentsPending?: boolean;
   mode: WorkspaceMode;
@@ -40,6 +41,7 @@ interface ComposerProps {
 }
 
 export function Composer({
+  replay,
   attachments,
   attachmentsPending = false,
   mode,
@@ -60,8 +62,10 @@ export function Composer({
   const textarea = useRef<HTMLTextAreaElement>(null);
   const running = isConversationActive(status);
   const modelLocked = running || resetting || unconfirmed;
-  const blocked = modelLocked || modelUnavailable || attachmentsPending;
-  const blockedMessage = unconfirmed
+  const blocked = modelLocked || modelUnavailable || attachmentsPending || Boolean(replay);
+  const blockedMessage = replay
+    ? "正在查看本地回放，无法继续提问"
+    : unconfirmed
     ? "本轮保存状态未确认，请先核对历史"
     : resetting ? "会话操作中，暂不可发送"
     : modelUnavailable ? "当前模型未配置，请选择可用模型"
@@ -257,6 +261,7 @@ export function Composer({
           {unconfirmed && onReconcile && (
             <button type="button" onClick={onReconcile}>核对本轮历史</button>
           )}
+          {replay && <button type="button" onClick={replay.onExit}>退出回放</button>}
         </div>
       )}
       <p className="ai-disclaimer">{IS_PAGES_DEMO ? "预设模拟内容。" : "内容由 AI 生成，请核对引用与执行结果。"}</p>

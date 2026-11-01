@@ -159,7 +159,8 @@ test("locks an unconfirmed Approval after the 25 second client request boundary"
   await page.clock.fastForward(25_000);
 
   await expect(page.getByText("结果未知", {exact:true})).toBeVisible();
-  await expect(page.getByRole("button", { name: "允许一次" })).toBeDisabled();
+  // 终态折叠后不再提供决策按钮，避免用户以为还能重试。
+  await expect(page.getByRole("button", { name: "允许一次" })).toHaveCount(0);
 });
 
 test("closes Agent stream and polling on route switch", async ({ page, request }) => {

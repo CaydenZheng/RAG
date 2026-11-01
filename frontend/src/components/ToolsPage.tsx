@@ -19,10 +19,14 @@ export function ToolsPage({available, onExample}: {available: boolean; onExample
     return ()=>controller.abort();
   },[available,revision]);
   return <section className="skills-page" aria-label="工具与 MCP">
-    <div className="skills-head"><div><h1>工具与 MCP</h1><p className="skills-sub">只读能力目录；可用表示已登记，不保证外部服务实际调用成功。执行仍经过后端权限、Schema、审批和审计。</p></div></div>
+    <div className="skills-head">
+      <div><h1>工具与 MCP</h1><p className="skills-sub">只读能力目录；可用表示已登记，不保证外部服务实际调用成功。执行仍经过后端权限、Schema、审批和审计。</p></div>
+      <div className="skill-creator-actions">
+        <button className="skills-action plain" type="button" disabled={loading} onClick={() => setRevision(value => value + 1)}>重新读取工具目录</button>
+      </div>
+    </div>
     <p className="page-note">工具需要时会在当前任务显示审批或补充输入；URL 仅在明确点击后打开。此页不提供 Server 添加、编辑、启停或直接执行。</p>
     {!available?<p className="page-note">登录后可查看当前账号允许的工具。</p>:<>
-      <button className="skills-action plain" disabled={loading} onClick={()=>setRevision(value=>value+1)}>重新读取工具目录</button>
       {loading&&<p className="skills-status" role="status">正在读取工具目录…</p>}{notice&&<p role="alert">{notice}</p>}
       {catalog&&<>
         <h2 className="page-section">工具</h2>{!catalog.tools.length&&<p className="page-note">当前账号没有可见工具。</p>}

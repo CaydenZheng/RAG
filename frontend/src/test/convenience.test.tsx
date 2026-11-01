@@ -56,7 +56,7 @@ describe("fourth unit public interactions",()=>{
     let state=conversationReducer(initialConversationState,{type:"start",question:"question"});
     state=conversationReducer(state,{type:"sync_interactions",interactions:[{kind:"approval",id:"one",toolName:"calculator",source:"native",provider:null,category:"utility",params:{},status:"pending",error:""},{kind:"url",id:"two",serverId:"test",url:"https://example.org",elicitationId:null,message:"",status:"outcome_unknown",error:""}]});
     render(<ConversationView mode="agent" state={state} onInteractionDecision={vi.fn()}/>);
-    const target=document.getElementById("interaction-approval-one");expect(target).not.toBeNull();Object.defineProperty(target,"scrollIntoView",{value:vi.fn()});await userEvent.click(screen.getByRole("button",{name:"待处理 1 项，前往处理"}));expect(target).toHaveFocus();expect(screen.getByRole("button",{name:"已完成，继续"})).toBeDisabled();
+    const target=document.getElementById("interaction-approval-one");expect(target).not.toBeNull();Object.defineProperty(target,"scrollIntoView",{value:vi.fn()});await userEvent.click(screen.getByRole("button",{name:"待处理 1 项，前往处理"}));expect(target).toHaveFocus();expect(screen.getByText("结果未知")).toBeVisible();expect(screen.queryByRole("button",{name:"已完成，继续"})).not.toBeInTheDocument();
   });
   it("ignores composition and AltGraph shortcuts and offers input/history focus",async()=>{
     window.history.replaceState({},"","/");vi.stubGlobal("fetch",vi.fn((path:string)=>Promise.resolve(json(path==="/workspace/models"?{items:MODELS.items,default_model:"flash"}:path==="/ready"?{status:"ready"}:{items:[],next_cursor:null}))));

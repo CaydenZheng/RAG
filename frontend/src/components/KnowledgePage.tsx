@@ -44,13 +44,18 @@ export function KnowledgePage({available}: {available: boolean}): React.JSX.Elem
   }
 
   return <section className="skills-page" aria-label="知识库浏览">
-    <div className="skills-head"><div><h1 ref={heading} tabIndex={-1}>知识库</h1><p className="skills-sub">共享只读目录；聊天附件不会进入知识库。</p></div></div>
+    <div className="skills-head">
+      <div><h1 ref={heading} tabIndex={-1}>知识库</h1><p className="skills-sub">共享只读目录；聊天附件不会进入知识库。</p></div>
+      {available && <div className="skill-creator-actions">
+        <button className="skills-action plain" type="button" disabled={busy} onClick={() => void load(appliedQuery)}>刷新目录</button>
+      </div>}
+    </div>
     {!available ? <p className="page-note">登录后可浏览已索引文档。</p> : <>
             <form className="resource-search" onSubmit={event => {event.preventDefault(); void load(query.trim());}}>
         <label className="sr-only" htmlFor="knowledgeSearch">搜索文档名称</label>
         <input id="knowledgeSearch" value={query} maxLength={80} placeholder="搜索文档名称" onChange={event => setQuery(event.target.value)} />
+        {query && <button className="history-clear" type="button" aria-label="清除搜索" onClick={() => setQuery("")}>✕</button>}
         <button className="skills-action" disabled={busy} type="submit">搜索</button>
-        <button className="skills-action plain" disabled={busy} type="button" onClick={() => void load(appliedQuery)}>刷新目录</button>
       </form>
       <p className="skills-status" role="status">{busy ? "正在读取知识库…" : version ? `索引版本 ${version} · 已索引` : ""}</p>
       {notice && <p role="alert" className="skills-notice">{notice}</p>}

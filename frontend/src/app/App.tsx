@@ -14,7 +14,8 @@ import { AttachmentPanel } from "../components/AttachmentPanel";
 import { ToolsPage } from "../components/ToolsPage";
 import { WorkspaceSettings } from "../components/WorkspaceSettings";
 import { ConversationExport } from "../components/ConversationExport";
-import { DemoHistory } from "../components/DemoHistory";
+import { LocalHistory } from "../components/LocalHistory";
+import { useLocalArchive, type LocalConversation } from "./useLocalArchive";
 import { useTheme } from "./useTheme";
 import { readModels, type ModelCatalog, type ModelChoice } from "../api/workspaceClient";
 import { toPublicMessage } from "../api/errors";
@@ -52,6 +53,8 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
   const previousMode = useRef(mode);
   const previousView = useRef(view);
   const serviceState = useServiceStatus();
+  const localArchive = useLocalArchive();
+  const [localReplay, setLocalReplay] = useState<{ mode: WorkspaceMode; entry: LocalConversation } | null>(null);
   const ragConversation = useConversation("rag", !!account, models?.defaultModel);
   const agentConversation = useConversation("agent", !!account, models?.defaultModel);
   const activeConversation = mode === "rag" ? ragConversation : agentConversation;
@@ -78,6 +81,10 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
     setDraft,
   } = activeConversation;
 
+  const replaying = localReplay !== null && localReplay.mode === mode;
+  const displayedState = replaying
+    ? { status: "idle" as const, turns: localReplay.entry.turns, nextTurnId: 0 }
+    : state;
   const ragOpen = ragConversation.open;
   const agentOpen = agentConversation.open;
   useEffect(() => { if (account) workspace.current?.focus({ preventScroll: true }); }, [account]);
@@ -99,6 +106,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
 
   const navigate = useCallback((nextMode: WorkspaceMode): void => {
     if (nextMode === mode && !utilityView) return;
+    setLocalReplay(null);
     activeConversation.stop(true);
     const nextId = account ? (nextMode === "rag" ? ragConversation : agentConversation).summary?.id : undefined;
     window.history.pushState({}, "", `${modeHref(nextMode)}${nextId ? `?conversation=${encodeURIComponent(nextId)}` : ""}`);
@@ -230,6 +238,8 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
 
   const newConversation=useCallback(():void=>{
     if(resetting)return;
+    if(!account) localArchive.archiveCurrent(mode, state.turns);
+    setLocalReplay(null);
     if(utilityView){
       // 从功能页回会话：替换当前条目，避免多压一条历史记录。
       activeConversation.stop(true);
@@ -239,7 +249,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
     setRouteConversation(null);
     void reset();
     if(navigationOpen)closeNavigationToWorkspace();
-  },[activeConversation,closeNavigationToWorkspace,mode,navigationOpen,reset,resetting,utilityView]);
+  },[account,activeConversation,closeNavigationToWorkspace,localArchive,mode,navigationOpen,reset,resetting,state.turns,utilityView]);
 
   useEffect(()=>{
     function shortcuts(event:KeyboardEvent): void {
@@ -326,7 +336,23 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
             if (navigationOpen) closeNavigationToWorkspace();
             else workspace.current?.focus();
           }}
-        /> : IS_PAGES_DEMO?<DemoHistory searchRef={historySearch} onExample={text=>{navigate("agent");agentConversation.setDraft(text);if(navigationOpen)closeNavigationToWorkspace();}} />:undefined}
+        /> : <LocalHistory
+          mode={mode}
+          entries={localArchive.archive[mode]}
+          examples={IS_PAGES_DEMO ? [{ id: "demo-approval", title: "审批示例" }, { id: "demo-form", title: "表单示例" }, { id: "demo-url", title: "URL 示例" }] : undefined}
+          activeId={replaying ? localReplay.entry.id : null}
+          searchRef={historySearch}
+          onOpen={(entry) => {
+            activeConversation.stop(true);
+            setSkillsView(false); setKnowledgeView(false); setExtraView(null);
+            setLocalReplay({ mode, entry });
+            if (navigationOpen) closeNavigationToWorkspace();
+            else workspace.current?.focus();
+          }}
+          onExample={(text) => { navigate("agent"); agentConversation.setDraft(text); if (navigationOpen) closeNavigationToWorkspace(); }}
+          onDelete={(id) => localArchive.remove(mode, id)}
+          onRename={(id, title) => localArchive.rename(mode, id, title)}
+        />}
         mode={mode}
         resetting={resetting}
         compact={compactNavigation}
@@ -408,7 +434,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
               )}
               <ConversationView
                 mode={mode}
-                state={state}
+                state={displayedState}
                 onInteractionDecision={respondToInteraction}
               />
               {showLatest && (
@@ -418,6 +444,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
               )}
             </section>
             <Composer
+              replay={replaying ? { onExit: () => setLocalReplay(null) } : undefined}
               attachmentsPending={attachmentsPending}
               mode={mode}
               status={state.status}

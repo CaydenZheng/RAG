@@ -932,18 +932,103 @@ a {
   margin-top: 12px;
 }
 
-.interaction-intro {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--faint);
-  font-size: 11.5px;
-}
-
 .interaction-card {
   padding: 14px;
   border-radius: var(--r-card);
-  background: var(--accent-soft);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* 处理完的请求折叠成一行，保留展开查看详情 */
+.interaction-done {
+  border-radius: var(--r-card);
+}
+
+.interaction-done > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: var(--r-card);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  color: var(--muted);
+  font-size: 12px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.interaction-done > summary::-webkit-details-marker {
+  display: none;
+}
+
+.interaction-done > summary::before {
+  content: "▸";
+  font-size: 9px;
+  color: var(--faint);
+}
+
+.interaction-done[open] > summary {
+  border-radius: var(--r-card) var(--r-card) 0 0;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.interaction-done[open] > summary::before {
+  content: "▾";
+}
+
+.interaction-done > summary:hover {
+  background: var(--soft);
+}
+
+.interaction-dot {
+  width: 6px;
+  min-width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.interaction-done[data-status="approved"] .interaction-dot,
+.interaction-done[data-status="accepted"] .interaction-dot {
+  background: var(--success);
+}
+
+.interaction-done[data-status="rejected"] .interaction-dot,
+.interaction-done[data-status="declined"] .interaction-dot,
+.interaction-done[data-status="cancelled"] .interaction-dot,
+.interaction-done[data-status="closed"] .interaction-dot {
+  background: var(--border-strong);
+}
+
+.interaction-done[data-status="outcome_unknown"] .interaction-dot {
+  background: var(--warning);
+}
+
+.interaction-done-title {
+  color: var(--text);
+}
+
+.interaction-done-status {
+  color: var(--faint);
+}
+
+.interaction-done-target {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.interaction-done-body {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  border-radius: 0 0 var(--r-card) var(--r-card);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 .interaction-heading {
@@ -962,7 +1047,7 @@ a {
 .interaction-heading span {
   padding: 1px 8px;
   border-radius: var(--r-pill);
-  background: var(--surface);
+  background: var(--accent-soft);
   color: var(--accent);
   font-size: 11px;
   font-weight: 500;
