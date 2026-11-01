@@ -20,7 +20,7 @@ import { readModels, type ModelCatalog, type ModelChoice } from "../api/workspac
 import { toPublicMessage } from "../api/errors";
 import { useConversation } from "./useConversation";
 import { useServiceStatus } from "./useServiceStatus";
-import { currentMode, extraHref, extraRoute, IS_PAGES_DEMO, isKnowledgeRoute, isSkillsRoute, knowledgeHref, modeHref, skillsHref } from "./runtime";
+import { currentMode, extraHref, extraRoute, IS_PAGES_DEMO, isKnowledgeRoute, isShortcut, isSkillsRoute, knowledgeHref, modeHref, skillsHref } from "./runtime";
 
 const AUTO_FOLLOW_THRESHOLD_PX = 80;
 const COMPACT_NAVIGATION_QUERY = "(max-width: 899px)";
@@ -238,11 +238,10 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
 
   useEffect(()=>{
     function shortcuts(event:KeyboardEvent): void {
-      if(event.isComposing||event.keyCode===229||event.repeat||event.getModifierState("AltGraph")||!event.altKey||!(event.ctrlKey||event.metaKey)||event.shiftKey||document.querySelector('dialog[open], [role="dialog"]'))return;
-      const key=event.key.toLowerCase();
-      if(key==="h"&&(account||IS_PAGES_DEMO)){event.preventDefault();if(compactNavigation)setNavigationOpen(true);window.requestAnimationFrame(()=>historySearch.current?.focus());}
-      if(key==="i"&&!utilityView){event.preventDefault();if(navigationOpen)closeNavigationToWorkspace();window.requestAnimationFrame(()=>document.getElementById("messageInput")?.focus());}
-      if(key==="n"&&!resetting){event.preventDefault();newConversation();}
+      if(document.querySelector('dialog[open], [role="dialog"]')) return;
+      if(isShortcut(event,"h")&&(account||IS_PAGES_DEMO)){event.preventDefault();if(compactNavigation)setNavigationOpen(true);window.requestAnimationFrame(()=>historySearch.current?.focus());}
+      if(isShortcut(event,"i")&&!utilityView){event.preventDefault();if(navigationOpen)closeNavigationToWorkspace();window.requestAnimationFrame(()=>document.getElementById("messageInput")?.focus());}
+      if(isShortcut(event,"n")&&!resetting){event.preventDefault();newConversation();}
     }
     window.addEventListener("keydown",shortcuts);return ()=>window.removeEventListener("keydown",shortcuts);
   },[account,closeNavigationToWorkspace,compactNavigation,navigationOpen,newConversation,resetting,utilityView]);
@@ -355,9 +354,9 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         aria-hidden={compactNavigation && navigationOpen ? true : undefined}
         inert={compactNavigation && navigationOpen ? true : undefined}
       >
-        <h1 className="sr-only">
-          {extraView==="tools"?"工具目录工作台":extraView==="settings"?"偏好设置工作台":knowledgeView ? "知识库浏览" : skillsView ? "Skills 工作台" : mode === "rag" ? "知识问答工作台" : "Agent 工作台"}
-        </h1>
+        {!skillsView && !knowledgeView && extraView === null && (
+          <h1 className="sr-only">{mode === "rag" ? "知识问答工作台" : "Agent 工作台"}</h1>
+        )}
         <button
           ref={navigationButton}
           className="mobile-nav-button"
@@ -369,7 +368,7 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
         >
           <Menu size={16} aria-hidden="true" />
         </button>
-        {extraView==="tools"?<ToolsPage available={!!account||IS_PAGES_DEMO} onExample={prepareAgentExample} />:extraView==="settings"?(account||IS_PAGES_DEMO?<WorkspaceSettings models={models} onSaved={confirmDefaultModel} onReloadModels={()=>setModelsRevision(value=>value+1)} theme={theme} onTheme={changeTheme} />:<p>登录后可设置账号默认模型。</p>):knowledgeView ? <KnowledgePage available={!!account || IS_PAGES_DEMO} /> : skillsView ? (
+        {extraView==="tools"?<ToolsPage available={!!account||IS_PAGES_DEMO} onExample={prepareAgentExample} />:extraView==="settings"?(account||IS_PAGES_DEMO?<WorkspaceSettings models={models} onSaved={confirmDefaultModel} onReloadModels={()=>setModelsRevision(value=>value+1)} theme={theme} onTheme={changeTheme} />:<section className="skills-page" aria-label="工作台设置"><div className="skills-head"><div><h1>工作台设置</h1><p className="skills-sub">登录后可设置账号默认模型。</p></div></div></section>):knowledgeView ? <KnowledgePage available={!!account || IS_PAGES_DEMO} /> : skillsView ? (
           models || (!account && !IS_PAGES_DEMO) ? (
             <SkillsPage available={!!account || IS_PAGES_DEMO} models={models?.items} defaultModel={models?.defaultModel} />
           ) : (
@@ -388,9 +387,9 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
             >
               {IS_PAGES_DEMO && (
                 <aside className="demo-notice" aria-label="模拟演示说明">
-                  <strong>静态模拟演示 · 非真实 AI 服务</strong>
-                  <p>回答、引用、工具与审批均为预设示例，不连接模型、索引或 MCP，不执行工具。输入仅在当前页面内存中使用，请勿输入敏感信息。刷新会清空对话。</p>
-                  {mode === "agent" && <p>输入“审批”“表单”“URL”“超时”或“错误”可体验对应流程；其他任务展示模拟工具过程。</p>}
+                  <strong>静态模拟演示</strong>
+                  <p>回答与工具均为预设内容，不连接后端，刷新即重置。</p>
+                  {mode === "agent" && <p>输入“审批”“表单”“URL”“超时”体验对应流程。</p>}
                 </aside>
               )}
               {notice && <div className="page-error" role="alert">{notice}</div>}
@@ -407,7 +406,6 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
                 state={state}
                 onInteractionDecision={respondToInteraction}
               />
-              {(account||IS_PAGES_DEMO)&&<ConversationExport key={selectionSession} id={activeConversation.sessionId} disabled={resetting||isConversationActive(state.status)||activeConversation.unconfirmed||(!activeConversation.summary&&!IS_PAGES_DEMO)} turns={state.turns} />}
               {showLatest && (
                 <button className="back-to-latest" type="button" onClick={scrollToLatest}>
                   <ArrowDown size={14} aria-hidden="true" />回到最新
@@ -430,10 +428,15 @@ export function App({ account, onLogout }: { account?: AccountUser; onLogout?: (
               onValueChange={setDraft}
               onSend={(message, skillIds) => attachmentsPending ? Promise.resolve() : send(message, skillIds, selectedAttachments)}
               onStop={() => stop(true)}
-              attachments={(account || IS_PAGES_DEMO) && <AttachmentPanel key={selectionSession}
-                sessionId={activeConversation.sessionId} exists={!!activeConversation.summary || IS_PAGES_DEMO}
-                disabled={resetting || isConversationActive(state.status) || activeConversation.unconfirmed || activeConversation.modelUnconfirmed}
-                ensure={activeConversation.ensure} onSelection={receiveAttachments} onDeleted={activeConversation.markAttachmentDeleted} />}
+              attachments={(account || IS_PAGES_DEMO) && <>
+                <ConversationExport key={`export-${selectionSession}`} id={activeConversation.sessionId}
+                  disabled={resetting || isConversationActive(state.status) || activeConversation.unconfirmed}
+                  turns={state.turns} />
+                <AttachmentPanel key={selectionSession}
+                  sessionId={activeConversation.sessionId} exists={!!activeConversation.summary || IS_PAGES_DEMO}
+                  disabled={resetting || isConversationActive(state.status) || activeConversation.unconfirmed || activeConversation.modelUnconfirmed}
+                  ensure={activeConversation.ensure} onSelection={receiveAttachments} onDeleted={activeConversation.markAttachmentDeleted} />
+              </>}
             />
           </>
         )}

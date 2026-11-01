@@ -149,7 +149,6 @@ export function SkillsPage({ available, models = [], defaultModel = "flash" }: {
       </div>
     </div>
 
-    {IS_PAGES_DEMO && <p className="page-note">模拟数据，不连接模型，刷新会重置。</p>}
     {notice && <div className="skills-notice" role="alert"><p>{notice}</p>
       <button className="skills-action plain" type="button" disabled={busy} onClick={() => void perform(refresh)}>刷新目录</button>
     </div>}

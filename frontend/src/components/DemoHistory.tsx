@@ -4,6 +4,7 @@ import { RowMenu } from "./RowMenu";
 interface DemoEntry {
   id: string;
   title: string;
+  cleared?: boolean;
 }
 
 const EXAMPLES: DemoEntry[] = [
@@ -32,7 +33,6 @@ export function DemoHistory({ searchRef, onExample }: {
     <label className="sr-only" htmlFor="historySearch">搜索历史标题</label>
     <input className="demo-history-search" id="historySearch" ref={searchRef} value={query} maxLength={80}
       placeholder="筛选示例标题" onChange={(event) => setQuery(event.target.value)} />
-    <p className="coming-soon">预设示例目录，非个人历史</p>
     {notice && <p className="coming-soon" role="status">{notice}</p>}
     {!visible.length && <p className="coming-soon">没有匹配的示例</p>}
     <ul>
@@ -57,16 +57,25 @@ export function DemoHistory({ searchRef, onExample }: {
             </form>
           ) : (
             <>
-              <button className="history-open" type="button" aria-label={entry.title} onClick={() => onExample(entry.title)}>
+              <button className="history-open" type="button" aria-label={entry.title} onClick={() => {
+                if (entry.cleared) { setNotice(`「${entry.title}」已清空（模拟），刷新恢复。`); return; }
+                onExample(entry.title);
+              }}>
                 <span>{entry.title}</span>
-                <small>模拟示例</small>
+                <small>{entry.cleared ? "已清空" : "示例"}</small>
               </button>
               <RowMenu
                 label={`会话操作 ${entry.title}`}
                 triggerData={{ "data-history-menu": entry.id }}
                 items={[
                   { label: "重命名", onSelect: () => { setDraft(entry.title); setRenamingId(entry.id); } },
-                  { label: "清空内容", onSelect: () => setNotice("模拟会话没有真实内容可清空。") },
+                  {
+                    label: "清空内容",
+                    onSelect: () => {
+                      setEntries((previous) => previous.map((item) => item.id === entry.id ? { ...item, cleared: true } : item));
+                      setNotice(`「${entry.title}」已清空（模拟），刷新恢复。`);
+                    },
+                  },
                   {
                     label: "删除会话",
                     danger: true,

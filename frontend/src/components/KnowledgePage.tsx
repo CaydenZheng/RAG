@@ -46,9 +46,9 @@ export function KnowledgePage({available}: {available: boolean}): React.JSX.Elem
   return <section className="skills-page" aria-label="知识库浏览">
     <div className="skills-head"><div><h1 ref={heading} tabIndex={-1}>知识库</h1><p className="skills-sub">共享只读目录；聊天附件不会进入知识库。</p></div></div>
     {!available ? <p className="page-note">登录后可浏览已索引文档。</p> : <>
-      {IS_PAGES_DEMO && <p className="page-note">预设模拟目录，不读取真实索引或用户资料。</p>}
-      <form className="resource-search" onSubmit={event => {event.preventDefault(); void load(query.trim());}}>
-        <label>搜索文档名称<input value={query} maxLength={80} onChange={event => setQuery(event.target.value)} /></label>
+            <form className="resource-search" onSubmit={event => {event.preventDefault(); void load(query.trim());}}>
+        <label className="sr-only" htmlFor="knowledgeSearch">搜索文档名称</label>
+        <input id="knowledgeSearch" value={query} maxLength={80} placeholder="搜索文档名称" onChange={event => setQuery(event.target.value)} />
         <button className="skills-action" disabled={busy} type="submit">搜索</button>
         <button className="skills-action plain" disabled={busy} type="button" onClick={() => void load(appliedQuery)}>刷新目录</button>
       </form>

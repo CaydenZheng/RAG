@@ -102,6 +102,7 @@ export function Sidebar({
           event.preventDefault();
           onSkills?.();
         }}><Settings2 size={16} aria-hidden="true" /><span>Skills 技能</span></a>}
+        {(account||IS_PAGES_DEMO)&&<a className="mode-link" href={extraHref("tools")} data-active={toolsActive} aria-current={toolsActive?"page":undefined} onClick={event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;event.preventDefault();onTools?.();}}><Wrench size={16} aria-hidden="true" /><span>工具与 MCP</span></a>}
       </nav>
 
       <section className="sidebar-section" aria-labelledby="recentTitle">
@@ -113,10 +114,7 @@ export function Sidebar({
       </section>
 
       <div className="sidebar-spacer" />
-      {(account||IS_PAGES_DEMO)&&<>
-        <a className="mode-link" href={extraHref("tools")} data-active={toolsActive} aria-current={toolsActive?"page":undefined} onClick={event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;event.preventDefault();onTools?.();}}><Wrench size={15} aria-hidden="true" /><span>工具与 MCP</span></a>
-        <a className="mode-link" href={extraHref("settings")} data-active={settingsActive} aria-current={settingsActive?"page":undefined} onClick={event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;event.preventDefault();onSettings?.();}}><Settings2 size={15} aria-hidden="true" /><span>工作台设置</span></a>
-      </>}
+      {(account||IS_PAGES_DEMO)&&<a className="mode-link" href={extraHref("settings")} data-active={settingsActive} aria-current={settingsActive?"page":undefined} onClick={event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;event.preventDefault();onSettings?.();}}><Settings2 size={15} aria-hidden="true" /><span>工作台设置</span></a>}
 
       {(account || IS_PAGES_DEMO) ? <a className="mode-link" href={knowledgeHref()} aria-current={knowledgeActive ? "page" : undefined} data-active={knowledgeActive} onClick={event => {
         if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

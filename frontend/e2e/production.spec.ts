@@ -105,7 +105,7 @@ for (const route of ["/", "/agent", "/settings/skills", "/knowledge", "/tools", 
     expect(policy).not.toContain("'unsafe-inline'");
     expect(policy).not.toContain("'unsafe-eval'");
     await expect(page.getByRole("heading", {
-      name: route === "/" ? "知识问答工作台" : route === "/agent" ? "Agent 工作台" : route === "/knowledge" ? "知识库浏览" : route==="/tools"?"工具目录工作台":route==="/settings"?"偏好设置工作台":"Skills 工作台",
+      name: route === "/" ? "知识问答工作台" : route === "/agent" ? "Agent 工作台" : route === "/knowledge" ? "知识库" : route==="/tools"?"工具与 MCP":route==="/settings"?"工作台设置":"技能",
     })).toBeAttached();
     await expect(page.locator("#root > .app-shell")).toBeVisible();
     expect(policyErrors).toEqual([]);

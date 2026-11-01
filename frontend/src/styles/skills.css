@@ -1,13 +1,16 @@
 .skills-page {
   min-height: 0;
   overflow-y: auto;
-  padding: 32px 28px 28px;
+  padding: 40px 28px 28px;
+  /* 列宽用内边距定，子元素一律左对齐，避免各自的 margin 把水平位置带偏 */
+  padding-inline: max(28px, calc((100% - var(--w)) / 2));
 }
 
 .skills-page > * {
+  width: 100%;
   max-width: var(--w);
-  margin-left: auto;
-  margin-right: auto;
+  margin-left: 0;
+  margin-right: 0;
 }
 
 .skills-head {
@@ -26,7 +29,6 @@
 
 .skills-sub {
   margin: 4px 0 0;
-  max-width: 68ch;
   color: var(--faint);
   font-size: 11.5px;
   line-height: 1.55;
@@ -35,7 +37,6 @@
 /* 页面级说明：统一放在标题下方，字号/颜色与 .skills-sub 一致 */
 .page-note {
   margin: 10px 0 0;
-  max-width: 68ch;
   color: var(--faint);
   font-size: 11.5px;
   line-height: 1.55;
@@ -44,7 +45,6 @@
 /* 控件下方的即时提示 */
 .field-hint {
   margin: 6px 0 0;
-  max-width: 68ch;
   color: var(--faint);
   font-size: 11px;
   line-height: 1.5;
@@ -79,12 +79,13 @@
 /* 次级动作用描边/透明样式，避免整页都是主色胶囊 */
 .skills-action.plain {
   background: transparent;
-  color: var(--faint);
+  color: var(--muted);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 .skills-action.plain:hover {
   background: var(--soft);
-  color: var(--muted);
+  color: var(--text);
 }
 
 .skills-action:disabled { opacity: 0.5; }
@@ -141,11 +142,6 @@
   line-height: 1.5;
 }
 
-.skills-page h2:not(.page-section) {
-  margin: 22px 0 8px;
-  font-size: 13px;
-  font-weight: 600;
-}
 
 .skills-notice {
   margin: 10px 0 0;
@@ -159,7 +155,7 @@
 .skill-rows {
   display: grid;
   gap: 2px;
-  margin: 20px auto 0;
+  margin: 20px 0 0;
   padding: 0;
   list-style: none;
 }
@@ -363,7 +359,8 @@
 
 @media (max-width: 899px) {
   .skills-page {
-    padding: 20px 16px 20px;
+    padding: 24px 16px 20px;
+    padding-inline: 16px;
   }
 
   .skill-desc {

@@ -34,3 +34,17 @@ export function modeHref(mode: WorkspaceMode): string {
   if (IS_PAGES_DEMO) return `${import.meta.env.BASE_URL}${mode === "agent" ? "?mode=agent" : ""}`;
   return mode === "agent" ? "/agent" : "/";
 }
+
+const APPLE: boolean = typeof navigator !== "undefined"
+  && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
+
+export const SHORTCUT_LABEL: string = APPLE ? "⌥⇧" : "Ctrl+Alt";
+
+/** 平台安全的组合键：macOS 用 ⌥⇧，其余用 Ctrl/⌘+Alt（这两个组合在系统层未被占用）。 */
+export function isShortcut(event: KeyboardEvent, key: string): boolean {
+  if (event.key.toLowerCase() !== key) return false;
+  if (event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState("AltGraph")) return false;
+  return APPLE
+    ? event.altKey && event.shiftKey && !event.metaKey && !event.ctrlKey
+    : (event.ctrlKey || event.metaKey) && event.altKey && !event.shiftKey;
+}

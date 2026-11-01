@@ -106,11 +106,14 @@ export function HistoryDirectory({
       <form className="history-search" onSubmit={event=>{event.preventDefault();setTitleQuery(query.trim());setRefresh(value=>value+1);}}>
         <label className="sr-only" htmlFor="historySearch">搜索历史标题</label>
         <input ref={searchRef} id="historySearch" value={query} maxLength={80} placeholder="搜索标题" onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Enter"&&(event.nativeEvent.isComposing||event.keyCode===229))event.preventDefault();}} />
+        {(query || titleQuery) && (
+          <button className="history-clear" type="button" aria-label="清除搜索"
+            onClick={() => { setQuery(""); setTitleQuery(""); setRefresh(value => value + 1); }}>✕</button>
+        )}
         <button className="history-refresh" type="submit" disabled={busy}>搜索</button>
+        <button className="history-clear" type="button" aria-label="刷新目录" disabled={loading}
+          onClick={() => setRefresh((value) => value + 1)}>⟳</button>
       </form>
-      <button className="history-refresh" type="button" disabled={loading} onClick={() => setRefresh((value) => value + 1)}>
-        刷新目录
-      </button>
       {notice && <p role="alert" className="coming-soon">{notice}</p>}
       {loading && <p role="status" className="coming-soon">正在加载目录</p>}
       {!loading && !notice && items.length === 0 && <p className="coming-soon">{titleQuery?"没有匹配标题的对话":"还没有此模式的对话"}</p>}

@@ -114,9 +114,7 @@ export function AttachmentPanel({sessionId, exists, disabled, ensure, onSelectio
         const file = event.target.files?.[0]; event.target.value = ""; if (file) void upload(file);
       }} /></label><span>{busy ? "正在上传／操作…" : `${items.length}/5 个文件，可拖入此处`}</span>
       <button className="skills-action plain" disabled={busy || disabled} type="button" onClick={() => {setNotice(""); setRevision(value => value + 1);}}>刷新附件</button></div>
-    <p className="attachment-hint">{IS_PAGES_DEMO
-      ? "预设模拟：不读取文件内容，刷新会重置。"
-      : "适合短文档；单文件最多 10 MiB，PDF 最多 200 页仅为解析保护；扫描件暂不支持。"}</p>
+    <p className="attachment-hint">适合短文档；单文件 ≤ 10 MiB，PDF ≤ 200 页仅解析保护，不支持扫描件。</p>
     {notice && <p className="skills-notice" role="alert">{notice}</p>}
     {retry && <button type="button" className="skills-action" disabled={disabled || busy} onClick={() => void upload(retry.file, retry.id)}>核对／重试本次上传</button>}
     <ul className="attachment-list">{items.map(item => <li key={item.id}>

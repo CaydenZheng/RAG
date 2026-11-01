@@ -54,19 +54,55 @@ Pages 侧新增两处 alias（`toolClient`→`demo/tools.ts`、`resourceClient`�
    列表项统一 13px 名称 / 11.5px 描述 / 11px 元信息（去掉了浏览器默认的段落外边距）；
    搜索输入框与按钮同高（28px）；「刷新／重新读取」类次级动作改用 `.skills-action.plain`，避免整页都是主色胶囊。
 
+## 二之三、列对齐、侧栏顺序、空状态与 11 条细节
+
+**列对齐（根因）**：`.skills-page > *` 用 `margin-inline: auto` 居中 760px 列，但内容类把 `margin` 写成简写
+（`margin: 10px 0 0`）把 auto 清零，于是标题/列表在 328，说明/搜索/字段/小节标题在 264，差 64px。
+改为「内边距定列宽，子元素一律左对齐」：
+
+```css
+.skills-page { padding-inline: max(28px, calc((100% - var(--w)) / 2)); }
+.skills-page > * { width: 100%; max-width: var(--w); margin-left: 0; margin-right: 0; }
+```
+
+实测四个页面所有直接子元素左边缘只剩 `[328]`；同时去掉 `.page-note/.field-hint` 的 `68ch`（原本只有 422px 宽），
+页面上内边距统一到对话区的 40px。
+
+**侧栏顺序**：`工具与 MCP` 移入主导航紧跟 `Skills 技能`，底部只留 工作台设置 / 知识库浏览 / 文档 / 账号 / 服务状态。
+
+**空状态**：`clamp(26px, 2.6vw, 32px)` / 600 / 主文字色 / `-0.02em` / `text-wrap: balance` / 22ch；实测 30.7px、居中偏移 0。
+
+**双 h1**：功能页存在时不再输出 App 的 `sr-only` h1，由各页可见标题承担；未登录的设置页补了正式 h1。
+
+**11 条细节**：
+
+| 项 | 处理 |
+|---|---|
+| 导出按钮占位 | 无已完成回合时不渲染；有内容时移到输入框上方右侧 |
+| 附件行对齐 | 文件计数右对齐，与字符计数同一列 |
+| 次级按钮可点性 | `.skills-action.plain` 加 1px 内描边，hover 才上底色 |
+| `⋯` 对比度 | 0.45 → 0.6，hover/展开到 1 |
+| 知识库搜索行 | 去掉上方 label，改 placeholder + 同行输入/按钮，高度统一 28px |
+| 历史双入口 | 「搜索」与「刷新」合并成一行（输入框 + 清除 + 搜索 + 刷新图标） |
+| 设置状态跳行 | 状态并入按钮行右侧，不再改变页面高度 |
+| h2 兜底规则 | 删除 `.skills-page h2:not(.page-section)`，强制使用 `.page-section` |
+| DemoHistory 清空 | 现在真的清空该示例（标记 + 点击提示），刷新恢复 |
+| 窄屏侧栏高度 | 侧栏允许纵向滚动，历史列表保底 84px |
+| macOS 快捷键 | 改为平台感知：macOS `⌥⇧`，其它 `Ctrl/⌘+Alt`；设置页文案同步 |
+
+**GitHub Pages 注释精简**：只保留顶部一条横幅（两行），删掉 Skills / Tools / Knowledge / Settings / 附件面板 /
+技能生成弹窗里重复的"模拟…不连接…刷新会重置"，Composer 底部改为一句"预设模拟内容。"，示例目录不再标注"非个人历史"。
+
 ## 三、未处理，需要产品／后续决定
 
-1. **macOS 快捷键失效**：`⌘⌥H`（隐藏其他）、`⌘⌥I`（Safari/Chrome 检查器）、`⌘⌥N`（无痕窗口）都是系统或浏览器组合，
-   页面收不到事件。Windows/Linux 的 `Ctrl+Alt+*` 正常。建议 macOS 换成 `⌘⇧` 前缀或可配置。
-2. **匿名本地模式下没有主题入口**：侧栏的「工作台设置」只在登录或 Pages 演示时出现，
+1. **匿名本地模式下没有主题入口**：侧栏的「工作台设置」只在登录或 Pages 演示时出现，
    但 `main.tsx` 仍会读取并应用 `localStorage.ragflow_theme`。曾选过深色的用户会停在深色且无处可改。
    建议匿名模式也提供主题，或忽略该偏好。
-3. **从工具／设置页点「新建对话」会多压一条历史记录**：`newConversation` 先 `navigate(mode)`（push `/`），
+2. **从工具／设置页点「新建对话」会多压一条历史记录**：`newConversation` 先 `navigate(mode)`（push `/`），
    `reset()` 再 push `/?conversation=<new>`。返回键会先落到 `/?`，触发 `forget()` 清空，
    上一次会话要按三次返回才回得去。建议工具页场景改用 `replaceState`。
-4. **降级原因未覆盖 bm25**：`/ready` 的 `components` 含 `embedding/index/bm25/reranker`，
+3. **降级原因未覆盖 bm25**：`/ready` 的 `components` 含 `embedding/index/bm25/reranker`，
    前端只对前三个给专属文案，bm25 异常会落到「部分服务尚未就绪」。
-5. **历史搜索没有清空入口**：清空需要删完输入再点「搜索」，可用但不直观。
 
 ## 四、验证
 

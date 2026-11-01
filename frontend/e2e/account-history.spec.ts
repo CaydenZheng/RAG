@@ -200,5 +200,5 @@ test("fake API: skills route, explicit creator upload and narrow navigation", as
   await page.getByRole("button",{name:"打开导航",exact:true}).click();
   await page.getByRole("link",{name:"知识问答",exact:true}).click();
   await expect(page.getByRole("main")).toBeFocused();
-  await page.goBack();await expect(page.getByRole("heading",{name:"Skills 工作台"})).toBeAttached();
+  await page.goBack();await expect(page.getByRole("heading",{name:"技能",exact:true})).toBeVisible();
 });

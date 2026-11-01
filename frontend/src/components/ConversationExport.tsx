@@ -26,5 +26,6 @@ export function ConversationExport({id,disabled,turns}: {id:string; disabled:boo
     }catch(error){if(!operation.signal.aborted)setNotice(toPublicMessage(error));}
     finally{if(!operation.signal.aborted)setBusy(false);}
   }
+  if (!turns.some(turn => turn.status === "completed")) return <></>;
   return <div className="conversation-export"><button className="skills-action" disabled={disabled||busy||!turns.some(turn=>turn.status==="completed")} onClick={()=>void download()}>{busy?"正在导出…":IS_PAGES_DEMO?"导出演示对话":"导出此会话"}</button>{notice&&<span role="status">{notice}</span>}</div>;
 }

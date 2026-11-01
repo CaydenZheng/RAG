@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
 
 test("tools, preferences, theme, title filtering and export are explicitly simulated",async({page})=>{
   const connections:string[]=[];page.on("request",request=>{if(["fetch","xhr","eventsource","websocket"].includes(request.resourceType()))connections.push(new URL(request.url()).pathname);});
-  await page.getByRole("link",{name:"工具与 MCP",exact:true}).click();await expect(page.getByRole("heading",{name:"工具与 MCP",exact:true})).toBeVisible();await expect(page.getByText("预设模拟目录，不连接 Provider 或执行工具。",{exact:true})).toBeVisible();
+  await page.getByRole("link",{name:"工具与 MCP",exact:true}).click();await expect(page.getByRole("heading",{name:"工具与 MCP",exact:true})).toBeVisible();
   await page.getByRole("button",{name:"将计算示例填入 Agent",exact:true}).click();await expect(page.getByRole("textbox",{name:"向 Agent 发送任务"})).toHaveValue(/12 \+ 21/);expect(connections).toEqual([]);
   await page.getByRole("link",{name:"工作台设置",exact:true}).click();await page.getByRole("combobox",{name:"主题",exact:true}).selectOption("dark");await expect(page.locator("html")).toHaveCSS("color-scheme","dark");await page.reload();await expect(page.getByRole("combobox",{name:"主题",exact:true})).toHaveValue("dark");
   await page.getByRole("combobox",{name:"新对话默认模型",exact:true}).selectOption("pro");await page.getByRole("button",{name:"保存默认模型",exact:true}).click();await expect(page.getByText(/默认模型已保存/)).toBeVisible();
@@ -30,7 +30,7 @@ test("static assets, CSP and RAG streaming work without any backend", async ({ p
   page.on("response", (response) => { if (response.status() >= 400) errors.push(`HTTP ${response.status()}`); });
   await page.reload();
   await expect(page.getByLabel("模拟演示说明")).toBeVisible();
-  await expect(page.getByText("静态模拟演示 · 非真实 AI 服务", { exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(page.getByText("静态模拟演示", { exact: true })).toBeInViewport({ ratio: 1 });
   await expect(page.getByText("模拟模式 · 无后端")).toBeVisible();
   const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute("content");
   expect(policy).toContain("connect-src 'none'");
@@ -124,7 +124,7 @@ test("reset restores auto-follow after scrolling a long conversation", async ({ 
   await expect(page.getByRole("button", { name: "回到最新" })).toBeVisible();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "新建对话", exact: true }).click();
-  await expect(page.getByText("静态模拟演示 · 非真实 AI 服务", { exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(page.getByText("静态模拟演示", { exact: true })).toBeInViewport({ ratio: 1 });
   await expect(page.getByRole("button", { name: "回到最新" })).toHaveCount(0);
   await page.getByRole("textbox", {name:/向知识库提问|向 Agent 发送任务/}).fill("新会话回答");
   await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -139,7 +139,6 @@ test("models and Skills are explicitly simulated and never contact a backend",as
   await page.getByRole("combobox",{name:"模型",exact:true}).selectOption("pro");
   await page.getByRole("link",{name:"Skills 技能",exact:true}).click();
   await expect(page).toHaveURL(/view=skills/);
-  await expect(page.getByText("模拟数据，不连接模型，刷新会重置。",{exact:true})).toBeVisible();
   const toggle = page.getByRole("checkbox",{name:"启用 skill-creator"});
   await toggle.check();
   await expect(toggle).toBeChecked();

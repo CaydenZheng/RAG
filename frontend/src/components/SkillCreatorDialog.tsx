@@ -66,7 +66,7 @@ export function SkillCreatorDialog({ models, defaultModel, onUpload, onClose }: 
       });
       if (mounted.current && !controller.signal.aborted) {
         setResult(generated); setPreview(generated.content);
-        setStatus(IS_PAGES_DEMO ? "模拟转换完成，未进行真实格式校验、上传或启用。" : "技能校验通过，尚未上传或启用。");
+        setStatus(IS_PAGES_DEMO ? "模拟转换完成（未上传或启用）。" : "技能校验通过，尚未上传或启用。");
       }
     } catch (error) {
       if (mounted.current && !isAbortFailure(error, controller.signal)) setNotice(toPublicMessage(error));
@@ -112,7 +112,6 @@ export function SkillCreatorDialog({ models, defaultModel, onUpload, onClose }: 
       <div className="skill-detail-body">
         <p>支持 TXT、Markdown、文字型 PDF、DOCX，最多 10 MiB／200 页。适合短文档，扫描件暂不支持。</p>
         <p>草稿只在当前窗口保留；校验后可下载或明确上传，不自动启用。</p>
-        {IS_PAGES_DEMO && <p>此处为预设模拟，不读取文件、不连接模型，刷新会重置。</p>}
         <form className="skill-creator-form" onSubmit={event => { event.preventDefault(); void generate(); }}>
           <ModelSelect id="creatorModel" items={models} value={model} disabled={phase !== null} onChange={setModel} />
           <label>导入原始资料<input type="file" accept=".txt,.md,.pdf,.docx" disabled={phase !== null}

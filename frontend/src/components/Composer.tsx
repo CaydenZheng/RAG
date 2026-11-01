@@ -259,7 +259,7 @@ export function Composer({
           )}
         </div>
       )}
-      <p className="ai-disclaimer">{IS_PAGES_DEMO ? "预设模拟内容，非真实模型回答；不执行任何工具。" : "内容由 AI 生成，请核对引用与执行结果。"}</p>
+      <p className="ai-disclaimer">{IS_PAGES_DEMO ? "预设模拟内容。" : "内容由 AI 生成，请核对引用与执行结果。"}</p>
     </div>
   );
 }
