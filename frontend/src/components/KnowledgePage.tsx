@@ -45,22 +45,22 @@ export function KnowledgePage({available}: {available: boolean}): React.JSX.Elem
 
   return <section className="skills-page" aria-label="知识库浏览">
     <div className="skills-head"><div><h1 ref={heading} tabIndex={-1}>知识库</h1><p className="skills-sub">共享只读目录；聊天附件不会进入知识库。</p></div></div>
-    {!available ? <p>登录后可浏览已索引文档。</p> : <>
-      {IS_PAGES_DEMO && <p>预设模拟目录，不读取真实索引或用户资料。</p>}
+    {!available ? <p className="page-note">登录后可浏览已索引文档。</p> : <>
+      {IS_PAGES_DEMO && <p className="page-note">预设模拟目录，不读取真实索引或用户资料。</p>}
       <form className="resource-search" onSubmit={event => {event.preventDefault(); void load(query.trim());}}>
         <label>搜索文档名称<input value={query} maxLength={80} onChange={event => setQuery(event.target.value)} /></label>
         <button className="skills-action" disabled={busy} type="submit">搜索</button>
-        <button className="skills-action" disabled={busy} type="button" onClick={() => void load(appliedQuery)}>刷新目录</button>
+        <button className="skills-action plain" disabled={busy} type="button" onClick={() => void load(appliedQuery)}>刷新目录</button>
       </form>
-      <p role="status">{busy ? "正在读取知识库…" : version ? `索引版本 ${version} · 已索引` : ""}</p>
+      <p className="skills-status" role="status">{busy ? "正在读取知识库…" : version ? `索引版本 ${version} · 已索引` : ""}</p>
       {notice && <p role="alert" className="skills-notice">{notice}</p>}
-      {!busy && !notice && !items.length && <p>没有匹配的文档。</p>}
+      {!busy && !notice && !items.length && <p className="page-note">没有匹配的文档。</p>}
       <ul className="knowledge-documents">{items.map(item => <li key={item.id}>
-        <div><strong>{item.name}</strong><p className="skills-sub">原文更新时间：{item.updated_at ?? "未提供"} · 索引时间：{item.indexed_at}</p></div>
+        <div><strong>{item.name}</strong><p className="field-hint">原文更新时间：{item.updated_at ?? "未提供"} · 索引时间：{item.indexed_at}</p></div>
         <button className="skills-action" type="button" disabled={busy} onClick={() => void view(item)}>查看来源摘录：{item.name}</button>
       </li>)}</ul>
       {next && <button className="skills-action" disabled={busy} onClick={() => void load(appliedQuery, next)}>加载更多文档</button>}
-      {excerpt && <section aria-label="来源摘录"><h2>{excerpt.name}</h2><p>以下仅为最多 20 个片段、20000 字符的索引摘录，不是原文全文。</p><pre className="skill-content">{excerpt.text}</pre></section>}
+      {excerpt && <section aria-label="来源摘录"><h2 className="page-section">{excerpt.name}</h2><p className="page-note">以下仅为最多 20 个片段、20000 字符的索引摘录，不是原文全文。</p><pre className="skill-content">{excerpt.text}</pre></section>}
     </>}
   </section>;
 }

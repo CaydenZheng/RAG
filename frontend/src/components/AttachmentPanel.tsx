@@ -113,10 +113,11 @@ export function AttachmentPanel({sessionId, exists, disabled, ensure, onSelectio
       <input type="file" aria-label="添加聊天附件" accept=".txt,.md,.pdf,.docx" disabled={disabled || busy} onChange={event => {
         const file = event.target.files?.[0]; event.target.value = ""; if (file) void upload(file);
       }} /></label><span>{busy ? "正在上传／操作…" : `${items.length}/5 个文件，可拖入此处`}</span>
-      <button className="skills-action" disabled={busy || disabled} type="button" onClick={() => {setNotice(""); setRevision(value => value + 1);}}>刷新附件</button></div>
-    <p className="attachment-hint">适合短文档；单文件最多 10 MiB，PDF 最多 200 页仅为解析保护。全文不截断，输出额度受剩余上下文限制，不足时需拆分。扫描件暂不支持。</p>
-    {IS_PAGES_DEMO && <p className="attachment-hint">预设模拟，不读取文件内容，不连接后端；刷新会重置。</p>}
-    {notice && <p role="alert">{notice}</p>}
+      <button className="skills-action plain" disabled={busy || disabled} type="button" onClick={() => {setNotice(""); setRevision(value => value + 1);}}>刷新附件</button></div>
+    <p className="attachment-hint">{IS_PAGES_DEMO
+      ? "预设模拟：不读取文件内容，刷新会重置。"
+      : "适合短文档；单文件最多 10 MiB，PDF 最多 200 页仅为解析保护；扫描件暂不支持。"}</p>
+    {notice && <p className="skills-notice" role="alert">{notice}</p>}
     {retry && <button type="button" className="skills-action" disabled={disabled || busy} onClick={() => void upload(retry.file, retry.id)}>核对／重试本次上传</button>}
     <ul className="attachment-list">{items.map(item => <li key={item.id}>
       <label><input type="checkbox" checked={selected.includes(item.id)} disabled={disabled || busy || item.state !== "ready"} onChange={event => {

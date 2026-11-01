@@ -1,20 +1,27 @@
-.attachment-panel { max-height: 220px; overflow-y: auto; padding: 8px 0; font-size: 12px; color: var(--muted); }
+.attachment-panel { width: 100%; max-width: var(--w); max-height: 220px; margin: 0 auto 8px; overflow-y: auto; padding: 0; font-size: 12px; color: var(--muted); }
 .attachment-heading, .attachment-list li, .resource-search { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .attachment-heading .skills-action { display: inline-flex; align-items: center; gap: 5px; }
 .attachment-heading input[type="file"] { width: 180px; max-width: 100%; }
-.attachment-hint { margin: 6px 0; line-height: 1.5; }
+.attachment-hint { margin: 6px 0 0; max-width: 68ch; font-size: 11px; line-height: 1.5; color: var(--faint); }
 .attachment-list, .knowledge-documents { list-style: none; margin: 0; padding: 0; }
 .attachment-list li { padding: 6px 0; border-bottom: 1px solid var(--hairline); overflow-wrap: anywhere; }
 .attachment-list label { display: flex; align-items: center; gap: 5px; }
-.resource-search label { display: grid; gap: 4px; flex: 1; min-width: 160px; }
-.resource-search input { min-height: 36px; border: 1px solid var(--hairline); border-radius: var(--r-ctl); padding: 6px 10px; background: var(--soft); color: var(--text); }
-.knowledge-documents li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 0; border-bottom: 1px solid var(--hairline); overflow-wrap: anywhere; }
-.settings-field { display: grid; gap: 8px; max-width: 380px; margin-block: 18px; }
+.resource-search { margin-top: 14px; align-items: flex-end; }
+.resource-search label { display: grid; gap: 5px; flex: 1; min-width: 160px; font-size: 12px; color: var(--muted); }
+.resource-search input { height: 28px; min-height: 28px; border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 0 10px; background: var(--soft); color: var(--text); font-size: 12px; }
+.knowledge-documents li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--hairline); overflow-wrap: anywhere; }
+.knowledge-documents li > div { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.knowledge-documents li > div > strong { font-size: 13px; font-weight: 600; }
+.knowledge-documents li p { margin: 0; }
+.knowledge-documents li .field-hint, .knowledge-documents li .skills-sub { margin-top: 4px; }
+.knowledge-documents li > button { flex: none; }
+.knowledge-documents li > div > .skills-action { justify-self: start; margin-top: 6px; }
+.settings-field { display: grid; gap: 6px; max-width: 380px; margin: 18px 0 0; color: var(--muted); font-size: 12px; }
 .settings-field select { padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .history-search { display: flex; gap: 4px; padding: 6px; }
 .history-search input { width: 100%; min-width: 0; padding: 4px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.conversation-export { display: flex; flex-wrap: wrap; gap: 8px; padding-block: 10px; color: var(--muted); font-size: 12px; }
+.conversation-export { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-block: 6px; color: var(--muted); font-size: 12px; }
 .pending-actions { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .tool-summary { margin-block: 4px; color: var(--text); }
 .demo-history-search { width: calc(100% - 12px); margin: 6px; padding: 5px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.service-detail { margin: 6px 0; max-width: 210px; font-size: 12px; color: var(--muted); }
+.service-detail { flex: 1 1 100%; order: 3; margin: 0 0 6px; font-size: 12px; line-height: 1.5; color: var(--muted); }

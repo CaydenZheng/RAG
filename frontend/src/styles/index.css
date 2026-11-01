@@ -438,6 +438,7 @@ a {
 /* ==================== 服务状态 ==================== */
 .service-status {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-height: 30px;
@@ -452,11 +453,13 @@ a {
   align-items: center;
   gap: 7px;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .service-status button {
   height: 24px;
   margin-left: auto;
+  white-space: nowrap;
   padding: 0 8px;
   border: 0;
   border-radius: 6px;
@@ -570,12 +573,26 @@ a {
 }
 
 /* 空状态：只留一句话 */
+/* 空状态固定在对话区正中，不随提示条或输入框高度移动 */
+.conversation-scroll:has(.empty-conversation) {
+  position: relative;
+}
+
+/* 仅空状态时抬高提示条，避免影响 sticky 的"回到最新" */
+.conversation-scroll:has(.empty-conversation) > :not(.empty-conversation) {
+  position: relative;
+  z-index: 1;
+}
+
 .empty-conversation {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   display: grid;
   place-items: center;
-  min-height: 100%;
-  padding-bottom: 6vh;
+  padding: 24px;
   text-align: center;
+  pointer-events: none;
 }
 
 .empty-conversation p {
@@ -1434,7 +1451,7 @@ a {
   color: var(--faint);
   font-size: 13px;
   line-height: 1;
-  opacity: 0;
+  opacity: 0.45;
   transition: opacity var(--t), background-color var(--t);
 }
 

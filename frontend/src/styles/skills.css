@@ -25,9 +25,36 @@
 }
 
 .skills-sub {
-  margin: 3px 0 0;
+  margin: 4px 0 0;
+  max-width: 68ch;
   color: var(--faint);
-  font-size: 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+/* 页面级说明：统一放在标题下方，字号/颜色与 .skills-sub 一致 */
+.page-note {
+  margin: 10px 0 0;
+  max-width: 68ch;
+  color: var(--faint);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+/* 控件下方的即时提示 */
+.field-hint {
+  margin: 6px 0 0;
+  max-width: 68ch;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* 页内分节标题 */
+.page-section {
+  margin: 22px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .skills-action {
@@ -49,14 +76,33 @@
   background: var(--accent-soft-strong);
 }
 
+/* 次级动作用描边/透明样式，避免整页都是主色胶囊 */
+.skills-action.plain {
+  background: transparent;
+  color: var(--faint);
+}
+
+.skills-action.plain:hover {
+  background: var(--soft);
+  color: var(--muted);
+}
+
 .skills-action:disabled { opacity: 0.5; }
-.creator-availability { color: var(--muted); }
+.creator-availability {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: right;
+}
 
 .skill-creator-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 .skill-creator-dialog {
@@ -92,6 +138,13 @@
   margin: 10px 0 0;
   color: var(--faint);
   font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.skills-page h2:not(.page-section) {
+  margin: 22px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .skills-notice {

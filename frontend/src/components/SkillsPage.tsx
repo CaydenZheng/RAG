@@ -126,11 +126,12 @@ export function SkillsPage({ available, models = [], defaultModel = "flash" }: {
     <div className="skills-head">
       <div>
         <h1 ref={heading} tabIndex={-1}>技能</h1>
-        <p className="skills-sub">对 Agent 生效，不影响知识问答；开关只影响后续请求。</p>
+        <p className="skills-sub">对 Agent 生效，不影响知识问答；开关只影响后续请求。
+          {!items.some(item => item.id === "skill-creator" && item.enabled) && "「从资料生成技能」需先启用 skill-creator。"}</p>
       </div>
       <div className="skill-creator-actions">
-      <button className="skills-action" type="button" disabled={busy || !items.some(item => item.id === "skill-creator" && item.enabled)}
-        aria-describedby="creatorAvailability" onClick={() => setCreatorOpen(true)}>从资料生成技能</button>
+      <button className="skills-action plain" type="button" disabled={busy || !items.some(item => item.id === "skill-creator" && item.enabled)}
+        onClick={() => setCreatorOpen(true)}>从资料生成技能</button>
       <label className="skills-action">
         上传技能
         <input
@@ -147,11 +148,10 @@ export function SkillsPage({ available, models = [], defaultModel = "flash" }: {
       </label>
       </div>
     </div>
-    <p className="skills-sub creator-availability" id="creatorAvailability">启用 skill-creator 后，可从原始资料生成技能文件。</p>
 
-    {IS_PAGES_DEMO && <p className="skills-sub">模拟数据，不连接模型，刷新会重置。</p>}
+    {IS_PAGES_DEMO && <p className="page-note">模拟数据，不连接模型，刷新会重置。</p>}
     {notice && <div className="skills-notice" role="alert"><p>{notice}</p>
-      <button className="skills-action" type="button" disabled={busy} onClick={() => void perform(refresh)}>刷新目录</button>
+      <button className="skills-action plain" type="button" disabled={busy} onClick={() => void perform(refresh)}>刷新目录</button>
     </div>}
     <p className="skills-status" role="status" aria-live="polite">{status || (busy ? "操作中，请稍候…" : "")}</p>
 
