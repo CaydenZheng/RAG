@@ -637,18 +637,54 @@ def test_http_upload_lock_contract_and_explicit_reconciliation(accounts: Any, mo
             # Explicit user reconciliation, same operation ID. No backend body replay.
             retry = await client.post(path, data=fields, files=files)
             assert retry.status_code in {200, 202}
+            items = []
             for _ in range(60):
-                items = (await client.get(path)).json()["items"]
-                if items[0]["state"] == "ready":
-                    break
+                response = await client.get(path)
+                if response.status_code == 503:
+                    # A read can overlap the parser's exclusive COMMIT window.
+                    assert response.json()["detail"]["code"] == "attachment_storage_busy"
+                else:
+                    assert response.status_code == 200, response.json()
+                    items = response.json()["items"]
+                    if items[0]["state"] == "ready":
+                        break
                 await asyncio.sleep(.01)
             assert len(items) == 1 and items[0]["state"] == "ready"
             assert parsed == [b"valid synthetic text"]
-        await runtime.close()
-        assert not runtime._TASKS and not runtime._ACCEPTING and not runtime._FINALIZING
+
+    async def run_and_close():
+        try:
+            await run()
+        finally:
+            # Failed assertions must not leave work tied to the next test's DB.
+            lock.rollback()
+            await runtime.close()
+        assert not runtime._TASKS and not runtime._ACCEPTING and not runtime._FINALIZING and not runtime._PENDING
 
     try:
-        asyncio.run(run())
+        asyncio.run(run_and_close())
     finally:
         lock.rollback()
         lock.close()
+
+
+def test_http_attachment_status_under_exclusive_lock_recovers(accounts: Any) -> None:
+    import sqlite3
+
+    public_id = conversation(accounts)
+    item = ready(accounts, public_id)
+    client = accounts.browsers["alice"]
+    path = f"/conversations/{public_id}/attachments"
+    lock = sqlite3.connect(accounts.store._db_path)
+    try:
+        lock.execute("BEGIN EXCLUSIVE")
+        response = client.get(path)
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "attachment_storage_busy"
+        assert client.get("/auth/me").status_code == 200
+    finally:
+        lock.rollback()
+        lock.close()
+    response = client.get(path)
+    assert response.status_code == 200
+    assert [(row["id"], row["state"]) for row in response.json()["items"]] == [(item["id"], "ready")]
