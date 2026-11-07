@@ -57,6 +57,8 @@ export default defineConfig({
     sourcemap: false,
   },
   server: {
+    // Match production image policy without restricting Vite's HMR scripts.
+    headers: { "Content-Security-Policy": "img-src 'self' data:" },
     proxy: Object.fromEntries(proxyRoutes.map((path) => [path, backendTarget])),
   },
   test: {

@@ -450,7 +450,7 @@ def test_agent_full_files_reach_planning_and_final_without_becoming_memory(tmp_p
 def test_real_http_accept_poll_retry_capacity_and_parser_delete(accounts: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     import httpx
 
-    from src.api import attachments
+    from src.core import attachment_runtime as attachments
     from src.security.user_auth import csrf_token
 
     public_id = conversation(accounts)
@@ -498,7 +498,7 @@ def test_real_http_accept_poll_retry_capacity_and_parser_delete(accounts: Any, m
             assert (await client.delete(path+"/"+second["id"])).status_code == 204
             assert "second" in stopped
             assert (await client.get(path+"/"+second["id"])).status_code == 404
-        await attachments.close_attachments()
+        await attachments.close()
     asyncio.run(run())
 
 
@@ -532,20 +532,21 @@ def test_failed_ready_commit_cleans_text_before_releasing_quota(accounts: Any, m
     import sqlite3
 
     from src.infra.attachment_store import AttachmentStore
+    from src.infra.sqlite_transactions import SQLiteWrite
 
     public_id = conversation(accounts)
     store = AttachmentStore(accounts.store)
     with authorize(accounts.service, accounts.logins["alice"]):
         item, _ = store.accept(public_id, str(uuid.uuid4()), "notes.txt", "txt", b"notes")
         generation, _, _ = store.parse_input(public_id, item["id"])
-        original_commit = store._commit
+        original_commit = SQLiteWrite.commit
         def fail(*args: Any, **kwargs: Any) -> None:
             raise sqlite3.OperationalError("synthetic reader lock")
-        monkeypatch.setattr(store, "_commit", fail)
-        with pytest.raises(sqlite3.OperationalError):
+        monkeypatch.setattr(SQLiteWrite, "commit", fail)
+        with pytest.raises(ValueError, match="attachment_unavailable"):
             store.finish(public_id, item["id"], generation, {"text":"parsed secret", "pages":[]})
-        assert store._path(item["id"], "text").exists()
-        monkeypatch.setattr(store, "_commit", original_commit)
+        assert not store._path(item["id"], "text").exists()
+        monkeypatch.setattr(SQLiteWrite, "commit", original_commit)
         store.finish(public_id, item["id"], generation, None, "document_invalid")
         assert store.read(public_id, item["id"])["state"] == "failed"
         assert not store._path(item["id"], "text").exists()
@@ -554,7 +555,7 @@ def test_failed_ready_commit_cleans_text_before_releasing_quota(accounts: Any, m
 
 @pytest.mark.parametrize("cancel_before_start", [False, True])
 def test_parse_preparation_failure_or_early_cancel_releases_record_slot_and_registry(accounts: Any, monkeypatch: pytest.MonkeyPatch, cancel_before_start: bool) -> None:
-    from src.api import attachments
+    from src.core import attachment_runtime as attachments
     from src.infra.attachment_store import AttachmentStore
     from src.infra.document_parser import reserve_parser
     from src.security.request_authorization import AuthorizationRevoked
@@ -571,11 +572,11 @@ def test_parse_preparation_failure_or_early_cancel_releases_record_slot_and_regi
             monkeypatch.setattr(store, "finish", revoked)
             task = asyncio.create_task(attachments._parse(store, public_id, item["id"], reservation))
             attachments._TASKS[(str(store.root), item["id"])] = task
-            task.add_done_callback(lambda done: attachments._parse_done(done, store, item["id"], reservation))
+            task.add_done_callback(lambda done: attachments._parse_done(done, store, public_id, item["id"], reservation))
             if cancel_before_start:
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-            await attachments.close_attachments()
+            await attachments.close()
             assert not attachments._TASKS and not attachments._FINALIZING
             assert store.read(public_id, item["id"])["state"] == "failed"
             # The global/owner slot can be acquired again.
@@ -583,3 +584,71 @@ def test_parse_preparation_failure_or_early_cancel_releases_record_slot_and_regi
 
             release_parser(reserve_parser())
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("stage", ["begin", "commit"])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_http_upload_lock_contract_and_explicit_reconciliation(accounts: Any, monkeypatch: pytest.MonkeyPatch, stage: str, persistent: bool) -> None:
+    import httpx
+
+    from src.core import attachment_runtime as runtime
+    from src.infra import attachment_store
+    from src.infra.attachment_store import AttachmentStore
+    from src.infra.sqlite_transactions import WritePolicy
+    from src.security.user_auth import csrf_token
+    from tests.offline.test_attachment_transactions import locked_database, observe_busy
+
+    public_id = conversation(accounts)
+    store = AttachmentStore(accounts.store)
+    if persistent:
+        monkeypatch.setattr(attachment_store, "ATTACHMENT_WRITE_POLICY", WritePolicy(.04, .04, "attachment_storage_busy", "attachment_unavailable"))
+    busy = observe_busy(store, monkeypatch)
+    lock = locked_database(store, stage)
+    parsed = []
+
+    async def parser(data, suffix, **kwargs):
+        parsed.append(data)
+        return {"text": data.decode(), "pages": []}
+
+    monkeypatch.setattr(runtime, "parse_document", parser)
+
+    async def run():
+        token = accounts.logins["alice"].token
+        path = f"/conversations/{public_id}/attachments"
+        fields = {"client_upload_id": str(uuid.uuid4())}
+        files = {"file": ("valid.txt", b"valid synthetic text")}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=accounts.api.app), base_url="https://workspace.test", cookies={"ragflow_login": token}, headers={"Origin": "https://workspace.test", "X-CSRF-Token": csrf_token(token)}) as client:
+            pending = asyncio.create_task(client.post(path, data=fields, files=files))
+            try:
+                assert await asyncio.to_thread(busy.wait, 2)
+                assert (await client.get("/auth/me")).status_code == 200
+                if not persistent:
+                    lock.rollback()
+                first = await asyncio.wait_for(pending, 3)
+                if persistent:
+                    assert first.status_code == 503
+                    assert first.json()["detail"]["code"] == "attachment_storage_busy"
+                    assert parsed == []
+                else:
+                    assert first.status_code == 202
+            finally:
+                lock.rollback()
+                await asyncio.gather(pending, return_exceptions=True)
+            # Explicit user reconciliation, same operation ID. No backend body replay.
+            retry = await client.post(path, data=fields, files=files)
+            assert retry.status_code in {200, 202}
+            for _ in range(60):
+                items = (await client.get(path)).json()["items"]
+                if items[0]["state"] == "ready":
+                    break
+                await asyncio.sleep(.01)
+            assert len(items) == 1 and items[0]["state"] == "ready"
+            assert parsed == [b"valid synthetic text"]
+        await runtime.close()
+        assert not runtime._TASKS and not runtime._ACCEPTING and not runtime._FINALIZING
+
+    try:
+        asyncio.run(run())
+    finally:
+        lock.rollback()
+        lock.close()

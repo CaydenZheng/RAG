@@ -39,6 +39,33 @@ def _data_events(response_text: str) -> list[dict]:
     ]
 
 
+@pytest.mark.parametrize("output", ["", " \n\t", "[99]"])
+def test_empty_sanitized_stream_never_persists_or_completes(monkeypatch, output):
+    import app as api
+    from src.core import generation
+
+    class Flow:
+        async def run_async(self, shared):
+            shared.update(context="evidence", sources=[], valid_citation_refs=set())
+
+    async def stream(*args, **kwargs):
+        yield output
+
+    saved = []
+    monkeypatch.setattr(api, "get_retrieval_flow", Flow)
+    monkeypatch.setattr(generation.llm_client, "chat_stream_async", stream)
+    monkeypatch.setattr(generation.AnswerService, "persist", lambda *args: saved.append(args) or True)
+    client = TestClient(api.app)
+    try:
+        response = client.get("/query/stream", params={"query": "question"})
+    finally:
+        client.close()
+    terminal = [item for item in _data_events(response.text) if item.get("done")]
+    assert len(terminal) == 1
+    assert terminal[0]["event"] == "error"
+    assert saved == []
+
+
 def test_stream_emits_common_envelope_and_complete_response(
     isolated_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,

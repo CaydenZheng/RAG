@@ -29,6 +29,42 @@ def test_linear_percentile_rejects_invalid_inputs() -> None:
         linear_percentile([1.0], 1.01)
 
 
+@pytest.mark.parametrize("behaviors", [["abstain"], ["answer"], ["abstain", "answer"]])
+@pytest.mark.parametrize("failures", [True, False])
+def test_execution_failures_never_count_as_answer_or_abstention(behaviors, failures):
+    results = []
+    for behavior in behaviors:
+        sample = _sample(behavior=behavior)
+        error = "evaluation_sample_failed" if failures else ""
+        results.append({"expected_behavior": behavior, "task_types": [], "latency_ms": 0,
+                        "usage": {}, "cost_usd": None, "error_code": error,
+                        "metrics": score_sample(sample, "", [], [], error_code=error, k_values=(1,))})
+    summary = summarize_results(results, k_values=(1,))
+    assert summary["execution_success_rate"] == (0 if failures else 1)
+    no_answer = summary["no_answer"]
+    assert no_answer["correct_abstention_rate"] == ((0 if failures else 1) if "abstain" in behaviors else None)
+    assert no_answer["hard_answer_rate"] == (0 if "abstain" in behaviors else None)
+    assert no_answer["false_abstention_rate"] == ((0 if failures else 1) if "answer" in behaviors else None)
+    assert no_answer["answerable_response_rate"] == (0 if "answer" in behaviors else None)
+
+
+def test_failed_abstention_counts_in_target_denominator():
+    sample = _sample(behavior="abstain")
+    results = [{"expected_behavior": "abstain", "task_types": [], "latency_ms": 0, "usage": {}, "cost_usd": None,
+                "error_code": error, "metrics": score_sample(sample, "", [], [], error_code=error, k_values=(1,))}
+               for error in ("", "evaluation_sample_failed")]
+    summary = summarize_results(results, k_values=(1,))
+    assert summary["no_answer"]["correct_abstention_rate"] == 0.5
+    assert summary["no_answer"]["abstention_precision"] == 1
+
+
+def test_empty_evaluation_has_no_execution_or_abstention_denominator():
+    summary = summarize_results([])
+    assert summary["execution_success_rate"] is None
+    assert summary["no_answer"]["correct_abstention_rate"] is None
+    assert summary["no_answer"]["abstention_precision"] is None
+
+
 @pytest.fixture
 def evaluation_runner_module(
     monkeypatch: pytest.MonkeyPatch,

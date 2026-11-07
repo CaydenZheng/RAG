@@ -63,6 +63,9 @@ def register_generation(session_id: str) -> None:
     if authorization is None or not authorization.generation:
         return
     with _RUNS_LOCK:
+        # A cancelled preparation worker may outlive bind_authorization cleanup.
+        if authorization.revoked.is_set():
+            raise AuthorizationRevoked("auth_required")
         previous: RequestAuthorization | None = _RUNS.get(session_id)
         if (
             previous is not None

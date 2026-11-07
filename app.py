@@ -428,7 +428,7 @@ async def cancel_mcp_oauth_authorization(
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest, request: Request):
     """检索问答（异步）"""
-    session = begin_exchange(
+    session = await begin_exchange(
         request, req.session_id, req.conversation_id, req.client_turn_id, "rag", req.query, allow_empty=True, model=req.model, attachment_ids=req.attachment_ids
     )
     query_id = request.state.request_id
@@ -615,7 +615,7 @@ async def query_stream(
         raise HTTPException(422, detail=public_error("skill_not_selected"))
     started_at = time.perf_counter()
     query_id = request.state.request_id
-    session = begin_exchange(
+    session = await begin_exchange(
         request, session_id, conversation_id, client_turn_id, "rag", query, allow_empty=True, model=model, attachment_ids=attachment_ids
     )
 
@@ -730,7 +730,7 @@ def session_detail(request: Request, response: Response, session_id: str):
 @app.post("/agent/chat", response_model=AgentChatResponse)
 async def agent_chat(req: AgentChatRequest, request: Request):
     """Run the shared asynchronous Agent runtime."""
-    session = begin_exchange(
+    session = await begin_exchange(
         request, req.session_id or req.conversation_id or uuid.uuid4().hex, req.conversation_id,
         req.client_turn_id, "agent", req.message, model=req.model,
         skill_ids=req.skill_ids, skill_ids_provided="skill_ids" in req.model_fields_set,
@@ -758,7 +758,7 @@ async def agent_chat_stream(
       data: {"chunk": "..."}          ← Provider 最终答案增量
       data: {"done": true, ...}
     """
-    session = begin_exchange(
+    session = await begin_exchange(
         request, req.session_id or req.conversation_id or uuid.uuid4().hex, req.conversation_id,
         req.client_turn_id, "agent", req.message, model=req.model,
         skill_ids=req.skill_ids, skill_ids_provided="skill_ids" in req.model_fields_set,

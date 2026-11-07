@@ -8,6 +8,35 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 
+@pytest.mark.parametrize("finish,content", [("stop", ""), ("stop", " \n"), (None, "text"), ("stop", "text")])
+def test_stream_requires_explicit_stop_and_nonblank_body(monkeypatch, finish, content):
+    from src.llm import llm_client
+    from src.llm.client import LLMCompletionError
+
+    closed = Mock()
+
+    class Stream:
+        def __aiter__(self):
+            async def chunks():
+                yield SimpleNamespace(choices=[SimpleNamespace(finish_reason=finish, delta=SimpleNamespace(content=content, tool_calls=None))], usage=None)
+            return chunks()
+
+        async def close(self):
+            closed()
+
+    monkeypatch.setattr(llm_client._async_chat_client.chat.completions, "create", AsyncMock(return_value=Stream()))
+
+    async def run():
+        return "".join([chunk async for chunk in llm_client.chat_stream_async([{"role": "user", "content": "question"}])])
+
+    if finish == "stop" and content.strip():
+        assert asyncio.run(run()) == content
+    else:
+        with pytest.raises(LLMCompletionError):
+            asyncio.run(run())
+    closed.assert_called_once()
+
+
 @pytest.mark.parametrize("method", ["chat", "chat_async", "chat_with_tools_async"])
 @pytest.mark.parametrize(
     ("finish_reason", "content"),

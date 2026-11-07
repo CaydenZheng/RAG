@@ -1,4 +1,9 @@
 import { expect, test, type ConsoleMessage } from "@playwright/test";
+import { reviewScenarios } from "./review-scenarios";
+import { logoutRecoveryScenarios } from "./logout-recovery";
+
+reviewScenarios();
+logoutRecoveryScenarios();
 
 test("real backend rejects a skill disabled after the browser loaded its list", async ({ page }) => {
   const origin = "http://127.0.0.1:8002";

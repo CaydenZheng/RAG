@@ -481,6 +481,7 @@ class LLMClient:
         usage = None
         stream = None
         completed = False
+        has_content = False
         reported_finish_reason: str | None = None
         try:
             stream = await self._async_chat_client.chat.completions.create(**kwargs)
@@ -506,6 +507,7 @@ class LLMClient:
                     completed = finish_reason == "stop" or completed
                     continue
                 response_chars += len(delta.content)
+                has_content = has_content or bool(delta.content.strip())
                 # 拆成逐词/逐空白：保留所有空白字符，让前端逐词渲染
                 words = re.split(r'(\s+)', delta.content)
                 for word in words:
@@ -514,6 +516,8 @@ class LLMClient:
                 completed = finish_reason == "stop" or completed
             if not completed:
                 raise LLMCompletionError("unconfirmed_output")
+            if not has_content:
+                raise LLMCompletionError("empty_output")
         except (asyncio.CancelledError, GeneratorExit):
             self._record_chat_span(
                 started_at, model, cache_hit=False,

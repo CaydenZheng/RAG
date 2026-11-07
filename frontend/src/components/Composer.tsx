@@ -190,6 +190,7 @@ export function Composer({
           }
           onChange={(event) => onValueChange(event.target.value)}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
             if (slashOpen && slashItems.length > 0) {
               if (event.key === "ArrowDown") {
                 event.preventDefault();

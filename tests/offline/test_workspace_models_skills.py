@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -270,7 +271,8 @@ def test_selected_skills_reach_runtime_done_and_history(accounts: Any, monkeypat
 
 
 @pytest.mark.parametrize("endpoint", ["/agent/chat", "/agent/chat/stream"])
-def test_invalid_selection_rejected_before_runtime_and_turn_id_remains_available(accounts: Any, monkeypatch: pytest.MonkeyPatch, endpoint: str) -> None:
+@pytest.mark.parametrize("concurrent_reader", [False, True])
+def test_invalid_selection_rejected_before_runtime_and_turn_id_remains_available(accounts: Any, monkeypatch: pytest.MonkeyPatch, endpoint: str, concurrent_reader: bool) -> None:
     from src.core.skills import MAX_SELECTED_SKILLS
 
     browser = accounts.browsers["alice"]
@@ -287,12 +289,18 @@ def test_invalid_selection_rejected_before_runtime_and_turn_id_remains_available
     public_id, turn_id = str(uuid.uuid4()), str(uuid.uuid4())
     body = {"conversation_id": public_id, "client_turn_id": turn_id, "message": "question"}
     errors = []
-    for skill_id in (disabled, foreign, "missing", "skill-creator"):
-        response = browser.post(endpoint, json={**body, "skill_ids": [skill_id]})
-        assert response.status_code == 422
-        assert response.headers["content-type"].startswith("application/json")
-        assert response.json()["detail"]["code"] == "skill_not_selected"
-        errors.append(response.json())
+    if concurrent_reader:
+        assert browser.post("/conversations", json={"id": public_id, "mode": "agent"}).status_code == 201
+    with closing(sqlite3.connect(accounts.store._db_path)) as reader:
+        if concurrent_reader:
+            reader.execute("BEGIN")
+            reader.execute("SELECT * FROM conversations").fetchall()
+        for skill_id in (disabled, foreign, "missing", "skill-creator"):
+            response = browser.post(endpoint, json={**body, "skill_ids": [skill_id]})
+            assert response.status_code == 422
+            assert response.headers["content-type"].startswith("application/json")
+            assert response.json()["detail"]["code"] == "skill_not_selected"
+            errors.append(response.json())
     assert all(error == errors[0] for error in errors)
     response = browser.post(endpoint, json={**body, "skill_ids": [disabled] * (MAX_SELECTED_SKILLS + 1)})
     assert response.status_code == 422
@@ -659,7 +667,7 @@ def test_worker_start_failure_releases_owner_and_capacity(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(multiprocessing.context.SpawnProcess, "start", failed)
     for _ in range(3):
-        with pytest.raises(WorkspaceError, match="document_invalid"):
+        with pytest.raises(WorkspaceError, match="document_processing_failed"):
             asyncio.run(parser.parse_document(b"public", "txt"))
     assert not parser._PARSING_OWNERS
 

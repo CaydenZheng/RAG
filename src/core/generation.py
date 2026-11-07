@@ -298,6 +298,10 @@ answer_service = AnswerService()
 
 async def persist_completed_answer(service: AnswerService, answer_input: AnswerInput, answer: str) -> bool:
     """Cancellation acknowledgement orders against the actual worker COMMIT."""
+    if not answer.strip():
+        from src.llm.client import LLMCompletionError
+
+        raise LLMCompletionError("empty_output")
     permit: CommitPermit = CommitPermit()
     try:
         return await asyncio.to_thread(service.persist, replace(answer_input,commit_permit=permit), answer)

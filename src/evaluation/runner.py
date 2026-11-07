@@ -397,6 +397,12 @@ class EvaluationRunner:
                     "must each be >= 0.5 when a judge is enabled."
                 ),
                 "cost": "USD only when token usage and both caller-supplied prices are available.",
+                "no_answer": (
+                    "Contract v2: execution errors count in target-group denominators, "
+                    "but never in answer/abstention numerators. Precision uses only "
+                    "successful abstentions; missing target groups or predictions yield null. "
+                    "execution_success_rate reports successful executions over all samples."
+                ),
             },
             "modes": {},
         }

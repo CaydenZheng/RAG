@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,12 +18,24 @@ from loguru import logger
 
 from config.settings import settings
 from src.infra.exchange_context import exchange_context
+from src.infra.sqlite_transactions import (
+    CommitPermit as CommitPermit,
+)
+from src.infra.sqlite_transactions import (
+    SQLiteWrite,
+    WritePolicy,
+    guarded_commit,
+    storage_connection,
+    storage_error,
+)
+from src.infra.sqlite_transactions import (
+    write_transaction as sqlite_write_transaction,
+)
 from src.security.request_authorization import (
     AccountLimitExceeded,
     AuthorizationRevoked,
     ConversationConflict,
     PrivateSessionError,
-    authorization_commit_guard,
     current_authorization,
     require_active_authorization,
     require_session_owner,
@@ -34,7 +46,7 @@ from src.security.session_ids import (
     validate_storage_session_id,
 )
 
-_COMMIT_RETRY_INTERVAL_SECONDS: float = 0.005
+_CONVERSATION_WRITE_TIMEOUT_MS: int = 1000
 MAX_ACCOUNT_CONVERSATIONS: int = 200
 MAX_CONVERSATION_EXCHANGES: int = 2000
 MAX_SQLITE_SEQUENCE: int = (1 << 63) - 1
@@ -58,30 +70,6 @@ class HistorySnapshot:
 
     turns: tuple[SessionTurn, ...]
     revision: tuple[int, int, int]
-
-
-class CommitPermit:
-    """Order cancellation acknowledgement with one non-blocking commit attempt."""
-
-    def __init__(self, deadline: float | None = None) -> None:
-        self._deadline: float | None = deadline
-        self._revoked: threading.Event = threading.Event()
-        self._lock: threading.Lock = threading.Lock()
-
-    def __call__(self) -> bool:
-        """Preflight snapshot only; the store must hold guard through COMMIT."""
-        return not self._revoked.is_set() and (
-            self._deadline is None or time.monotonic() < self._deadline
-        )
-
-    def revoke(self) -> None:
-        with self._lock:
-            self._revoked.set()
-
-    @contextmanager
-    def guard(self) -> Iterator[bool]:
-        with self._lock:
-            yield self()
 
 
 class _ModelChangePermit(CommitPermit):
@@ -119,8 +107,12 @@ class SessionStore:
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_path, timeout=30)
-        connection.execute("PRAGMA busy_timeout = 30000")
-        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            connection.execute("PRAGMA busy_timeout = 30000")
+            connection.execute("PRAGMA foreign_keys = ON")
+        except BaseException:
+            connection.close()
+            raise
         return connection
 
     def _init_db(self) -> None:
@@ -500,27 +492,50 @@ class SessionStore:
             (title, now, sequence, context.used_model, owner, session_id),
         )
 
-    def owned_session(self, user_id: str, public_id: str, mode: SessionNamespace, *, create: bool, model: str | None = None) -> str:
+    def write_transaction(self, policy: WritePolicy, permit: CommitPermit | None = None,
+                          *, authorize: bool = True) -> AbstractContextManager[SQLiteWrite]:
+        return sqlite_write_transaction(self._connect, policy, permit, authorize=authorize)
+
+    def owned_session(self, user_id: str, public_id: str, mode: SessionNamespace, *, create: bool, model: str | None = None, can_commit: CommitPermit | None = None) -> str:
         storage_id: str = account_scoped_session_id(user_id, public_id, mode)
         require_active_authorization()
         require_session_owner(storage_id)
-        with closing(self._connect()) as connection, connection:
-            if create:
-                connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT mode,storage_id,deleted FROM conversations WHERE owner_user_id=? AND public_id=?",
-                (user_id, public_id),
-            ).fetchone()
-            if row is not None:
-                if row[2]:
-                    raise PrivateSessionError("private_session_not_found")
-                if row[0] != mode:
-                    if create:
-                        raise ConversationConflict("conversation_conflict")
-                    raise PrivateSessionError("private_session_not_found")
-                return row[1]
-            if not create:
+        budget = _CONVERSATION_WRITE_TIMEOUT_MS / 1000
+        policy = WritePolicy(budget, budget, "conversation_storage_busy", "conversation_storage_unavailable")
+
+        def lookup(connection: sqlite3.Connection) -> str | None:
+            require_active_authorization()
+            if can_commit is not None and not can_commit():
+                raise AuthorizationRevoked("auth_required")
+            try:
+                row = connection.execute(
+                    "SELECT mode,storage_id,deleted FROM conversations WHERE owner_user_id=? AND public_id=?",
+                    (user_id, public_id),
+                ).fetchone()
+            except sqlite3.Error as error:
+                storage_error(error, policy, "lookup")
+            if row is None:
+                return None
+            if row[2]:
                 raise PrivateSessionError("private_session_not_found")
+            if row[0] != mode:
+                if create:
+                    raise ConversationConflict("conversation_conflict")
+                raise PrivateSessionError("private_session_not_found")
+            return row[1]
+
+        with storage_connection(self._connect, policy) as connection:
+            connection.execute("PRAGMA busy_timeout=0")
+            existing = lookup(connection)
+            if existing is not None:
+                return existing
+        if not create:
+            raise PrivateSessionError("private_session_not_found")
+        with self.write_transaction(policy, can_commit) as transaction:
+            connection = transaction.connection
+            existing = lookup(connection)
+            if existing is not None:
+                return existing  # The unwritten transaction is rolled back.
             count: int = connection.execute(
                 "SELECT COUNT(*) FROM conversations WHERE owner_user_id=? AND deleted=0", (user_id,)
             ).fetchone()[0]
@@ -535,12 +550,11 @@ class SessionStore:
                 INSERT INTO conversations(owner_user_id,public_id,mode,storage_id,created_at,updated_at,selected_model)
                 VALUES(?,?,?,?,?,?,?)
             """, (user_id, public_id, mode, storage_id, now, now, model))
-            if not self._commit_if_permitted(connection, None):
-                raise AuthorizationRevoked("auth_required")
-            if current_authorization() is not None:
-                from src.infra.attachment_store import AttachmentStore
+            transaction.commit()
+        if current_authorization() is not None:
+            from src.infra.attachment_store import AttachmentStore
 
-                AttachmentStore(self).cleanup()
+            AttachmentStore(self).cleanup()
         return storage_id
 
     def _authorized_session_id(self, session_id: str) -> str:
@@ -713,43 +727,10 @@ class SessionStore:
         connection: sqlite3.Connection,
         can_commit: Callable[[], bool] | None,
     ) -> bool:
-        """Use CommitPermit for ordered revocation; plain predicates only preflight."""
-        if can_commit is None and current_authorization() is None:
-            connection.commit()
-            return True
-
-        busy_timeout_ms: int = connection.execute("PRAGMA busy_timeout").fetchone()[0]
-        retry_deadline: float = time.monotonic() + busy_timeout_ms / 1000
-        # A reader may hold COMMIT's lock upgrade past the request deadline.
-        # Make each attempt non-blocking, then recheck the guard (which owns
-        # cancellation/deadline) before every retry. Keep SQLite's wait cap.
-        connection.execute("PRAGMA busy_timeout = 0")
-        try:
-            while True:
-                try:
-                    with authorization_commit_guard() as authorized:
-                        if not authorized:
-                            connection.rollback()
-                            return False
-                        # The permit and its revoker share this lock. Do not
-                        # hold it during auth I/O, compression or busy retry sleep.
-                        with (
-                            can_commit.guard() if isinstance(can_commit, CommitPermit)
-                            else nullcontext(can_commit is None or can_commit())
-                        ) as permitted:
-                            if not permitted:
-                                connection.rollback()
-                                return False
-                            connection.commit()
-                            return True
-                except sqlite3.OperationalError as exc:
-                    error_code: int = getattr(exc, "sqlite_errorcode", 0)
-                    remaining: float = retry_deadline - time.monotonic()
-                    if error_code & 0xFF != sqlite3.SQLITE_BUSY or remaining <= 0:
-                        raise
-                    time.sleep(min(_COMMIT_RETRY_INTERVAL_SECONDS, remaining))
-        finally:
-            connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+        # Compatibility for history/skill writers not yet migrated to WritePolicy.
+        # The retry/authorization mechanism is shared; new callers pass budgets explicitly.
+        budget = connection.execute("PRAGMA busy_timeout").fetchone()[0] / 1000
+        return guarded_commit(connection, can_commit, budget=budget)
 
     def replace_history_if_revision(
         self,

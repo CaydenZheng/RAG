@@ -33,6 +33,64 @@ NEW_PASSWORD: str = "changed-password-456"
 ORIGIN: str = "https://workspace.test"
 
 
+@pytest.mark.parametrize("endpoint", ["/query", "/query/stream", "/agent/chat", "/agent/chat/stream"])
+def test_preparation_lock_timeout_is_storage_busy_not_auth_failure(accounts, monkeypatch, endpoint):
+    from src.infra import session_store as stores
+
+    monkeypatch.setattr(stores, "_CONVERSATION_WRITE_TIMEOUT_MS", 40)
+    client = accounts.browsers["alice"]
+    payload = {"conversation_id": str(uuid.uuid4()), "client_turn_id": str(uuid.uuid4())}
+    payload["message" if endpoint.startswith("/agent") else "query"] = "question"
+    lock = sqlite3.connect(accounts.store._db_path)
+    try:
+        lock.execute("BEGIN IMMEDIATE")
+        response = client.get(endpoint, params=payload) if endpoint == "/query/stream" else client.post(endpoint, json=payload)
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "conversation_storage_busy"
+    finally:
+        lock.rollback()
+        lock.close()
+    assert client.get(f"/conversations/{payload['conversation_id']}").status_code == 404
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("case", ["pro", "unconfigured", "attachment"])
+def test_sessionless_rag_honors_explicit_options(accounts, monkeypatch, stream, case):
+    from config.settings import settings
+    from src.core.run_options import current_run_options
+
+    monkeypatch.setattr(settings, "llm_pro_model", "" if case == "unconfigured" else "synthetic-pro")
+    seen = []
+
+    class Flow:
+        async def run_async(self, shared):
+            seen.append(current_run_options.get())
+            shared.update(answer="answer", context="evidence", sources=[])
+
+    class Service:
+        async def stream(self, answer_input):
+            yield "answer"
+
+        def persist(self, *args):
+            return True
+
+    monkeypatch.setattr(accounts.api, "get_online_flow", Flow)
+    monkeypatch.setattr(accounts.api, "get_retrieval_flow", Flow)
+    monkeypatch.setattr(accounts.api, "answer_service", Service())
+    payload = {"query": "question", "model": "pro"}
+    if case == "attachment":
+        payload["attachment_ids"] = [str(uuid.uuid4())]
+    client = accounts.browsers["alice"]
+    response = client.get("/query/stream", params=payload) if stream else client.post("/query", json=payload)
+    assert response.status_code == {"pro": 200, "unconfigured": 503, "attachment": 422}[case]
+    if case == "pro":
+        assert len(seen) == 1
+        assert seen[0].choice == "pro"
+        assert seen[0].model == "synthetic-pro"
+    else:
+        assert seen == []
+
+
 @pytest.fixture
 def accounts(
     isolated_runtime: Path, monkeypatch: pytest.MonkeyPatch, temporary_sessions: Any

@@ -6,7 +6,7 @@ import { isRecord } from "../api/sse";
 import { App } from "./App";
 import { IS_PAGES_DEMO } from "./runtime";
 
-type AccountState = "checking" | "anonymous" | "login" | "authenticated" | "unavailable";
+type AccountState = "checking" | "anonymous" | "login" | "authenticated" | "unavailable" | "logout_pending";
 
 export function AccountBoundary(): React.JSX.Element {
   const [status, setStatus] = useState<AccountState>(IS_PAGES_DEMO ? "anonymous" : "checking");
@@ -91,13 +91,32 @@ export function AccountBoundary(): React.JSX.Element {
     const controller = new AbortController();
     operation.current?.abort();
     operation.current = controller;
-    setStatus("login"); setUser(null); setPassword(""); setNewPassword(""); setBusy(true);
+    setStatus("logout_pending"); setUser(null); setPassword(""); setNewPassword(""); setBusy(true); setNotice("");
     try {
       await endAccountSession(controller.signal);
+      if (controller.signal.aborted) return;
       channel.current?.postMessage("changed");
+      setStatus("login");
       setNotice("已退出登录。");
     } catch {
-      if (!controller.signal.aborted) setNotice("退出尚未确认，请重试退出；不要在共享设备上离开。");
+      if (controller.signal.aborted) return;
+      try {
+        // A missing/replaced Cookie can reject the old CSRF even after logout.
+        // Reading the current account refreshes CSRF without reopening private UI.
+        const current = await readAccount(controller.signal);
+        if (controller.signal.aborted) return;
+        setNotice(`退出尚未确认，当前账号 ${current.username} 仍处于登录状态。重试退出将结束当前会话。`);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (error instanceof PublicClientError && error.code === "auth_required") {
+          clearAccount();
+          channel.current?.postMessage("changed");
+          setStatus("login");
+          setNotice("已退出登录。");
+        } else {
+          setNotice("退出尚未确认，暂时无法核对登录状态，请重试退出。");
+        }
+      }
     } finally { if (!controller.signal.aborted) setBusy(false); }
   }
 
@@ -133,9 +152,9 @@ export function AccountBoundary(): React.JSX.Element {
     <main className="account-shell">
       <section className="account-card" aria-labelledby="accountTitle" aria-busy={busy}>
         <p className="eyebrow">RAGFlow · 邀请制工作台</p>
-        <h1 id="accountTitle">{status === "checking" ? "正在检查登录状态" : status === "unavailable" ? "账号服务暂不可用" : user?.must_change_password ? "修改初始密码" : "登录工作台"}</h1>
+        <h1 id="accountTitle">{status === "checking" ? "正在检查登录状态" : status === "unavailable" ? "账号服务暂不可用" : status === "logout_pending" ? "确认退出登录" : user?.must_change_password ? "修改初始密码" : "登录工作台"}</h1>
         {notice && <p role="alert" className="page-error">{notice}</p>}
-        {status === "unavailable" ? <button type="button" onClick={() => { setStatus("checking"); setAttempt((value) => value + 1); }}>重新检查</button> : status !== "checking" && (
+        {status === "logout_pending" ? <button type="button" disabled={busy} onClick={() => void logout()}>{busy ? "正在退出" : "重试退出"}</button> : status === "unavailable" ? <button type="button" onClick={() => { setStatus("checking"); setAttempt((value) => value + 1); }}>重新检查</button> : status !== "checking" && (
           <form onSubmit={(event) => void submit(event)}>
             {!user?.must_change_password && <label>账号<input ref={firstField} autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} maxLength={64} required disabled={busy} /></label>}
             <label>{user?.must_change_password ? "当前初始密码" : "密码"}<input ref={user?.must_change_password ? firstField : undefined} type={showPassword ? "text" : "password"} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} maxLength={128} required disabled={busy} /></label>

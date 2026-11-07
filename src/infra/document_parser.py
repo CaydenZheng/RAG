@@ -9,8 +9,11 @@ import zipfile
 from pathlib import PurePosixPath
 from typing import Any
 
+from loguru import logger
+
 from src.core.run_options import WorkspaceError
 from src.security.request_authorization import (
+    AuthorizationRevoked,
     current_authorization,
     require_active_authorization,
 )
@@ -34,6 +37,26 @@ def _checked_text(parts: list[str]) -> str:
 
 
 def extract_document(data: bytes, suffix: str) -> dict[str, Any]:
+    """Translate only known format errors at the third-party parser seam."""
+    try:
+        return _extract_document(data, suffix)
+    except WorkspaceError:
+        raise
+    except Exception as error:
+        if suffix == "pdf":
+            import fitz
+
+            if isinstance(error, fitz.FileDataError):
+                raise WorkspaceError("document_invalid") from None
+        elif suffix == "docx":
+            from lxml.etree import XMLSyntaxError
+
+            if isinstance(error, (zipfile.BadZipFile, KeyError, XMLSyntaxError)):
+                raise WorkspaceError("document_invalid") from None
+        raise
+
+
+def _extract_document(data: bytes, suffix: str) -> dict[str, Any]:
     """Worker-only parser. Never accepts paths, opens URLs or extracts ZIP files."""
     if len(data) > MAX_DOCUMENT_BYTES:
         raise WorkspaceError("document_too_large", 413)
@@ -78,7 +101,11 @@ def extract_document(data: bytes, suffix: str) -> dict[str, Any]:
                     raise WorkspaceError("document_invalid")
                 if item.file_size > max(item.compress_size, 1) * 100:
                     raise WorkspaceError("document_too_large", 413)
-        document = Document(io.BytesIO(data))
+        try:
+            document = Document(io.BytesIO(data))
+        except ValueError:
+            # python-docx rejects packages whose main part has a wrong type.
+            raise WorkspaceError("document_invalid") from None
         parts = []
         for paragraph in document.paragraphs:
             parts.append(paragraph.text)
@@ -98,11 +125,13 @@ def extract_document(data: bytes, suffix: str) -> dict[str, Any]:
 def _worker(data: bytes, suffix: str, channel: Any) -> None:
     try:
         try:
-            channel.send({"document": extract_document(data, suffix)})
+            result = {"document": extract_document(data, suffix)}
         except WorkspaceError as error:
-            channel.send({"code": error.code, "status": error.status})
-        except Exception:
-            channel.send({"code": "document_invalid", "status": 422})
+            result = {"code": error.code, "status": error.status}
+        except Exception as error:
+            logger.warning("Document worker failed: error_type={}", type(error).__name__)
+            result = {"code": "document_processing_failed", "status": 503}
+        channel.send(result)
     finally:
         channel.close()
 
@@ -138,7 +167,8 @@ async def parse_document(data: bytes, suffix: str, *, reservation: str | None = 
         while not reader.poll():
             require_active_authorization()
             if not process.is_alive():
-                raise WorkspaceError("document_invalid")
+                logger.warning("Document worker exited without result: exit_code={}", process.exitcode)
+                raise WorkspaceError("document_processing_failed", 503)
             if time.monotonic() >= deadline:
                 raise WorkspaceError("document_timeout", 503)
             await asyncio.sleep(.025)
@@ -146,8 +176,11 @@ async def parse_document(data: bytes, suffix: str, *, reservation: str | None = 
         if "code" in result:
             raise WorkspaceError(result["code"], result["status"])
         return result["document"]
-    except (EOFError, OSError):
-        raise WorkspaceError("document_invalid") from None
+    except (WorkspaceError, AuthorizationRevoked):
+        raise
+    except Exception as error:
+        logger.warning("Document process/IPC failed: error_type={}", type(error).__name__)
+        raise WorkspaceError("document_processing_failed", 503) from error
     finally:
         # This actually stops the dedicated worker, including native parsers.
         try:
@@ -162,6 +195,8 @@ async def parse_document(data: bytes, suffix: str, *, reservation: str | None = 
                         process.kill()
                         process.join(timeout=1)
                     process.close()
+            elif process is not None:
+                process.close()
         finally:
             if reader is not None:
                 reader.close()

@@ -77,7 +77,7 @@ export async function readHistory(id: string, signal: AbortSignal, options: { be
       answer: item.answer, error: "", sources: Array.isArray(item.sources) ? item.sources.filter(isRecord).map((source, index) => ({
         ref: String(source.ref ?? index + 1), source: typeof source.label === "string" ? source.label : "回答时的来源",
         text: typeof source.excerpt === "string" ? source.excerpt : "", score: null,
-      })) : [], warnings: [...(Array.isArray(item.warnings) ? item.warnings.filter((warning): warning is string => typeof warning === "string") : []), "历史仅回看已完成问答和回答时的来源，不重放工具过程。"],
+      })) : [], warnings: Array.isArray(item.warnings) ? item.warnings.filter((warning): warning is string => typeof warning === "string") : [], fromHistory: true,
       steps: [], latencyMs: null, indexVersion: typeof item.index_version === "string" ? item.index_version : "—", iterations: null, interactions: [] };
   });
   return { items, nextBefore: typeof payload.next_before === "string" ? payload.next_before : null };

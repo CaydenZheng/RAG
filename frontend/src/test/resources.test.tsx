@@ -11,6 +11,22 @@ const FILE = {id:"file-a",client_upload_id:"upload-a",name:"notes.txt",suffix:"t
 function json(value: unknown): Response { return new Response(JSON.stringify(value), {headers:{"Content-Type":"application/json"}}); }
 
 describe("conversation attachments", () => {
+  it("shows storage failure and pending cleanup, then reconciles by reading without reposting", async () => {
+    let recovered = false;
+    const fetch = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(json({items: [{...FILE, state:"failed", error_code:"attachment_storage_busy", cleanup_pending:!recovered}]})));
+    vi.stubGlobal("fetch", fetch);
+    const user = userEvent.setup();
+    render(<AttachmentPanel sessionId="conv-a" exists disabled={false} ensure={vi.fn()} onSelection={vi.fn()} />);
+    expect(await screen.findByText("附件存储繁忙，解析未完成；请刷新核对后删除或重新上传。")).toBeVisible();
+    expect(screen.getByText("文件清理尚未完成，请刷新核对。")).toBeVisible();
+    expect(screen.getByRole("checkbox", {name:"本轮使用 notes.txt"})).toBeDisabled();
+    recovered = true;
+    await user.click(screen.getByRole("button", {name:"刷新附件"}));
+    await waitFor(() => expect(screen.queryByText("文件清理尚未完成，请刷新核对。")).not.toBeInTheDocument());
+    expect(screen.queryByText("解析失败或没有可提取文字，请删除后重新上传。")).not.toBeInTheDocument();
+    expect(fetch.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  });
+
   it("marks current completed answers deleted only after successful attachment deletion without replacing their text or citations", async () => {
     let finish: ((response:Response) => void) | undefined;
     let deleted = false;

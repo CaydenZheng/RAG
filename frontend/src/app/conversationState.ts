@@ -19,6 +19,7 @@ export interface ConversationTurn extends CompletionMetadata {
   error: string;
   sources: RagSource[];
   warnings: string[];
+  fromHistory?: boolean;
   steps: AgentToolStep[];
   latencyMs: number | null;
   indexVersion: string;

@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException, Request
 from starlette._utils import get_route_path
@@ -39,6 +39,9 @@ from src.security.session_ids import (
 )
 
 CLIENT_ID_COOKIE = "ragflow_client"
+if TYPE_CHECKING:
+    from src.infra.session_store import CommitPermit
+
 CLIENT_ID_MAX_AGE = 60 * 60 * 24 * 365
 AUTH_RECHECK_SECONDS: float = 0.25
 _GENERATION_PATHS: frozenset[str] = frozenset(
@@ -312,6 +315,7 @@ def scope_request_session(
     *,
     allow_empty: bool = False,
     create: bool = False,
+    can_commit: "CommitPermit | None" = None,
 ) -> RequestSession:
     """Return distinct public and storage IDs or raise an HTTP 422 response."""
     try:
@@ -325,7 +329,7 @@ def scope_request_session(
             if user is None:
                 raise HTTPException(401, detail=public_error("auth_required"))
             storage_id: str = session_store.owned_session(
-                user.id, public_id, namespace, create=create
+                user.id, public_id, namespace, create=create, can_commit=can_commit
             )
             register_generation(storage_id)
             return RequestSession(public_id=public_id, storage_id=storage_id)
@@ -333,5 +337,7 @@ def scope_request_session(
             public_id=public_id,
             storage_id=scoped_session_id(request.state.client_id, public_id, namespace),
         )
+    except WorkspaceError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

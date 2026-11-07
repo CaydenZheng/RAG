@@ -3,6 +3,7 @@
 import threading
 from typing import Any, Callable, List
 
+from chromadb.errors import NotFoundError
 from loguru import logger
 from pocketflow import BatchNode, Node
 
@@ -145,13 +146,20 @@ class IndexBuilderNode(Node):
         active_before = self._catalog.capture()
         candidate_created = False
         try:
-            if active_before.version_id == manifest.version_id:
+            try:
                 collection = client.get_collection(manifest.collection_name)
-                self._validate_collection(collection, ids)
+            except (NotFoundError, KeyError):
+                if active_before.version_id == manifest.version_id:
+                    raise IndexBuildError("active collection is missing") from None
+                collection = None
+            if collection is not None:
+                self._validate_retained_collection(collection, versioned_chunks, manifest)
+                published = active_before.version_id != manifest.version_id
+                if published:
+                    self._catalog.publish(manifest)
                 self._activate_runtime(candidate_bm25, manifest.version_id)
-                return self._result(manifest, published=False)
+                return self._result(manifest, published=published)
 
-            self._delete_collection_if_present(client, manifest.collection_name)
             collection = client.create_collection(
                 name=manifest.collection_name,
                 metadata={
@@ -218,6 +226,22 @@ class IndexBuilderNode(Node):
                 documents=[chunk["text"] for chunk in batch],
                 metadatas=[chunk["metadata"] for chunk in batch],
             )
+
+    @staticmethod
+    def _validate_retained_collection(collection: Any, chunks: List[dict], manifest: IndexVersion) -> None:
+        """Fail closed on corrupt retained resources; never rebuild in place."""
+        IndexBuilderNode._validate_collection(collection, [chunk["chunk_id"] for chunk in chunks])
+        metadata = collection.metadata or {}
+        if metadata.get("index_version") != manifest.version_id or metadata.get("content_checksum") != manifest.content_checksum:
+            raise IndexBuildError("retained collection identity mismatch")
+        stored = collection.get(include=["documents", "metadatas"])
+        expected = {chunk["chunk_id"]: chunk for chunk in chunks}
+        try:
+            for chunk_id, text, metadata in zip(stored["ids"], stored["documents"], stored["metadatas"], strict=True):
+                if text != expected[chunk_id]["text"] or metadata != expected[chunk_id]["metadata"]:
+                    raise IndexBuildError("retained collection content mismatch")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise IndexBuildError("retained collection is incomplete") from exc
 
     @staticmethod
     def _validate_collection(collection: Any, expected_ids: List[str]) -> None:

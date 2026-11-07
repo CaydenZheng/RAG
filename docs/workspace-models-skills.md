@@ -48,3 +48,7 @@ Agent 的 `/agent/chat` 和 `/agent/chat/stream` 支持可选的本轮参数 `sk
 草稿仅在当前页面内存，可预览、下载，只有点击“上传此技能（新项默认关闭）”才保存，不自动安装或启用。重复上传同名同内容技能保留原有启用状态，页面按返回状态提示。离开页面、刷新会丢弃草稿并取消请求。转换使用浏览器生成的操作 ID，服务端只保留去重墓碑，不存原始输入和生成草稿；24 小时保留、每账号最多 128 个操作，重复 ID 拒绝重放。
 
 账号模式启动仅做 additive schema 初始化，不删除旧表、匿名历史或索引。实际默认数据库迁移、备份与公网部署仍需独立授权；本单元验证使用隔离合成库。新增接口为 `/workspace/models`、`/workspace/preferences`、`/skills`、`/skills/{id}`、`/skills/creator/stream`，均验证账号归属且返回 `no-store`，写操作验证 Origin/CSRF。
+
+## 无会话 RAG 请求
+
+账号模式下，`POST /query` 与 `GET /query/stream` 即使未传会话，也会解析并校验显式 `model`；未配置的模型返回 `503/model_not_configured`。未显式选择时采用工作台默认模型。附件必须绑定会话，无会话携带非空 `attachment_ids` 返回 422，不会静默忽略。匿名模式不能使用账号专属模型、技能或附件参数。
