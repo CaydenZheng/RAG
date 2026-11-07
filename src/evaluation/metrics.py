@@ -226,7 +226,7 @@ def score_sample(
     """Compute all deterministic metrics for one completed runner result."""
     retrieval = retrieval_metrics(sample, chunks, k_values=k_values)
     citations = citation_metrics(sample, answer, sources)
-    abstained = is_abstention(answer)
+    abstained = not error_code and is_abstention(answer)
     lexical_score = token_f1(answer, sample.get("ground_truth"))
     max_recall = retrieval[
         f"recall@{max(k_values)}"
@@ -293,7 +293,8 @@ def summarize_results(
         result for result in results if result["expected_behavior"] == "answer"
     ]
     predicted_abstentions = [
-        result for result in results if result["metrics"]["abstained"]
+        result for result in results
+        if not result.get("error_code") and result["metrics"]["abstained"]
     ]
     true_abstentions = sum(
         result["expected_behavior"] == "abstain"
@@ -315,10 +316,10 @@ def summarize_results(
         else None
     )
     false_abstentions = sum(
-        result["metrics"]["abstained"] for result in expected_answers
+        not result.get("error_code") and result["metrics"]["abstained"] for result in expected_answers
     )
     hard_answers = sum(
-        not result["metrics"]["abstained"] for result in expected_abstentions
+        not result.get("error_code") and not result["metrics"]["abstained"] for result in expected_abstentions
     )
     usage = {
         name: sum(int(result["usage"].get(name, 0)) for result in results)
@@ -369,6 +370,8 @@ def summarize_results(
 
     return {
         "sample_count": sample_count,
+        "metric_contract_version": 2,
+        "execution_success_rate": (sample_count - errors) / sample_count if sample_count else None,
         "metrics": metrics,
         "task_success_rate": (
             sum(result["metrics"]["task_success"] for result in results) / sample_count
@@ -393,7 +396,7 @@ def summarize_results(
                 else None
             ),
             "answerable_response_rate": (
-                sum(not result["metrics"]["abstained"] for result in expected_answers)
+                sum(not result.get("error_code") and not result["metrics"]["abstained"] for result in expected_answers)
                 / len(expected_answers)
                 if expected_answers
                 else None

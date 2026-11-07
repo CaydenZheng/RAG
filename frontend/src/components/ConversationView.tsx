@@ -159,6 +159,7 @@ export function ConversationView({
                 {active && <span className="stream-cursor" aria-hidden="true" />}
                 {turn.status === "cancelled" && <p className="terminal-note">已停止，本轮未确认为成功回答。</p>}
                 {turn.status === "failed" && <p className="error-notice" role="alert">{turn.error}</p>}
+                {turn.fromHistory && <p className="terminal-note">历史仅回看已完成问答和回答时的来源，不重放工具过程。</p>}
                 {turn.status === "completed" && (
                   <div className="answer-footer">
                     <div className="answer-meta" aria-label="回答元信息">

@@ -108,6 +108,73 @@ class FakeCache:
         self.versions.append(version_id)
 
 
+@pytest.mark.parametrize("fail_publish", [False, True])
+def test_rebuilding_retained_version_never_replaces_its_collection(isolated_runtime, monkeypatch, fail_publish):
+    from src.core.errors import IndexBuildError
+    from src.core.indexing import IndexBuilderNode
+    from src.infra.index_catalog import IndexCatalog
+    from src.utils.bm25_store import BM25Store
+
+    catalog = IndexCatalog(isolated_runtime / "manifests")
+    client = FakeClient()
+    builder = IndexBuilderNode(catalog=catalog, runtime_bm25=BM25Store(), client_factory=lambda: client, cache=FakeCache())
+    first = builder.exec(_chunks("A"))
+    second = builder.exec(_chunks("B"))
+    retained = client.collections[first["collection_name"]]
+    manifest = catalog.manifest(first["version_id"])
+    client.fail_on_add.add(first["collection_name"])
+    with monkeypatch.context() as patch:
+        if fail_publish:
+            original = catalog._write_json_atomic
+
+            def fail_pointer(path, payload):
+                if path.name == "active.json":
+                    raise OSError("synthetic failure")
+                original(path, payload)
+
+            patch.setattr(catalog, "_write_json_atomic", fail_pointer)
+            with pytest.raises(IndexBuildError):
+                builder.exec(_chunks("A"))
+            assert catalog.capture().version_id == second["version_id"]
+        else:
+            assert builder.exec(_chunks("A"))["version_id"] == first["version_id"]
+    assert client.collections[first["collection_name"]] is retained
+    assert retained.get()["documents"] == ["A"]
+    assert client.collections[second["collection_name"]].get()["documents"] == ["B"]
+    assert catalog.manifest(first["version_id"]) == manifest
+    assert builder.rollback(first["version_id"])["version_id"] == first["version_id"]
+
+
+@pytest.mark.parametrize("damage", ["active_missing", "retained_text", "retained_metadata"])
+def test_damaged_existing_version_is_never_rebuilt_in_place(isolated_runtime, damage):
+    from src.core.errors import IndexBuildError
+    from src.core.indexing import IndexBuilderNode
+    from src.infra.index_catalog import IndexCatalog
+    from src.utils.bm25_store import BM25Store
+
+    catalog = IndexCatalog(isolated_runtime / "manifests")
+    client = FakeClient()
+    builder = IndexBuilderNode(catalog=catalog, runtime_bm25=BM25Store(), client_factory=lambda: client, cache=FakeCache())
+    first = builder.exec(_chunks("A"))
+    retained = client.collections[first["collection_name"]]
+    if damage == "active_missing":
+        client.delete_collection(first["collection_name"])
+    else:
+        builder.exec(_chunks("B"))
+        if damage == "retained_text":
+            retained.records["doc-1_chunk0"]["document"] = "damaged"
+        else:
+            retained.metadata["index_version"] = "damaged"
+    active = catalog.capture()
+    with pytest.raises(IndexBuildError):
+        builder.exec(_chunks("A"))
+    assert catalog.capture() == active
+    if damage == "active_missing":
+        assert first["collection_name"] not in client.collections
+    else:
+        assert client.collections[first["collection_name"]] is retained
+
+
 def test_failed_candidate_never_replaces_active_index(
     isolated_runtime: Path,
 ) -> None:

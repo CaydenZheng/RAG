@@ -7,6 +7,9 @@ import { useConfirm } from "./ConfirmDialog";
 const FAILURES: Readonly<Record<string, string>> = Object.freeze({
   parse_interrupted:"解析因服务重启中断，请删除后重新上传。", document_timeout:"解析超时，请拆分文件。",
   document_too_large:"文件或提取文本超过限制，请拆分。", document_busy:"解析繁忙，请删除后重新上传。",
+  attachment_storage_busy:"附件存储繁忙，解析未完成；请刷新核对后删除或重新上传。",
+  attachment_unavailable:"附件存储暂不可用，请刷新核对状态。",
+  document_processing_failed:"附件处理未完成，请刷新核对或删除后重新上传。",
 });
 
 export function AttachmentPanel({sessionId, exists, disabled, ensure, onSelection, onDeleted}: {
@@ -128,6 +131,7 @@ export function AttachmentPanel({sessionId, exists, disabled, ensure, onSelectio
         setSelected(previous => event.target.checked ? [...previous, item.id] : previous.filter(id => id !== item.id));
       }} />本轮使用 {item.name}</label>
       <span role="status">{item.state === "ready" ? `解析完成 · ${item.bytes} 字节${item.page_count ? ` · ${item.page_count} 页` : ""}` : item.state === "parsing" ? "正在解析…" : item.error_code && Object.hasOwn(FAILURES, item.error_code) ? FAILURES[item.error_code] : "解析失败或没有可提取文字，请删除后重新上传。"}</span>
+      {item.cleanup_pending && <span role="status">文件清理尚未完成，请刷新核对。</span>}
       <button type="button" className="skills-action" disabled={disabled || busy || item.state !== "ready"} onClick={() => void act(item, false)}>下载 {item.name}</button>
       <button type="button" className="skills-action" disabled={disabled || busy} onClick={() => void act(item, true)}>删除 {item.name}</button>
     </li>)}</ul>

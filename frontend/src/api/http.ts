@@ -10,6 +10,8 @@ const RESPONSE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
   skill_not_selected: "所选技能不可用，请刷新技能列表后重试。",
   skill_selection_limit: "单轮选择的技能过多，请减少后重试。",
   conversation_busy: "该会话正在生成，请停止或稍后重试。",
+  conversation_storage_busy: "会话存储繁忙，请稍后重试。",
+  conversation_storage_unavailable: "会话存储暂不可用，请稍后重试。",
   conversation_conflict: "会话已变化、正在生成或该回合已提交；请刷新历史核对，不要重发同一轮。",
 });
 

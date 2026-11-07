@@ -400,6 +400,10 @@ uv run --no-sync --offline --no-env-file --group eval python scripts/run_eval.py
 
 Recall@K、MRR、NDCG 和引用指标是确定性指标；Faithfulness 与 Relevancy 只有显式启用 Ragas 才计算。报告同时给出正确拒答率、错误拒答率和应拒答样本的硬答率。development 指标只能用于调试，不能作为发布门槛；对外引用指标时必须同时提供可访问的报告 artifact 或附件及其 run_id，不引用缺少复现信息的历史数值。阈值校准器仅接受独立人工核验 calibration 报告，拒绝 development/final 报告；输出的 thresholds、calibration_id 与 models 必须一起配置，且模型必须与运行时一致。当前尚无 calibration 样本，final 为 0，质量验收仍受阻；标注、隔离与冻结流程见 [人工核验指南](data/testset/annotation-guide.md)。未配置阈值时，系统只对空检索结果确定性拒答，不根据任意固定分数拒答。
 
+自 2026-11-04 起，汇总标记 `metric_contract_version=2`：执行失败保留在对应目标样本的分母内，但不贡献拒答或回答的分子；拒答精确率以成功执行的预测拒答数为分母。没有对应目标样本或预测拒答时，该比率为 `null`；全失败且存在应拒答样本时，正确拒答率为 0。另给出 `execution_success_rate`（成功执行数 / 全部样本数，空集为 `null`）。缺少此版本字段的旧报告可能把空错误答案计作拒答，比较前须按新口径重算。
+
+Markdown 图片以文本占位显示，不自动加载模型或历史内容中的图片 URL；普通安全链接仍由用户主动打开。Vite 开发入口与生产入口均限制 `img-src 'self' data:`。
+
 ## 公开网页演示
 
 [打开 GitHub Pages 演示](https://caydenzheng.github.io/RAG/)：无需登录或安装，

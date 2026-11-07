@@ -4,7 +4,7 @@ import { PublicClientError } from "./errors";
 
 export interface AttachmentItem {
   id: string; client_upload_id: string; name: string; suffix: string; bytes: number; checksum: string;
-  state: "parsing" | "ready" | "failed"; error_code: string | null; page_count: number;
+  state: "parsing" | "ready" | "failed"; error_code: string | null; page_count: number; cleanup_pending?: boolean;
 }
 export interface KnowledgeDocument { id: string; name: string; checksum: string; index_version: string; indexed_at: string; updated_at: string | null }
 export interface KnowledgePageData { items: KnowledgeDocument[]; next_cursor: string | null; index_version: string }
@@ -17,7 +17,7 @@ function attachment(value: unknown): AttachmentItem {
     throw new PublicClientError("protocol", "附件状态无效，请刷新核对。");
   }
   return {id:value.id, client_upload_id:value.client_upload_id, name:value.name, suffix:value.suffix, bytes:value.bytes,
-    checksum:value.checksum, page_count:value.page_count, error_code:value.error_code,
+    checksum:value.checksum, page_count:value.page_count, error_code:value.error_code, cleanup_pending:value.cleanup_pending === true,
     state:value.state === "ready" ? "ready" : value.state === "parsing" ? "parsing" : "failed"};
 }
 

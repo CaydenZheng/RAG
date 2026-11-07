@@ -29,7 +29,7 @@ export function MarkdownContent({ value }: { value: string }) {
         skipHtml
         remarkPlugins={[remarkGfm]}
         urlTransform={safeLink}
-        components={{ a: MarkdownLink }}
+        components={{ a: MarkdownLink, img: ({ alt }) => <span>图片：{alt || "未命名"}（未加载）</span> }}
       >
         {value}
       </ReactMarkdown>

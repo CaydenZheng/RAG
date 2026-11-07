@@ -1,5 +1,6 @@
 """Owner-scoped directory and immutable completed-exchange views."""
 
+import asyncio
 from dataclasses import replace
 from typing import Annotated, Any, Literal
 
@@ -9,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from config.settings import settings
 from src.api.client_identity import RequestSession, scope_request_session
 from src.api.public_errors import public_error
-from src.core.run_options import ModelChoice, current_run_options
+from src.core.run_options import ModelChoice, RunOptions, current_run_options
 from src.infra import session_store as stores
 from src.infra.exchange_context import (
     ExchangeContext,
@@ -18,7 +19,10 @@ from src.infra.exchange_context import (
     exchange_context,
 )
 from src.infra.skill_store import SkillStore
-from src.security.request_authorization import current_authorization
+from src.security.request_authorization import (
+    current_authorization,
+    require_active_authorization,
+)
 from src.security.session_ids import validate_public_session_id
 
 router: APIRouter = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -66,7 +70,7 @@ def resource_identifier(value: str) -> str:
         raise HTTPException(422, detail=public_error("auth_invalid_request")) from None
 
 
-def begin_exchange(
+async def begin_exchange(
     request: Request,
     session_id: str,
     conversation_id: str | None,
@@ -80,6 +84,42 @@ def begin_exchange(
     skill_ids_provided: bool = False,
     attachment_ids: list[str] | None = None,
 ) -> RequestSession:
+    """Prepare off-loop, then bind immutable snapshots in the request task."""
+    permit = stores.CommitPermit()
+    try:
+        session, options, context = await asyncio.to_thread(
+            _prepare_exchange, request, session_id, conversation_id, client_turn_id,
+            mode, question, allow_empty=allow_empty, model=model,
+            skill_ids=skill_ids, skill_ids_provided=skill_ids_provided,
+            attachment_ids=attachment_ids, can_commit=permit,
+        )
+    except asyncio.CancelledError:
+        authorization = current_authorization()
+        if authorization is not None:
+            authorization.revoked.set()
+        permit.revoke()
+        raise
+    current_run_options.set(options)
+    exchange_context.set(context)
+    completed_model.set(None)
+    return session
+
+
+def _prepare_exchange(
+    request: Request,
+    session_id: str,
+    conversation_id: str | None,
+    client_turn_id: str | None,
+    mode: Literal["rag", "agent"],
+    question: str,
+    *,
+    allow_empty: bool = False,
+    model: ModelChoice | None = None,
+    skill_ids: list[str] | None = None,
+    skill_ids_provided: bool = False,
+    attachment_ids: list[str] | None = None,
+    can_commit: stores.CommitPermit,
+) -> tuple[RequestSession, RunOptions | None, ExchangeContext | None]:
     """Validate duplicate keys before retrieval, planning or tool side effects."""
     if (model is not None or skill_ids_provided or skill_ids is not None or attachment_ids) and not settings.auth_enabled:
         raise HTTPException(401, detail=public_error("auth_required"))
@@ -91,8 +131,15 @@ def begin_exchange(
             raise HTTPException(422, detail=public_error("auth_invalid_request"))
         session_id = conversation_id
     session = scope_request_session(
-        request, session_id, mode, allow_empty=allow_empty, create=True
+        request, session_id, mode, allow_empty=allow_empty, create=True,
+        can_commit=can_commit,
     )
+    options: RunOptions | None = None
+    context: ExchangeContext | None = None
+    if settings.auth_enabled and not session.storage_id:
+        if attachment_ids:
+            raise HTTPException(422, detail=public_error("auth_invalid_request"))
+        options = SkillStore(stores.session_store).snapshot(None, model, agent=mode == "agent", skill_ids=skill_ids)
     if settings.auth_enabled and session.storage_id:
         # Legacy clients still work, but receive a fresh server-side correlation
         # ID. The new workspace always supplies its browser-generated UUID.
@@ -107,16 +154,15 @@ def begin_exchange(
             from src.infra.attachment_store import AttachmentStore
 
             options = replace(options, attachments=AttachmentStore(stores.session_store).snapshot(session.public_id, [identifier(item) for item in attachment_ids]))
-        current_run_options.set(options)
         from src.core.attachments import attachment_sources
         from src.infra.exchange_context import safe_sources
 
-        exchange_context.set(ExchangeContext(turn_id, question, requested_model=options.choice,
+        context = ExchangeContext(turn_id, question, requested_model=options.choice,
             sources=safe_sources(attachment_sources(options)),
             skills=tuple({"id": skill.id, "name": skill.name, "version": skill.version} for skill in options.skills),
-            attachments=tuple({"id": item.id, "name": item.name, "checksum": item.checksum, "page_count": len(item.pages)} for item in options.attachments)))
-        completed_model.set(None)
-    return session
+            attachments=tuple({"id": item.id, "name": item.name, "checksum": item.checksum, "page_count": len(item.pages)} for item in options.attachments))
+    require_active_authorization()
+    return session, options, context
 
 
 @router.post("", status_code=201)
