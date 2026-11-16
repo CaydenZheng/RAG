@@ -325,6 +325,7 @@ class Settings(BaseSettings):
         default=1000, ge=128, le=20000, alias="AGENT_MAX_TOOL_RESULT_LENGTH"
     )
     agent_verbose: bool = Field(default=True, alias="AGENT_VERBOSE")
+    agent_support_profile: Path | None = Field(default=None, alias="AGENT_SUPPORT_PROFILE")
     tool_dedup_max_sessions: int = Field(
         default=10000, ge=1, alias="TOOL_DEDUP_MAX_SESSIONS"
     )

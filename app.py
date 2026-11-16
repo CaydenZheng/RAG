@@ -180,6 +180,14 @@ logging.getLogger("uvicorn.access").addFilter(
 
 agent_runtime: AgentRuntime = agent_harness
 
+
+async def open_agent_runtime() -> None:
+    global agent_runtime
+    if settings.agent_support_profile is not None:
+        from src.agent.support import load_support_runtime
+
+        agent_runtime = await load_support_runtime(settings.agent_support_profile)
+
 app = FastAPI(
     title="RAGFlow",
     description="Advanced RAG system based on PocketFlow",
@@ -212,6 +220,7 @@ app.mount(
 )
 app.router.add_event_handler("startup", partial(open_user_auth, app))
 app.router.add_event_handler("startup", open_attachments)
+app.router.add_event_handler("startup", open_agent_runtime)
 app.router.add_event_handler("startup", warm_up_runtime)
 app.router.add_event_handler(
     "startup", tool_approval_module.open_tool_approval_manager

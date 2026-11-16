@@ -6,7 +6,7 @@ HybridRetrieverNode → 向量 + BM25 → RRF 融合 → Top-20 候选
 RerankerNode        → bge-reranker 精排 → Top-5
 """
 
-from typing import Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 import yaml
 from loguru import logger
@@ -122,6 +122,15 @@ class HybridRetrieverNode(Node):
     BM25 未就绪时自动降级为纯向量检索。
     """
 
+    def __init__(
+        self, *args, catalog=None, runtime_bm25=None,
+        collection_loader: Callable[[str], Any] | None = None, **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self._catalog = catalog
+        self._runtime_bm25 = runtime_bm25
+        self._collection_loader = collection_loader
+
     def prep(self, shared: dict):
         queries = shared.get("queries", [shared.get("query", "")])
         metadata_filter = shared.get("filter")
@@ -144,7 +153,7 @@ class HybridRetrieverNode(Node):
         bm25_limit = max(settings.bm25_top_k, result_limit)
         use_vector = mode in ("vector_only", "hybrid", "hybrid+rerank")
         use_bm25 = mode in ("bm25_only", "hybrid", "hybrid+rerank")
-        active_index = index_catalog.capture()
+        active_index = (self._catalog or index_catalog).capture()
         collection = self._get_collection(active_index.collection_name)
         allowed_chunk_ids = self._resolve_allowed_chunk_ids(
             metadata_filter,
@@ -189,7 +198,7 @@ class HybridRetrieverNode(Node):
 
             # --- BM25 检索 ---
             if use_bm25:
-                bm25_result = bm25_store.search_with_status(
+                bm25_result = (self._runtime_bm25 or bm25_store).search_with_status(
                     query,
                     top_k=bm25_limit,
                     allowed_chunk_ids=allowed_chunk_ids,
@@ -296,6 +305,8 @@ class HybridRetrieverNode(Node):
         return None
 
     def _get_collection(self, collection_name: str):
+        if self._collection_loader is not None:
+            return self._collection_loader(collection_name)
         client = get_chroma_client()
         try:
             return client.get_collection(collection_name)
