@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -12,6 +12,8 @@ class AgentEventKind(StrEnum):
     """Observable stages emitted by an Agent runtime."""
 
     PLANNING = "planning"
+    DECISION = "decision"
+    MODEL_CONTEXT = "model_context"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     CHUNK = "chunk"
@@ -31,6 +33,9 @@ class ToolResult:
     tool_name: str = ""
     latency_ms: float = 0.0
     public_summary: str | None = None
+    execution_status: str = "unknown"
+    attempts: int = 0
+    observation: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,8 @@ class ToolCall:
     reason: str = ""
     error_code: str = ""
     latency_ms: float = 0.0
+    status: str = "proposed"
+    attempts: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -62,6 +69,8 @@ class ToolCall:
             payload["error_code"] = self.error_code
         if self.latency_ms:
             payload["latency_ms"] = round(self.latency_ms, 1)
+        payload["status"] = self.status
+        payload["attempts"] = self.attempts
         return payload
 
 
@@ -76,6 +85,11 @@ class AgentResponse:
     total_latency_ms: float = 0.0
     error_code: str = ""
     error: str = ""
+    trace_id: str = ""
+    execution_id: str = ""
+    termination_reason: str = ""
+    first_answer_token_ms: float | None = None
+    usage: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +100,11 @@ class AgentResponse:
             "latency_ms": round(self.total_latency_ms, 1),
             "error_code": self.error_code,
             "error": self.error,
+            "trace_id": self.trace_id,
+            "execution_id": self.execution_id,
+            "termination_reason": self.termination_reason,
+            "first_answer_token_ms": self.first_answer_token_ms,
+            "usage": self.usage,
         }
 
 
@@ -101,8 +120,26 @@ class AgentEvent:
     response: AgentResponse | None = None
     error_code: str = ""
     message: str = ""
+    observation: dict[str, Any] = field(default_factory=dict)
+    telemetry: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        return {**self._public_payload(), **self.telemetry}
+
+    def to_record(self) -> dict[str, Any]:
+        """Detailed local evaluation record; public SSE uses to_dict instead."""
+        record = self.to_dict()
+        if self.observation:
+            record['observation'] = self.observation
+        if self.tool_result:
+            record['tool_result'] = asdict(self.tool_result)
+        if self.response and self.kind is AgentEventKind.ERROR:
+            record['response'] = self.response.to_dict()
+        return record
+
+    def _public_payload(self) -> dict[str, Any]:
+        if self.kind in {AgentEventKind.DECISION, AgentEventKind.MODEL_CONTEXT}:
+            return {"step": self.kind.value, "iteration": self.iteration}
         if self.kind is AgentEventKind.PLANNING:
             return {"step": "planning", "iteration": self.iteration}
         if self.kind is AgentEventKind.TOOL_CALL and self.tool_call:
@@ -121,16 +158,22 @@ class AgentEvent:
                 "call_id": self.tool_result.call_id,
                 "success": self.tool_result.success,
                 "error_code": self.tool_result.error_code,
+                "execution_status": self.tool_result.execution_status,
+                "attempts": self.tool_result.attempts,
                 "summary": self.tool_result.public_summary[:500] if self.tool_result.success and self.tool_result.public_summary else None,
             }
         if self.kind is AgentEventKind.CHUNK:
             return {"chunk": self.chunk}
         if self.kind is AgentEventKind.DONE and self.response:
             return {"done": True, **self.response.to_dict()}
-        return {
+        payload = {
             "error": self.message,
             "code": self.error_code or "agent_failed",
         }
+        if self.response:
+            payload.update({key: value for key, value in self.response.to_dict().items()
+                            if key not in {'session_id', 'answer', 'error'}})
+        return payload
 
 
 class AgentRuntime(Protocol):

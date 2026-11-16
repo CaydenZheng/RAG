@@ -552,6 +552,7 @@ class ToolRegistry:
             try:
                 require_active_authorization()
                 result = tool.execute_fn(params)
+                result.attempts = attempt + 1
                 return self._complete(
                     tool, params, result, session_id, call_hash, start
                 )
@@ -571,6 +572,7 @@ class ToolRegistry:
                 error="Tool execution failed",
                 error_code="tool_execution_failed",
                 tool_name=tool_name,
+                attempts=self._execution_attempts(tool),
             ),
             session_id,
             call_hash,
@@ -766,6 +768,7 @@ class ToolRegistry:
                         lambda done: None if done.cancelled() else done.exception()
                     )
                     result = await asyncio.shield(worker)
+                result.attempts = attempt + 1
                 return self._complete(
                     tool,
                     params,
@@ -784,6 +787,7 @@ class ToolRegistry:
                         error="Tool execution was cancelled",
                         error_code="tool_execution_cancelled",
                         tool_name=tool_name,
+                        attempts=attempt + 1,
                     ),
                     session_id,
                     call_hash,
@@ -811,6 +815,7 @@ class ToolRegistry:
                 error="Tool execution failed",
                 error_code="tool_execution_failed",
                 tool_name=tool_name,
+                attempts=self._execution_attempts(tool),
             ),
             session_id,
             call_hash,
@@ -885,9 +890,17 @@ class ToolRegistry:
         if call_id:
             result.call_id = call_id
         result.tool_name = tool.name
+        result.execution_status = (
+            "succeeded" if result.success else "failed" if result.attempts else "rejected"
+        )
         result.latency_ms = (time.time() - start) * 1000
         if not result.success and not result.error_code:
             result.error_code = "tool_failed"
+        from src.infra.tracer import tracer
+
+        tracer.add_span(None, 'tool_execution_outcome', result.latency_ms,
+                        status=result.execution_status, error_code=result.error_code,
+                        tool_name=tool.name, call_id=call_id, attempts=result.attempts)
         if (
             force_audit
             or current_authorization() is not None
@@ -914,6 +927,7 @@ class ToolRegistry:
         call_id: str = "",
     ) -> ToolResult:
         """Finalize rejected calls and audit policy or graylist failures."""
+        result.execution_status = "rejected"
         result.latency_ms = (time.time() - start) * 1000
         if call_id:
             result.call_id = call_id
@@ -1280,6 +1294,11 @@ async def _execute_search_kb(params: dict) -> ToolResult:
         )
     return ToolResult(
         success=True,
+        observation={
+            "query_variants": list(result.query_variants),
+            "candidate_ids": [chunk["chunk_id"] for chunk in result.candidates],
+            "selected_ids": [chunk["chunk_id"] for chunk in result.chunks],
+        },
         data={
             "query": result.query,
             "context": "\n\n".join(snippets),

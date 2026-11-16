@@ -8,7 +8,9 @@ import math
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from contextlib import aclosing
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Literal
 
 from loguru import logger
@@ -36,6 +38,7 @@ from src.core.agent_runtime import (
 )
 from src.core.run_options import (
     RunOptions,
+    SkillSnapshot,
     WorkspaceError,
     current_run_options,
     selected_model,
@@ -61,6 +64,8 @@ class AgentConfig:
     final_max_tokens: int = 4096
     max_tool_result_length: int = 1000
     verbose: bool = True
+    observe_decisions: bool = False
+    capture_model_context: bool = False
 
     def __post_init__(self) -> None:
         positive = {
@@ -105,6 +110,8 @@ class _AgentExecutionError(RuntimeError):
 class _FinalAnswerPlan:
     """One validated decision to generate the final answer."""
 
+    understanding: dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass(frozen=True)
 class _NativeToolContext:
@@ -121,6 +128,7 @@ class _ToolCallPlan:
     name: str
     params: dict[str, Any]
     native_context: _NativeToolContext | None = None
+    understanding: dict[str, Any] = field(default_factory=dict)
 
 
 type _AgentPlan = _FinalAnswerPlan | _ToolCallPlan
@@ -254,26 +262,24 @@ class AgentHarness:
         memory: MemoryManager | None = None,
         tools: ToolRegistry | None = None,
         hooks: HookPipeline | None = None,
+        skills: tuple[SkillSnapshot, ...] = (),
+        observation_file: Path | None = None,
     ) -> None:
         self.config = config or AgentConfig()
         self.memory = memory or memory_manager
         self.tools = tools or tool_registry
         self.hooks = hooks or create_default_pipeline()
+        self.skills = skills
+        self.observation_file = observation_file
 
     async def execute(
         self, session_id: str, user_message: str
     ) -> AgentResponse:
         """Collect the shared event stream into one ordinary response."""
-        async for event in self.events(session_id, user_message):
-            if event.kind is AgentEventKind.DONE and event.response:
-                return event.response
-            if event.kind is AgentEventKind.ERROR:
-                return AgentResponse(
-                    session_id=session_id,
-                    answer="",
-                    error_code=event.error_code,
-                    error=event.message,
-                )
+        async with aclosing(self.events(session_id, user_message)) as events:
+            async for event in events:
+                if event.response:
+                    return event.response
         return AgentResponse(
             session_id=session_id,
             answer="",
@@ -290,6 +296,30 @@ class AgentHarness:
         raise RuntimeError("Use await execute() inside an event loop")
 
     async def events(
+        self, session_id: str, user_message: str
+    ) -> AsyncGenerator[AgentEvent, None]:
+        from src.agent.observation import observe_events
+
+        options = current_run_options.get()
+        if self.skills:
+            options = options or RunOptions('flash', settings.llm_flash_model)
+            default_ids = {skill.id for skill in self.skills}
+            options = replace(options, skills=self.skills + tuple(
+                skill for skill in options.skills if skill.id not in default_ids
+            ))
+        observed = observe_events(self._events(session_id, user_message), session_id, tracer, options)
+        async with aclosing(observed) as events:
+            async for event in events:
+                if self.observation_file is not None:
+                    from src.infra.jsonl import append_jsonl
+
+                    append_jsonl(self.observation_file, event.to_record(),
+                                 max_bytes=settings.agent_log_max_bytes,
+                                 backup_count=settings.agent_log_backup_count,
+                                 retention_seconds=settings.agent_log_retention_seconds)
+                yield event
+
+    async def _events(
         self, session_id: str, user_message: str
     ) -> AsyncGenerator[AgentEvent, None]:
         """Run once and emit typed planning, tool, answer and terminal events."""
@@ -383,7 +413,13 @@ class AgentHarness:
                     except WorkspaceError as error:
                         raise _AgentExecutionError(error.code, "Attachment context exceeds the configured limit.") from None
                 iterations = iteration
+                tracer.set_iteration(iteration)
                 yield AgentEvent(AgentEventKind.PLANNING, iteration=iteration)
+                if self.config.capture_model_context:
+                    yield AgentEvent(AgentEventKind.MODEL_CONTEXT, iteration=iteration,
+                                     observation={"stage": "planning", "messages": list(messages),
+                                                  "tools": self.tools.get_model_tools()
+                                                  if self.config.planner_mode == "native" else None})
                 for text in planning_inputs:
                     budget.consume_text(text)
                 plan = await self._await_with_budget(
@@ -395,6 +431,16 @@ class AgentHarness:
                     ),
                     budget,
                 )
+                if self.config.observe_decisions:
+                    yield AgentEvent(
+                        AgentEventKind.DECISION, iteration=iteration,
+                        observation={
+                            "action": "tool_call" if isinstance(plan, _ToolCallPlan) else "final_answer",
+                            "tool": plan.name if isinstance(plan, _ToolCallPlan) else None,
+                            "understanding": plan.understanding,
+                            "understanding_reported": bool(plan.understanding),
+                        },
+                    )
                 if self.config.verbose:
                     plan_action = (
                         "tool_call"
@@ -558,6 +604,8 @@ class AgentHarness:
                         )
 
                     calls.append(completed)
+                    if result.execution_status == "unknown":
+                        result.execution_status = "succeeded" if result.success else "rejected" if completed.blocked else "failed"
                     if isinstance(result.data, dict) and result.data.get("index_version"):
                         tracer.set_index_version(str(result.data["index_version"]))
                     tracer.add_span(
@@ -577,6 +625,7 @@ class AgentHarness:
                             + (result.error_code or "tool_failed")
                         )
                     )
+                    original_content = result_content
                     if options and options.attachments and len(result_content) > tool_result_limit:
                         marker: str = "\n[工具结果摘录已截短]"
                         result_content = result_content[:max(0, tool_result_limit - len(marker))] + marker
@@ -623,6 +672,13 @@ class AgentHarness:
                         AgentEventKind.TOOL_RESULT,
                         iteration=iteration,
                         tool_result=result,
+                        observation={
+                            "model_content": tool_message,
+                            "original_chars": len(original_content),
+                            "visible_chars": len(result_content),
+                            "truncated": original_content != result_content,
+                            "retrieval": result.observation,
+                        },
                     )
                     if result.error_code == "duplicate_tool_call":
                         duplicate_rejections += 1
@@ -680,6 +736,10 @@ class AgentHarness:
             answer_chunks: list[str] = []
             from src.llm import llm_client
 
+            if self.config.capture_model_context:
+                yield AgentEvent(AgentEventKind.MODEL_CONTEXT, iteration=iterations,
+                                 observation={"stage": "final_generation", "messages": answer_messages})
+
             answer_stream = llm_client.chat_stream_async(
                 answer_messages,
                 model=options.model if options else self.config.planner_model or None,
@@ -709,7 +769,8 @@ class AgentHarness:
                     "Agent final answer generation failed.",
                 ) from exc
             finally:
-                await answer_stream.aclose()
+                with tracer.stage("agent_final_generation"):
+                    await answer_stream.aclose()
 
             final_answer = "".join(answer_chunks)
             if not final_answer.strip():
@@ -768,6 +829,8 @@ class AgentHarness:
                     tool_calls=tuple(calls),
                     iterations=iterations,
                     total_latency_ms=round(latency, 1),
+                    termination_reason=("budget_reserved_answer" if budget_limited else
+                                        "completed" if final_answer_requested else "iteration_limit_answer"),
                 ),
             )
         except AccountLimitExceeded:
@@ -832,6 +895,12 @@ class AgentHarness:
         params: dict,
         session_id: str,
         call_id: str = "",
+    ) -> ToolResult:
+        with tracer.context(call_id=call_id), tracer.span('tool_execution', tool_name=tool_name):
+            return await self._dispatch_tool_async(tool_name, params, session_id, call_id)
+
+    async def _dispatch_tool_async(
+        self, tool_name: str, params: dict, session_id: str, call_id: str,
     ) -> ToolResult:
         execute_async = getattr(self.tools, "execute_async", None)
         if execute_async is not None:
@@ -924,10 +993,23 @@ class AgentHarness:
 
     def _build_planner_prompt(self) -> str:
         if self.config.planner_mode == "native":
-            return NATIVE_PLANNER_SYSTEM_PROMPT
-        return PLANNER_SYSTEM_PROMPT.format(
-            tool_descriptions=self.tools.get_tool_descriptions()
-        )
+            prompt = NATIVE_PLANNER_SYSTEM_PROMPT
+        else:
+            prompt = PLANNER_SYSTEM_PROMPT.format(tool_descriptions=self.tools.get_tool_descriptions())
+        if self.config.observe_decisions:
+            prompt += (
+                '\nRecord a compact business understanding object with these fields: '
+                'goal (string), known_conditions (list of strings), missing_conditions (list of strings), '
+                'route (faq, documents, official, mixed, none), '
+                'answer_mode (answer, clarify, handoff, safety_refusal). '
+                'Use only conditions stated by the user or verified in the conversation. '
+                'Keep this record limited to the listed business fields. '
+                'In JSON mode add it as understanding in the decision object. '
+                'In native mode include {"understanding": {...}} in the message content alongside a tool call. '
+                'For the final native decision, you may return {"action":"final_answer","understanding":{...}} '
+                'instead of READY_TO_ANSWER. Never place these fields inside tool arguments.'
+            )
+        return prompt
 
     @staticmethod
     def _wrap_tool_result(tool_name: str, content: str) -> str:
@@ -1033,6 +1115,10 @@ class AgentHarness:
                 "Agent planner returned multiple tool calls.",
             )
         if not response.tool_calls:
+            if self.config.observe_decisions and response.content.strip().startswith("{"):
+                plan = self._parse_plan_json(response.content)
+                if isinstance(plan, _FinalAnswerPlan):
+                    return plan
             if response.content.strip() != _ANSWER_READY_MARKER:
                 raise _AgentExecutionError(
                     "invalid_agent_plan",
@@ -1063,6 +1149,9 @@ class AgentHarness:
         return _ToolCallPlan(
             name=registry_name,
             params=arguments,
+            understanding=(self._plan_from_mapping({**self._extract_json_object(response.content or ""),
+                                                   "action": "final_answer"}).understanding
+                           if self.config.observe_decisions else {}),
             native_context=_NativeToolContext(
                 call_id=call.call_id,
                 assistant_message={
@@ -1085,6 +1174,16 @@ class AgentHarness:
     @staticmethod
     def _plan_from_mapping(plan: dict[str, Any]) -> _AgentPlan:
         action = plan.get("action")
+        understanding = plan.get("understanding", {})
+        if not isinstance(understanding, dict):
+            understanding = {}
+        understanding = {
+            key: value for key, value in understanding.items()
+            if key in {"goal", "known_conditions", "missing_conditions", "route", "answer_mode"}
+            and (isinstance(value, str) and len(value) <= 500
+                 or isinstance(value, list) and len(value) <= 8
+                 and all(isinstance(item, str) and len(item) <= 500 for item in value))
+        }
         if action == "tool_call":
             params = plan.get("tool_params", {})
             if not isinstance(params, dict):
@@ -1092,9 +1191,10 @@ class AgentHarness:
             return _ToolCallPlan(
                 name=str(plan.get("tool_name", "")),
                 params=params,
+                understanding=understanding,
             )
         if action == "final_answer":
-            return _FinalAnswerPlan()
+            return _FinalAnswerPlan(understanding=understanding)
         raise _AgentExecutionError(
             "invalid_agent_plan",
             "Agent planner returned an invalid action.",

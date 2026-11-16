@@ -21,13 +21,31 @@ from typing import Any, AsyncGenerator, List, Optional
 from urllib.parse import urlsplit
 
 from loguru import logger
-from openai import APIError, AsyncOpenAI, OpenAI, Timeout
+from openai import (
+    APIError,
+    AsyncOpenAI,
+    DefaultAsyncHttpxClient,
+    DefaultHttpxClient,
+    OpenAI,
+    Timeout,
+)
 from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from sentence_transformers import SentenceTransformer
 
 from config.settings import settings
 from src.infra.tracer import tracer
 from src.security.request_authorization import require_active_authorization
+
+
+def record_provider_request(request) -> None:
+    """Observe SDK attempts without recording URLs, headers or request bodies."""
+    raw_count = request.headers.get('x-stainless-retry-count', '0')
+    attempt = int(raw_count) + 1 if raw_count.isdigit() else None
+    tracer.add_span(None, 'model_http_attempt', attempt_number=attempt)
+
+
+async def record_provider_request_async(request) -> None:
+    record_provider_request(request)
 
 
 @dataclass(frozen=True)
@@ -71,6 +89,7 @@ class LLMClient:
             base_url=settings.openai_base_url,
             timeout=60.0,
             max_retries=settings.llm_max_retries,
+            http_client=DefaultHttpxClient(event_hooks={'request': [record_provider_request]}),
         )
         self._async_chat_client = AsyncOpenAI(
             api_key=settings.openai_api_key,
@@ -82,6 +101,7 @@ class LLMClient:
                 pool=10.0,      # 连接池等待 10s
             ),
             max_retries=settings.llm_max_retries,
+            http_client=DefaultAsyncHttpxClient(event_hooks={'request': [record_provider_request_async]}),
         )
         self._chat_model = settings.llm_model
 
@@ -158,6 +178,7 @@ class LLMClient:
         output_limit: int | None = None,
         error: Exception | None = None,
         finish_reason: str | None = None,
+        first_token_ms: float | None = None,
     ) -> None:
         if status == "ok":
             from src.infra.exchange_context import completed_model
@@ -182,9 +203,11 @@ class LLMClient:
             tracer.current_stage,
             (time.perf_counter() - started_at) * 1000,
             status=status,
+            started_at=started_at,
             error_code=error_code,
             model=model,
             cache_hit=cache_hit,
+            first_token_ms=first_token_ms,
             response_chars=response_chars,
             prompt_tokens=prompt_tokens or 0,
             completion_tokens=completion_tokens or 0,
@@ -483,6 +506,7 @@ class LLMClient:
         completed = False
         has_content = False
         reported_finish_reason: str | None = None
+        first_token_ms: float | None = None
         try:
             stream = await self._async_chat_client.chat.completions.create(**kwargs)
             async for chunk in stream:
@@ -507,6 +531,8 @@ class LLMClient:
                     completed = finish_reason == "stop" or completed
                     continue
                 response_chars += len(delta.content)
+                if first_token_ms is None:
+                    first_token_ms = (time.perf_counter() - started_at) * 1000
                 has_content = has_content or bool(delta.content.strip())
                 # 拆成逐词/逐空白：保留所有空白字符，让前端逐词渲染
                 words = re.split(r'(\s+)', delta.content)
@@ -523,6 +549,7 @@ class LLMClient:
                 started_at, model, cache_hit=False,
                 response_chars=response_chars, usage=usage, status="cancelled",
                 error_code="llm_stream_cancelled",
+                first_token_ms=first_token_ms,
                 output_limit=max_tokens, finish_reason=reported_finish_reason,
             )
             raise
@@ -531,6 +558,7 @@ class LLMClient:
                 started_at, model, cache_hit=False,
                 response_chars=response_chars, usage=usage, status="error",
                 error_code="llm_stream_failed",
+                first_token_ms=first_token_ms,
                 output_limit=max_tokens, finish_reason=reported_finish_reason, error=error,
             )
             raise
@@ -538,6 +566,7 @@ class LLMClient:
             self._record_chat_span(
                 started_at, model, cache_hit=False,
                 response_chars=response_chars, usage=usage,
+                first_token_ms=first_token_ms,
                 output_limit=max_tokens, finish_reason=reported_finish_reason,
             )
         finally:

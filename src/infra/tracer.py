@@ -92,6 +92,12 @@ class TraceLogger:
         self._stage: ContextVar[str] = ContextVar(
             f"request_trace_stage_{id(self)}", default="llm"
         )
+        self._context: ContextVar[dict[str, Any]] = ContextVar(
+            f"request_trace_context_{id(self)}", default={}
+        )
+        self._parent: ContextVar[str | None] = ContextVar(
+            f"request_trace_parent_{id(self)}", default=None
+        )
 
     @property
     def trace_file(self) -> Path:
@@ -112,6 +118,7 @@ class TraceLogger:
             "spans": [],
             "dropped_spans": 0,
             "started_at": time.perf_counter(),
+            "started_at_unix_ms": time.time() * 1000,
             "status": "ok",
             "error_code": "",
             "index_version": "",
@@ -131,6 +138,51 @@ class TraceLogger:
     def current_stage(self) -> str:
         return self._stage.get()
 
+    @property
+    def correlation(self) -> dict[str, Any]:
+        return dict(self._context.get())
+
+    def set_iteration(self, iteration: int) -> None:
+        self._context.set({**self._context.get(), 'iteration': iteration})
+
+    @contextmanager
+    def parent_span(self, span_id: str) -> Iterator[None]:
+        token = self._parent.set(span_id)
+        try:
+            yield
+        finally:
+            self._parent.reset(token)
+
+    @contextmanager
+    def context(self, **fields: Any) -> Iterator[None]:
+        """Attach execution/turn identifiers without conversation content."""
+        token = self._context.set({**self._context.get(), **fields})
+        try:
+            yield
+        finally:
+            self._context.reset(token)
+
+    @contextmanager
+    def span(self, name: str, **attributes: Any) -> Iterator[None]:
+        """Create an explicit parent scope for nested measurements."""
+        span_id = secrets.token_hex(8)
+        parent_id = self._parent.get()
+        token = self._parent.set(span_id)
+        started = time.perf_counter()
+        status = "ok"
+        try:
+            yield
+        except BaseException:
+            status = "interrupted"
+            raise
+        finally:
+            self._parent.reset(token)
+            self.add_span(
+                None, name, (time.perf_counter() - started) * 1000,
+                status=status, span_id=span_id, parent_span_id=parent_id,
+                started_at=started, **attributes,
+            )
+
     @contextmanager
     def stage(self, name: str) -> Iterator[None]:
         token = self._stage.set(name)
@@ -147,6 +199,9 @@ class TraceLogger:
         *,
         status: str = "ok",
         error_code: str = "",
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
+        started_at: float | None = None,
         **attributes: Any,
     ) -> None:
         target = trace or self.current
@@ -158,7 +213,16 @@ class TraceLogger:
                 _MAX_DROPPED_SPANS,
             )
             return
+        ended = time.perf_counter()
+        start = started_at if started_at is not None else ended - max(0.0, latency_ms) / 1000
         span = {
+            "span_id": span_id or secrets.token_hex(8),
+            "parent_span_id": None if parent_span_id == '' else parent_span_id or self._parent.get(),
+            "trace_id": target["trace_id"],
+            **self.correlation,
+            "started_at_unix_ms": round(target["started_at_unix_ms"] + (start - target["started_at"]) * 1000, 3),
+            "ended_at_unix_ms": round(target["started_at_unix_ms"] + (ended - target["started_at"]) * 1000, 3),
+            "timing": "measured_start" if started_at is not None else "derived_from_duration",
             "name": name,
             "latency_ms": round(max(0.0, latency_ms), 2),
             "status": status,
@@ -207,6 +271,7 @@ class TraceLogger:
             "request_id": trace["request_id"],
             "trace_id": trace["trace_id"],
             "operation": trace["operation"],
+            "started_at_unix_ms": trace["started_at_unix_ms"],
             "status": trace["status"],
             "error_code": trace["error_code"],
             "total_ms": round(

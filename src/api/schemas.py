@@ -112,6 +112,11 @@ class AgentChatResponse(BaseModel):
     latency_ms: float = 0.0
     error_code: str = ""
     error: str = ""
+    trace_id: str = ""
+    execution_id: str = ""
+    termination_reason: str = ""
+    first_answer_token_ms: float | None = None
+    usage: dict = Field(default_factory=dict)
 
 
 class MCPElicitationResponseRequest(BaseModel):

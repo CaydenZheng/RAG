@@ -36,6 +36,7 @@ from src.evaluation.datasets import (
     validate_split_isolation,
 )
 from src.evaluation.metrics import score_sample, summarize_results
+from src.evaluation.usage import usage_from_spans as _usage_from_spans
 from src.infra.index_catalog import index_catalog
 from src.infra.tracer import tracer
 from src.llm.cache_context import scoped_cache_identity
@@ -279,30 +280,6 @@ def capture_reproducibility(
 
 def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
-
-
-def _usage_from_spans(spans: list[dict[str, Any]]) -> dict[str, Any]:
-    model_spans = [
-        span["attributes"]
-        for span in spans
-        if "model" in span.get("attributes", {})
-    ]
-    prompt_tokens = sum(int(span.get("prompt_tokens", 0)) for span in model_spans)
-    completion_tokens = sum(
-        int(span.get("completion_tokens", 0)) for span in model_spans
-    )
-    reported = bool(model_spans) and all(
-        bool(span.get("usage_reported")) or bool(span.get("cache_hit"))
-        for span in model_spans
-    )
-    return {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
-        "reported": reported,
-        "model_calls": len(model_spans),
-        "cache_hits": sum(bool(span.get("cache_hit")) for span in model_spans),
-    }
 
 
 def _cost(usage: dict[str, Any], config: EvaluationConfig) -> float | None:
