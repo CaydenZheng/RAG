@@ -352,6 +352,20 @@ class KnowledgeSystem:
             skipped=mode != "hybrid+rerank" or not candidates,
         )
 
+        # Cross-encoder scores cannot be compared with BM25/RRF fallback scores.
+        threshold = settings.rerank_min_score
+        if threshold is not None and not settings.rerank_filter_calibration_id.strip():
+            raise ValueError("Per-passage filtering requires a calibration ID")
+        if threshold is not None and mode == "hybrid+rerank" and rerank_status == "ok":
+            kept = [chunk for chunk in chunks if isinstance(chunk.get("rerank_score"), (int, float))
+                    and math.isfinite(chunk["rerank_score"]) and chunk["rerank_score"] >= threshold]
+            tracer.add_span(None, "passage_relevance_filter", threshold=threshold,
+                            calibration_id=settings.rerank_filter_calibration_id,
+                            input_count=len(chunks), kept_count=len(kept),
+                            dropped_ids=[chunk["chunk_id"] for chunk in chunks if chunk not in kept])
+            if len(kept) != len(chunks):
+                warnings.append("low_relevance_passages_filtered")
+            chunks = kept
         evidence = self._evidence_policy.evaluate(mode, chunks, warnings)
         if evidence.sufficient is False:
             chunks = []

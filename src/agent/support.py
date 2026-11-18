@@ -31,7 +31,8 @@ def read_support_configuration(path: Path) -> dict:
         if document.get(name):
             document[name] = path.parent / document[name]
     numeric_settings = {'rerank_timeout_seconds', 'vector_top_k', 'bm25_top_k', 'rrf_k',
-                        'rerank_batch_size', 'query_rewrite_enabled', 'local_model_retry_seconds'}
+                        'rerank_batch_size', 'query_rewrite_enabled', 'local_model_retry_seconds',
+                        'rerank_min_score', 'rerank_filter_calibration_id'}
     overrides = document.get('retrieval_settings', {})
     if set(overrides) - numeric_settings:
         raise ValueError('Unsupported support retrieval setting')
@@ -39,6 +40,8 @@ def read_support_configuration(path: Path) -> dict:
     for name, value in overrides.items():
         definition = type(settings).model_fields[name]
         validated[name] = TypeAdapter(definition.rebuild_annotation()).validate_python(value)
+    if validated.get('rerank_min_score') is not None and not validated.get('rerank_filter_calibration_id', '').strip():
+        raise ValueError('Per-passage filtering requires a calibration ID in the support profile')
     for name, value in validated.items():
         setattr(settings, name, value)
     return document
@@ -52,6 +55,8 @@ def effective_retrieval_settings() -> dict:
         'rrf_k': settings.rrf_k, 'evidence_threshold': 'uncalibrated_for_frozen_corpus',
         'rerank_batch_size': settings.rerank_batch_size,
         'query_rewrite_enabled': settings.query_rewrite_enabled,
+        'rerank_min_score': settings.rerank_min_score,
+        'rerank_filter_calibration_id': settings.rerank_filter_calibration_id,
     }
 
 
@@ -80,6 +85,7 @@ class SupportProfile:
             max_iterations=6, max_tool_calls=5, max_token_budget=128000,
             max_tool_result_length=14000, final_max_tokens=1600, verbose=False,
             observe_decisions=True, capture_model_context=True,
+            require_understanding=self.suite == 'support' and self.planner == 'json',
         )
 
     def memory_config(self) -> MemoryConfig:
@@ -89,7 +95,7 @@ class SupportProfile:
     def runtime(self, sources: FrozenSources, memory: MemoryManager, official=None) -> AgentHarness:
         return AgentHarness(
             config=self.config(), memory=memory, tools=sources.registry(official),
-            skills=(SkillSnapshot('support-profile', 'Support assistant', '3', self.instructions),),
+            skills=(SkillSnapshot('support-profile', 'Support assistant', '4', self.instructions),),
         )
 
 

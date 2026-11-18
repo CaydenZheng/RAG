@@ -44,4 +44,9 @@ CONCISE_SUPPORT_INSTRUCTIONS = (
     'from a related but weaker fact. When evidence is genuinely insufficient, state the supported part, '
     'the specific unresolved point and the necessary next step for human support. '
     'Keep essential completeness and evidence accuracy when shortening the answer.'
+    ' Before seeking another source, compare the passages already returned with the exact user goal. '
+    'A concrete procedure already present in an FAQ is sufficient; a document title alone is not. '
+    'Search again only for a specific missing fact, using a focused query for that fact. '
+    'In the final answer preserve conditions that change the recommendation, including distinct '
+    'operating modes or exceptions. Do not turn a conditional rule into a universal statement.'
 )

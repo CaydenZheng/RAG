@@ -218,7 +218,13 @@ def test_live_runner_uses_actual_first_reply_and_hides_future_input(tmp_path, mo
 
     async def plan(messages, **kwargs):
         prompts.append(json.dumps(messages))
-        return json.dumps(next(plans))
+        decision = next(plans)
+        decision['understanding'] = {
+            'goal': 'Identify the applicable rule', 'known_conditions': [],
+            'missing_conditions': ['entry point'] if len(prompts) < 4 else [],
+            'route': 'documents', 'answer_mode': 'clarify' if len(prompts) < 4 else 'answer',
+        }
+        return json.dumps(decision)
 
     async def answer(messages, **kwargs):
         prompts.append(json.dumps(messages))

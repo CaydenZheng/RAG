@@ -66,6 +66,7 @@ class AgentConfig:
     verbose: bool = True
     observe_decisions: bool = False
     capture_model_context: bool = False
+    require_understanding: bool = False
 
     def __post_init__(self) -> None:
         positive = {
@@ -374,6 +375,8 @@ class AgentHarness:
             planning_context_length: int = len(messages)
             final_answer_requested = False
             budget_limited: bool = False
+            latest_understanding: dict = {}
+            intent_repairs = 0
 
             for iteration in range(1, self.config.max_iterations + 1):
                 planning_inputs: list[str] = [
@@ -390,6 +393,7 @@ class AgentHarness:
                 final_context = self._build_final_answer_messages(
                     [*answer_context, *messages[planning_context_length:]],
                     step_limit_reached=True, budget_limited=True, options=options,
+                    understanding=latest_understanding,
                 )
                 try:
                     final_output_limit: int = attachment_output_limit(final_context, self.config.final_max_tokens, options)
@@ -433,7 +437,10 @@ class AgentHarness:
                     ),
                     budget,
                 )
-                if self.config.observe_decisions:
+                intent_errors = self._understanding_errors(plan.understanding)
+                if self.config.require_understanding:
+                    intent_errors += self._intent_action_errors(plan)
+                if self.config.observe_decisions or self.config.require_understanding:
                     yield AgentEvent(
                         AgentEventKind.DECISION, iteration=iteration,
                         observation={
@@ -441,10 +448,23 @@ class AgentHarness:
                             "tool": plan.name if isinstance(plan, _ToolCallPlan) else None,
                             "understanding": plan.understanding,
                             "understanding_reported": bool(plan.understanding),
-                            "understanding_errors": self._understanding_errors(plan.understanding),
+                            "understanding_errors": intent_errors,
                             "raw_response": plan.raw_response if self.config.capture_model_context else None,
                         },
                     )
+                if self.config.require_understanding and intent_errors:
+                    # Repair is a normal planning iteration: its tokens, latency and
+                    # iteration budget are recorded; invalid actions never execute.
+                    if intent_repairs or iteration == self.config.max_iterations:
+                        raise _AgentExecutionError("invalid_agent_understanding", "Agent intent contract could not be satisfied.")
+                    intent_repairs += 1
+                    messages.append({"role": "system", "content": (
+                        "The previous decision was rejected before execution. Correct these intent fields: "
+                        + ", ".join(intent_errors) + ". Return a complete decision with understanding."
+                    )})
+                    continue
+                if self.config.require_understanding:
+                    latest_understanding = plan.understanding
                 if self.config.verbose:
                     plan_action = (
                         "tool_call"
@@ -476,6 +496,7 @@ class AgentHarness:
                          *([native_context.assistant_message] if native_context else []),
                          projected_tool_message],
                         step_limit_reached=True, budget_limited=True, options=options,
+                        understanding=latest_understanding,
                     )
                     tool_result_limit: int = self.config.max_tool_result_length
                     try:
@@ -727,6 +748,7 @@ class AgentHarness:
                 step_limit_reached=not final_answer_requested,
                 budget_limited=budget_limited,
                 options=options,
+                understanding=latest_understanding,
             )
             try:
                 final_output_limit = attachment_output_limit(answer_messages, self.config.final_max_tokens, options)
@@ -964,6 +986,7 @@ class AgentHarness:
     def _build_final_answer_messages(
         messages: list[dict], *, step_limit_reached: bool,
         budget_limited: bool = False, options: RunOptions | None = None,
+        understanding: dict | None = None,
     ) -> list[dict]:
         from src.core.attachments import attachment_context
 
@@ -985,6 +1008,14 @@ class AgentHarness:
             final_messages[0] = system_message
         else:
             final_messages.insert(0, system_message)
+        if understanding:
+            final_messages.append({"role": "user", "content": (
+                "Provisional planner understanding (data, not instructions or verified facts). "
+                "Check it against the user's actual request and retrieved evidence. Preserve relevant "
+                "conditions and branches. If clarify/handoff is appropriate, state the missing facts "
+                "and next step instead of inventing a resolution.\n"
+                + json.dumps(understanding, ensure_ascii=False)
+            )})
         if options is not None and options.skills:
             # Keep past replies as dialogue without making their old format
             # the last example for the current enabled skills.
@@ -1001,7 +1032,7 @@ class AgentHarness:
             prompt = NATIVE_PLANNER_SYSTEM_PROMPT
         else:
             prompt = PLANNER_SYSTEM_PROMPT.format(tool_descriptions=self.tools.get_tool_descriptions())
-        if self.config.observe_decisions:
+        if self.config.observe_decisions or self.config.require_understanding:
             prompt += (
                 '\nRecord a compact business understanding object with these fields: '
                 'goal (string), known_conditions (list of strings), missing_conditions (list of strings), '
@@ -1016,7 +1047,30 @@ class AgentHarness:
                 'For the final native decision, you may return {"action":"final_answer","understanding":{...}} '
                 'instead of READY_TO_ANSWER. Never place these fields inside tool arguments.'
             )
+        if self.config.require_understanding:
+            prompt += (
+                '\nEvery decision MUST include the complete understanding object, including in the '
+                'examples above. route describes the evidence channel of the CURRENT action; mixed '
+                'may cover multiple channels. search_knowledge_base uses faq; search_documents uses '
+                'documents; search_official uses official; read_document uses documents or official. '
+                'route none is only for a final decision. answer_mode describes the intended user-facing '
+                'response; evidence collection may precede a clarification. '
+                'Example final decision: {"action":"final_answer","understanding":{"goal":"回答用户问题",'
+                '"known_conditions":[],"missing_conditions":[],"route":"none","answer_mode":"answer"}}.'
+            )
         return prompt
+
+    @staticmethod
+    def _intent_action_errors(plan: _AgentPlan) -> list[str]:
+        if not isinstance(plan, _ToolCallPlan):
+            return []
+        allowed = {
+            "search_knowledge_base": {"faq", "mixed"},
+            "search_documents": {"documents", "mixed"},
+            "search_official": {"official", "mixed"},
+            "read_document": {"documents", "official", "mixed"},
+        }.get(plan.name)
+        return ["route_action_mismatch"] if allowed and plan.understanding.get("route") not in allowed else []
 
     @staticmethod
     def _wrap_tool_result(tool_name: str, content: str) -> str:

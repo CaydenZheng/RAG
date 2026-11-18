@@ -319,9 +319,12 @@ class LLMClient:
         max_tokens: Optional[int] = None,
         skip_cache: bool = False,
         index_version: str | None = None,
+        enable_thinking: bool = False,
     ) -> str:
         """异步调用 LLM 生成回复（非流式）。"""
         require_active_authorization()
+        if enable_thinking and (not self._deepseek_non_thinking or not skip_cache):
+            raise ValueError('Explicit thinking is supported only for uncached DeepSeek requests')
         from src.security.account_limits import reserve_model_call
 
         max_tokens = reserve_model_call(messages,max_tokens)
@@ -355,6 +358,8 @@ class LLMClient:
             kwargs["max_tokens"] = max_tokens
 
         logger.debug("LLM chat_async → model={} messages={}", kwargs["model"], len(messages))
+        if enable_thinking:
+            kwargs['extra_body'] = {'thinking': {'type': 'enabled'}}
         resp: ChatCompletion | None = None
         try:
             resp = await self._async_chat_client.chat.completions.create(**kwargs)

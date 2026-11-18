@@ -105,6 +105,9 @@ class FrozenSources:
         }, observation={
             'query_variants': list(result.query_variants),
             'candidate_ids': [chunk['chunk_id'] for chunk in result.candidates],
+            'candidate_scores': [{key: chunk.get(key) for key in
+                                  ('chunk_id', 'dense_score', 'bm25_score', 'rrf_score', 'rerank_score')}
+                                 for chunk in result.candidates],
             'selected_ids': [chunk['chunk_id'] for chunk in result.chunks],
             'returned_ids': [context['document_id'] for context in self.fit_contexts(contexts)],
         })

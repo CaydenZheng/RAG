@@ -359,6 +359,7 @@ def test_missing_intent_fields_are_observable_without_fabricating_them(tmp_path,
     from src.core.agent_runtime import AgentEventKind
 
     agent = runtime(tmp_path)
+    agent.config = replace(agent.config, require_understanding=False)
     scripted_model(monkeypatch, [{'action': 'final_answer'}])
 
     async def run():
@@ -370,6 +371,44 @@ def test_missing_intent_fields_are_observable_without_fabricating_them(tmp_path,
     assert set(observation['understanding_errors']) == {'goal', 'known_conditions', 'missing_conditions', 'route', 'answer_mode'}
     assert json.loads(observation['raw_response']) == {'action': 'final_answer'}
     assert not events[-1].response.error_code
+
+
+def test_required_intent_repairs_once_and_reaches_final_input(tmp_path, monkeypatch):
+    agent = runtime(tmp_path)
+    seen = scripted_model(monkeypatch, [{'action': 'final_answer'}, final_plan()])
+    response = asyncio.run(agent.execute('repair', '权限'))
+    assert not response.error_code
+    assert response.iterations == 2
+    assert response.usage['total_tokens'] == 45
+    intent = next(m['content'] for m in seen[-1] if 'Provisional planner understanding' in m['content'])
+    assert '确认权限设置' in intent
+
+
+def test_required_intent_blocks_mismatched_action_without_tool_execution(tmp_path, monkeypatch):
+    agent = runtime(tmp_path)
+    bad = tool_plan(query='权限')
+    bad['understanding']['route'] = 'official'
+    scripted_model(monkeypatch, [bad, bad])
+    response = asyncio.run(agent.execute('mismatch', '权限'))
+    assert response.error_code == 'invalid_agent_understanding'
+    assert not response.tool_calls
+    assert response.iterations == 2
+
+
+def test_required_intent_repair_cannot_escape_iteration_budget(tmp_path, monkeypatch):
+    agent = runtime(tmp_path)
+    agent.config = replace(agent.config, max_iterations=1)
+    scripted_model(monkeypatch, [{'action': 'final_answer'}])
+    response = asyncio.run(agent.execute('limited', '权限'))
+    assert response.error_code == 'invalid_agent_understanding'
+    assert response.iterations == 1
+
+
+def test_public_and_native_profiles_preserve_existing_contract():
+    from src.agent.support import SupportProfile
+
+    assert not SupportProfile(suite='public').config().require_understanding
+    assert not SupportProfile(planner='native').config().require_understanding
 
 
 def test_tool_failure_trace_links_call_and_omits_private_exception_text(tmp_path, monkeypatch):

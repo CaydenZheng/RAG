@@ -33,6 +33,7 @@ dependencies = [
     "mcp==2.2.0",
     "referencing==0.37.0",
     "httpx2==2.12.0",
+    "httpx[socks]==0.28.1",
     "tzdata==2026.3; sys_platform == 'win32'",
 ]
 
@@ -41,6 +42,7 @@ dev = [
     "pytest==9.1.1",
     "ruff==0.16.6",
     "numpy==2.5.2",
+    "pandas==3.0.5",
 ]
 eval = [
     "ragas==0.4.3",

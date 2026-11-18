@@ -62,6 +62,27 @@ def test_other_compatible_endpoints_do_not_receive_deepseek_only_options(monkeyp
     assert "extra_body" not in create.call_args.kwargs
 
 
+def test_explicit_grading_thinking_does_not_change_default_calls(monkeypatch):
+    from config.settings import settings
+    from src.llm.client import LLMClient
+
+    monkeypatch.setattr(settings, 'openai_base_url', 'https://api.deepseek.com')
+    client = LLMClient()
+    response = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content='graded', tool_calls=None))], usage=None)
+    create = AsyncMock(return_value=response)
+    monkeypatch.setattr(client._async_chat_client.chat.completions, 'create', create)
+
+    async def run():
+        assert await client.chat_async([], skip_cache=True, enable_thinking=True) == 'graded'
+        assert create.call_args.kwargs['extra_body']['thinking']['type'] == 'enabled'
+        await client.chat_async([], skip_cache=True)
+        assert create.call_args.kwargs['extra_body']['thinking']['type'] == 'disabled'
+        with pytest.raises(ValueError, match='uncached DeepSeek'):
+            await client.chat_async([], enable_thinking=True)
+
+    asyncio.run(run())
+
+
 def test_thinking_policy_partitions_exact_cache_without_deleting_old_results(monkeypatch, temporary_cache):
     from config.settings import settings
     from src.llm.client import LLMClient

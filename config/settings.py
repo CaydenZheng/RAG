@@ -180,6 +180,8 @@ class Settings(BaseSettings):
     # ================================================================
     rerank_model: str = Field(default="BAAI/bge-reranker-base", alias="RERANK_MODEL")
     rerank_batch_size: int = Field(default=1, ge=1, le=32, alias="RERANK_BATCH_SIZE")
+    rerank_min_score: float | None = Field(default=None, ge=0, le=1, alias="RERANK_MIN_SCORE")
+    rerank_filter_calibration_id: str = Field(default="", alias="RERANK_FILTER_CALIBRATION_ID")
     query_rewrite_enabled: bool = Field(default=True, alias="QUERY_REWRITE_ENABLED")
     local_model_retry_seconds: float = Field(default=60, ge=0, le=3600, alias="LOCAL_MODEL_RETRY_SECONDS")
     rerank_timeout_seconds: float = Field(
