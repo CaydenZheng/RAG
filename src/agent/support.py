@@ -17,6 +17,7 @@ from src.agent.support_instructions import (
     CONCISE_SUPPORT_INSTRUCTIONS,
     PUBLIC_INSTRUCTIONS,
     SUPPORT_INSTRUCTIONS,
+    SUPPORT_PLANNING_INSTRUCTIONS,
 )
 from src.core.knowledge import validate_retrieval_mode
 from src.core.run_options import SkillSnapshot
@@ -95,7 +96,12 @@ class SupportProfile:
     def runtime(self, sources: FrozenSources, memory: MemoryManager, official=None) -> AgentHarness:
         return AgentHarness(
             config=self.config(), memory=memory, tools=sources.registry(official),
-            skills=(SkillSnapshot('support-profile', 'Support assistant', '4', self.instructions),),
+            skills=(SkillSnapshot(
+                'support-profile', 'Support assistant',
+                '5' if self.suite == 'support' and self.response_style == 'concise' else '4', self.instructions,
+                planning_body=SUPPORT_PLANNING_INSTRUCTIONS
+                if self.suite == 'support' and self.response_style == 'concise' else None,
+            ),),
         )
 
 
