@@ -35,7 +35,7 @@ async def run(args):
     from src.infra.usage import usage_from_spans
     from src.llm import llm_client
 
-    protocol = {'name': 'atomic-v1', 'instructions': JUDGE_INSTRUCTIONS,
+    protocol = {'name': 'atomic-v1.1-citation-contracts', 'instructions': JUDGE_INSTRUCTIONS,
                 'module_sha256': digest(PROJECT / 'src/evaluation/atomic_grading.py'),
                 'projection_sha256': digest(PROJECT / 'src/evaluation/support_grading.py'),
                 'runner_sha256': digest(Path(__file__)), 'model': settings.llm_flash_model,
@@ -114,12 +114,18 @@ async def run(args):
                     record['validation_error'] = str(error)
                 except Exception as error:
                     record.update(provider_failure(error))
+                    if getattr(error, 'failure_kind', None) in {
+                        'incomplete_output', 'filtered_output', 'empty_output',
+                        'unconfirmed_output', 'unexpected_tool_delta',
+                    }:
+                        record['completion_failure_kind'] = error.failure_kind
                 finally:
                     record.update(usage=usage_from_spans(trace['spans']), elapsed_seconds=time.perf_counter() - started)
                     tracer.reset(token)
                     save(path, record)
             print(json.dumps({'number': number, 'attempt': attempt, 'status': record['status'],
-                              'error': record.get('validation_error'),
+                              'error': record.get('validation_error') or record.get('completion_failure_kind')
+                              or record.get('error_type'),
                               'Q': (record.get('Q') or {}).get('score'),
                               'P': (record.get('P') or {}).get('score')}, ensure_ascii=False), flush=True)
             if record.get('provider_blocked'):
@@ -130,6 +136,8 @@ async def run(args):
                 save(selected, record)
                 summary.append(record)
                 break
+            if record.get('raw_judgment'):
+                messages.append({'role': 'assistant', 'content': record['raw_judgment']})
             messages.append({'role': 'system', 'content': '机械校验失败：' + record.get('validation_error', 'transport error') +
                              '。请重新返回完整判定；不要为了通过而修改语义判断，没有证据用CANNOT_ASSESS。'})
         else:
