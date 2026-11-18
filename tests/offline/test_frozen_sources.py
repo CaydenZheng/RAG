@@ -42,6 +42,47 @@ def test_read_only_accepts_frozen_identifiers():
     assert corpus.read_document({'document_id': 'doc-o', 'offset': 10}).data['contexts'] == []
 
 
+def test_short_document_fits_in_one_default_read_and_reports_real_scores(monkeypatch):
+    corpus = FrozenSources(
+        [{'_id': str(i), 'title': 'Manual', 'text': f'Complete step {i}'} for i in range(9)],
+        [{'document_id': str(i), 'source_document_id': 'manual', 'source_type': 'internal'}
+         for i in range(9)],
+    )
+    monkeypatch.setattr(corpus.index, 'search', lambda *args, **kwargs: [('4', 2.5)])
+    result = corpus.read_document({'document_id': 'manual', 'query': 'step'})
+    assert len(result.data['contexts']) == 9
+    assert result.data['next_offset'] is None
+    assert result.data['contexts'][0]['score'] == 2.5
+    assert result.data['contexts'][1]['score'] == 0.0
+
+
+def test_budgeted_document_pages_preserve_all_passages():
+    corpus = FrozenSources(
+        [{'_id': str(i), 'title': 'Manual', 'text': 'body ' * 400} for i in range(12)],
+        [{'document_id': str(i), 'source_document_id': 'manual', 'source_type': 'internal'}
+         for i in range(12)],
+    )
+    offset, seen = 0, []
+    while offset is not None:
+        result = corpus.read_document({'document_id': 'manual', 'offset': offset})
+        assert len(json.dumps(result.data['contexts'], ensure_ascii=False)) <= 12000
+        seen.extend(context['document_id'] for context in result.data['contexts'])
+        offset = result.data['next_offset']
+    assert seen == [str(i) for i in range(12)]
+
+
+def test_heading_only_passage_remains_readable_but_is_excluded_from_search():
+    corpus = FrozenSources(
+        [{'_id': 'heading', 'title': '技能', 'text': '上传本地技能'},
+         {'_id': 'body', 'title': '技能', 'text': '上传技能需要先选择本地电脑环境。'},
+         {'_id': 'other', 'title': '记录', 'text': '其他主题'}],
+        [{'document_id': pid, 'source_document_id': pid, 'source_type': 'internal',
+          'retrieval_eligible': pid != 'heading'} for pid in ('heading', 'body', 'other')],
+    )
+    assert 'heading' not in {row['document_id'] for row in corpus.search('上传技能', {'internal'})}
+    assert corpus.read_document({'document_id': 'heading'}).data['contexts'][0]['text'] == '上传本地技能'
+
+
 def test_registry_validates_input_and_omits_external_tools():
     registry = sources().registry()
     descriptions = registry.get_tool_descriptions()

@@ -5,6 +5,43 @@ from pathlib import Path
 import pytest
 
 
+def test_model_load_failure_falls_back_to_bm25_across_tools(isolated_runtime, monkeypatch):
+    import importlib
+    from types import SimpleNamespace
+
+    from src.core.retrieval import HybridRetrieverNode
+    from src.llm import llm_client
+    from src.utils.bm25_store import BM25Store
+
+    client_module = importlib.import_module('src.llm.client')
+    loads = []
+
+    def broken_model(*args, **kwargs):
+        loads.append(1)
+        raise OSError(12, 'private failure message')
+
+    monkeypatch.setattr(client_module, 'SentenceTransformer', broken_model)
+    monkeypatch.setattr(llm_client, '_embedding_model', None)
+    monkeypatch.setattr(llm_client, '_embedding_retry_at', 0)
+    store = BM25Store()
+    store.build(['unique permission rule', 'unrelated travel', 'other music'], ['a', 'b', 'c'])
+
+    class Collection:
+        def get(self, **kwargs):
+            return {'ids': ['a'], 'documents': ['unique permission rule'], 'metadatas': [{}]}
+
+    node = HybridRetrieverNode(
+        catalog=SimpleNamespace(capture=lambda: SimpleNamespace(collection_name='test', version_id='legacy')),
+        runtime_bm25=store, collection_loader=lambda _: Collection(),
+    )
+    for _ in range(2):
+        result = node.search(['permission', 'unique'], None, 'hybrid')
+        assert result.dense_status == 'unavailable'
+        assert result.bm25_status == 'available'
+        assert result.candidates[0]['chunk_id'] == 'a'
+    assert len(loads) == 1
+
+
 def test_unbuilt_bm25_is_unavailable_before_version_comparison(
     isolated_runtime: Path,
 ) -> None:

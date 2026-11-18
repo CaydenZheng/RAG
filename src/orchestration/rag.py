@@ -77,7 +77,7 @@ class KnowledgeRetrievalNode(AsyncNode):
         shared["index_version"] = exec_res.index_version
         shared["evidence"] = exec_res.evidence.to_dict()
         shared["abstain_reason"] = (
-            "" if exec_res.evidence.sufficient else exec_res.evidence.reason
+            exec_res.evidence.reason if exec_res.evidence.sufficient is False else ""
         )
         return "default"
 

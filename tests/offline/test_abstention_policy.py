@@ -40,7 +40,7 @@ def test_uncalibrated_policy_only_rejects_empty_retrieval() -> None:
 
     assert no_results.sufficient is False
     assert no_results.reason == "no_retrieval_results"
-    assert uncalibrated.sufficient is True
+    assert uncalibrated.sufficient is None
     assert uncalibrated.reason == "threshold_not_calibrated"
 
 
@@ -97,9 +97,9 @@ def test_calibrated_policy_rejects_low_scores_but_not_degraded_reranking() -> No
     )
 
     assert accepted.sufficient is True
-    assert degraded.sufficient is True
+    assert degraded.sufficient is None
     assert degraded.reason == "rerank_degraded"
-    assert unavailable.sufficient is True
+    assert unavailable.sufficient is None
     assert unavailable.reason == "score_unavailable"
 
 

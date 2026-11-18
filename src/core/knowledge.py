@@ -108,7 +108,7 @@ class CandidateReranker(Protocol):
 class EvidenceDecision:
     """Explain whether retrieved chunks may be used as answer evidence."""
 
-    sufficient: bool
+    sufficient: bool | None
     reason: str
     score_name: str
     observed_score: float | None
@@ -159,16 +159,16 @@ class EvidencePolicy:
             sufficient = False
             reason = "no_retrieval_results"
         elif threshold is None:
-            sufficient = True
+            sufficient = None
             reason = "threshold_not_calibrated"
         elif mode == "hybrid+rerank" and any(
             warning in {"rerank_timeout", "rerank_unavailable"}
             for warning in warnings
         ):
-            sufficient = True
+            sufficient = None
             reason = "rerank_degraded"
         elif observed_score is None:
-            sufficient = True
+            sufficient = None
             reason = "score_unavailable"
         elif observed_score < threshold:
             sufficient = False
@@ -199,7 +199,7 @@ class RetrievalResult:
     index_version: str = LEGACY_INDEX_VERSION
     evidence: EvidenceDecision = field(
         default_factory=lambda: EvidenceDecision(
-            sufficient=True,
+            sufficient=None,
             reason="not_evaluated",
             score_name="",
             observed_score=None,
@@ -242,7 +242,7 @@ class KnowledgeSystem:
 
         rewrite_started = time.perf_counter()
         try:
-            if mode in ("hybrid", "hybrid+rerank"):
+            if mode in ("hybrid", "hybrid+rerank") and settings.query_rewrite_enabled:
                 variants = await self._rewriter.rewrite(query)
             else:
                 variants = [query]
@@ -260,7 +260,7 @@ class KnowledgeSystem:
             "query_rewrite",
             (time.perf_counter() - rewrite_started) * 1000,
             variants=len(variants),
-            skipped=mode not in ("hybrid", "hybrid+rerank"),
+            skipped=mode not in ("hybrid", "hybrid+rerank") or not settings.query_rewrite_enabled,
         )
 
         retrieval_started = time.perf_counter()
@@ -293,6 +293,8 @@ class KnowledgeSystem:
             dense_status = "not_requested"
             bm25_status = "not_requested"
         warnings: list[str] = []
+        if dense_status == "unavailable":
+            warnings.append("dense_unavailable")
         if mode in ("bm25_only", "hybrid", "hybrid+rerank"):
             bm25_warning = _BM25_WARNING_BY_STATUS.get(bm25_status)
             if bm25_warning is not None:
@@ -351,7 +353,7 @@ class KnowledgeSystem:
         )
 
         evidence = self._evidence_policy.evaluate(mode, chunks, warnings)
-        if not evidence.sufficient:
+        if evidence.sufficient is False:
             chunks = []
             warnings.append("insufficient_evidence")
         elif evidence.reason == "score_unavailable":

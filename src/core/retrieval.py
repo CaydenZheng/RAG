@@ -6,6 +6,8 @@ HybridRetrieverNode → 向量 + BM25 → RRF 融合 → Top-20 候选
 RerankerNode        → bge-reranker 精排 → Top-5
 """
 
+import threading
+import time
 from typing import Any, Callable, Dict, List, Tuple
 
 import yaml
@@ -16,6 +18,7 @@ from config.settings import settings
 from src.core.index_versions import CandidateBatch, RetrievalChannelStatus
 from src.core.run_options import selected_model
 from src.infra.chroma_clients import get_chroma_client
+from src.infra.errors import LocalModelUnavailable, exception_details
 from src.infra.index_catalog import index_catalog
 from src.infra.prompt_manager import prompt_manager
 from src.infra.tracer import tracer
@@ -173,13 +176,19 @@ class HybridRetrieverNode(Node):
 
         for qi, query in enumerate(queries):
             # --- 向量检索 ---
-            if use_vector:
-                vec_results = self._vector_search(
-                    query,
-                    metadata_filter,
-                    collection,
-                    top_k=vector_limit,
-                )
+            if use_vector and dense_status == "available":
+                try:
+                    vec_results = self._vector_search(
+                        query, metadata_filter, collection, top_k=vector_limit,
+                    )
+                except LocalModelUnavailable as error:
+                    if not use_bm25:
+                        raise
+                    dense_status = "unavailable"
+                    vec_results = []
+                    tracer.add_span(None, "dense_retrieval", status="degraded",
+                                    error_code="local_model_unavailable", fallback="bm25",
+                                    **exception_details(error))
                 for rank, item in enumerate(vec_results):
                     cid = item["chunk_id"]
                     if (
@@ -362,20 +371,29 @@ class HybridRetrieverNode(Node):
 
 # ---- 模块级单例：避免 Agent 多轮调用时重复加载 CrossEncoder ----
 _reranker_model = None
+_reranker_lock = threading.Lock()
+_reranker_retry_at = 0.0
 
 
 def _get_reranker():
     """延迟加载 bge-reranker，进程内全局唯一"""
-    global _reranker_model
-    if _reranker_model is None:
+    global _reranker_model, _reranker_retry_at
+    with _reranker_lock:
+        if _reranker_model is not None:
+            return _reranker_model
+        if time.monotonic() < _reranker_retry_at:
+            raise LocalModelUnavailable("Reranker load is in cooldown")
         from sentence_transformers import CrossEncoder
-        logger.info("Loading reranker model: {}", settings.rerank_model)
-        _reranker_model = CrossEncoder(
-            settings.rerank_model,
-            max_length=512,
-            device="cpu",
-        )
-    return _reranker_model
+
+        try:
+            _reranker_model = CrossEncoder(settings.rerank_model, max_length=512, device="cpu")
+        except (OSError, RuntimeError, MemoryError) as error:
+            _reranker_retry_at = time.monotonic() + settings.local_model_retry_seconds
+            tracer.add_span(None, "reranker_load", status="error",
+                            error_code="local_model_unavailable", **exception_details(error))
+            raise LocalModelUnavailable("Reranker model is unavailable") from error
+        _reranker_retry_at = 0.0
+        return _reranker_model
 
 
 class RerankerNode(Node):
@@ -418,7 +436,7 @@ class RerankerNode(Node):
             pairs.append([query, text])
 
         # 计算分数
-        scores = reranker.predict(pairs)
+        scores = reranker.predict(pairs, batch_size=settings.rerank_batch_size)
 
         if isinstance(scores, float):
             scores = [scores]

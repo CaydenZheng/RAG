@@ -15,6 +15,7 @@ class FrozenSources:
     def __init__(self, corpus: list[dict], metadata: list[dict]):
         self.knowledge = None
         self.retrieval_mode = 'bm25_only'
+        self.warnings = []
         self.passages = {row['_id']: dict(row) for row in corpus}
         self.metadata = {row['document_id']: dict(row) for row in metadata}
         if len(self.passages) != len(corpus) or len(self.metadata) != len(metadata):
@@ -35,7 +36,7 @@ class FrozenSources:
             [row['_id'] for row in corpus],
         )
 
-    def context(self, pid: str, score: float = 1.0) -> dict:
+    def context(self, pid: str, score: float | None = None) -> dict:
         passage = self.passages[pid]
         meta = self.metadata[pid]
         return {
@@ -43,10 +44,12 @@ class FrozenSources:
             'score': score, 'source_document_id': meta['source_document_id'],
             'source_type': meta['source_type'], 'url': meta.get('url', ''),
             'scope': meta.get('scope', ''),
+            'evidence_limit': meta.get('evidence_limit', ''),
         }
 
     def search(self, query: str, source_types: set[str], limit: int = 5) -> list[dict]:
-        allowed = {pid for pid, meta in self.metadata.items() if meta['source_type'] in source_types}
+        allowed = {pid for pid, meta in self.metadata.items()
+                   if meta['source_type'] in source_types and meta.get('retrieval_eligible', True)}
         hits = self.index.search(query, top_k=limit, allowed_chunk_ids=allowed)
         return [self.context(pid, score) for pid, score in hits]
 
@@ -54,9 +57,14 @@ class FrozenSources:
         if self.knowledge is not None:
             return ToolResult(success=False, error_code='async_retrieval_required',
                               error='Use the async tool entry point for indexed retrieval.')
-        return ToolResult(success=True, data={'contexts': self.fit_contexts(self.search(
+        contexts = self.fit_contexts(self.search(
             params['query'], {'knowledge_base', 'public'}, params.get('limit', 5),
-        ))})
+        ))
+        return ToolResult(success=True, data={
+            'contexts': contexts, 'retrieval_mode': 'bm25_only', 'warnings': self.warnings,
+            'evidence': {'sufficient': None if contexts else False,
+                         'reason': 'threshold_not_calibrated' if contexts else 'no_retrieval_results'},
+        })
 
     def search_documents(self, params: dict) -> ToolResult:
         if self.knowledge is not None:
@@ -64,16 +72,22 @@ class FrozenSources:
                               error='Use the async tool entry point for indexed retrieval.')
         selected = params.get('source_type', 'all')
         source_types = {'official', 'internal'} if selected == 'all' else {selected}
-        return ToolResult(success=True, data={'contexts': self.fit_contexts(self.search(
+        contexts = self.fit_contexts(self.search(
             params['query'], source_types, params.get('limit', 5),
-        ))})
+        ))
+        return ToolResult(success=True, data={
+            'contexts': contexts, 'retrieval_mode': 'bm25_only', 'warnings': self.warnings,
+            'evidence': {'sufficient': None if contexts else False,
+                         'reason': 'threshold_not_calibrated' if contexts else 'no_retrieval_results'},
+        })
 
     async def search_indexed(self, params: dict, source_types: set[str]) -> ToolResult:
         if self.knowledge is None:
             raise RuntimeError('Indexed retrieval has not been configured')
         result = await self.knowledge.retrieve(
             params['query'], top_k=params.get('limit', 5), mode=self.retrieval_mode,
-            metadata_filter={'source_type': {'$in': sorted(source_types)}},
+            metadata_filter={'$and': [{'source_type': {'$in': sorted(source_types)}},
+                                      {'retrieval_eligible': True}]},
         )
         contexts = []
         for chunk in result.chunks:
@@ -135,7 +149,7 @@ class FrozenSources:
                 return official.read(params)
             document_id = self.urls.get(self.normalize_url(url))
         offset = params.get('offset', 0)
-        limit = params.get('limit', 3)
+        limit = params.get('limit', 20)
         if document_id in self.passages:
             identifiers = [document_id]
         else:
@@ -145,12 +159,17 @@ class FrozenSources:
                               error='The identifier is absent from this corpus snapshot.')
         total_passages = len(identifiers)
         query = params.get('query', '').strip()
+        scores = {}
         if query:
             hits = self.index.search(params['query'], top_k=len(identifiers), allowed_chunk_ids=identifiers)
+            scores = dict(hits)
             ranked = [pid for pid, _ in hits]
             matched = set(ranked)
             identifiers = ranked + [pid for pid in identifiers if pid not in matched]
-        selected = self.fit_contexts([self.context(pid) for pid in identifiers[offset:offset + limit]])
+        selected = self.fit_contexts([
+            self.context(pid, scores.get(pid, 0.0) if query else None)
+            for pid in identifiers[offset:offset + limit]
+        ])
         next_offset = offset + len(selected)
         return ToolResult(success=True, data={
             'contexts': selected,
@@ -158,6 +177,8 @@ class FrozenSources:
             'next_offset': next_offset if next_offset < len(identifiers) else None,
             'total_passages': total_passages,
             'paging_query': query,
+            'ranking': 'bm25' if query else 'document_order',
+            'complete': offset == 0 and next_offset == total_passages,
             'pagination': 'Keep the same query while paging. When changing query, restart at offset 0. '
                           'Query ranks passages first; remaining passages follow in document order.',
         })
@@ -208,8 +229,8 @@ class FrozenSources:
                 ToolParam('query', 'str', 'Optional keywords to locate relevant sections.', required=False),
                 ToolParam('offset', 'int', 'Offset within the SAME query results. Reset to 0 for a new query.',
                           required=False, default=0, minimum=0),
-                ToolParam('limit', 'int', 'Number of passages.', required=False,
-                          default=3, minimum=1, maximum=3),
+                ToolParam('limit', 'int', 'Maximum passages within the response budget. Short documents fit in one read.', required=False,
+                          default=20, minimum=1, maximum=20),
             ], safety_level=SafetyLevel.WHITELIST,
             execute_fn=lambda params: self.read_document(params, official=official),
         ))

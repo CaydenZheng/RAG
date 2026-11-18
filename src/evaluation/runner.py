@@ -456,7 +456,7 @@ class EvaluationRunner:
                 sample["question"],
                 chunks,
                 index_version,
-                "" if retrieval.evidence.sufficient else retrieval.evidence.reason,
+                retrieval.evidence.reason if retrieval.evidence.sufficient is False else "",
             )
             answer = generated.answer
             context = generated.context

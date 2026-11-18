@@ -15,6 +15,7 @@
 """
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, List, Optional
@@ -33,6 +34,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from sentence_transformers import SentenceTransformer
 
 from config.settings import settings
+from src.infra.errors import LocalModelUnavailable, exception_details
 from src.infra.tracer import tracer
 from src.security.request_authorization import require_active_authorization
 
@@ -107,6 +109,8 @@ class LLMClient:
 
         # --- Embedding 模型 (本地，延迟加载) ---
         self._embedding_model: Optional[SentenceTransformer] = None
+        self._embedding_lock = threading.Lock()
+        self._embedding_retry_at = 0.0
 
     def _completion_options(self) -> dict[str, Any]:
         if self._deepseek_non_thinking:
@@ -585,22 +589,21 @@ class LLMClient:
     @property
     def _embed_model(self) -> SentenceTransformer:
         """延迟加载 embedding 模型（首次调用时自动下载）"""
-        if self._embedding_model is None:
+        with self._embedding_lock:
+            if self._embedding_model is not None:
+                return self._embedding_model
+            if time.monotonic() < self._embedding_retry_at:
+                raise LocalModelUnavailable("Embedding load is in cooldown")
             logger.info("Loading local embedding model: {}", settings.local_embedding_model)
-            self._embedding_model = SentenceTransformer(
-                settings.local_embedding_model,
-                device="cpu",  # CPU inference
-            )
             try:
-                # 新版 API 优先
-                if hasattr(self._embedding_model, 'get_embedding_dimension'):
-                    dim = self._embedding_model.get_embedding_dimension()
-                else:
-                    dim = self._embedding_model.get_sentence_embedding_dimension()
-            except Exception:
-                dim = "?"
-            logger.info("Embedding model loaded, dim={}", dim)
-        return self._embedding_model
+                self._embedding_model = SentenceTransformer(settings.local_embedding_model, device="cpu")
+            except (OSError, RuntimeError, MemoryError) as error:
+                self._embedding_retry_at = time.monotonic() + settings.local_model_retry_seconds
+                tracer.add_span(None, "embedding_load", status="error",
+                                error_code="local_model_unavailable", **exception_details(error))
+                raise LocalModelUnavailable("Embedding model is unavailable") from error
+            self._embedding_retry_at = 0.0
+            return self._embedding_model
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         """对文本列表做 embedding。

@@ -111,6 +111,7 @@ class _FinalAnswerPlan:
     """One validated decision to generate the final answer."""
 
     understanding: dict[str, Any] = field(default_factory=dict)
+    raw_response: str = ""
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,7 @@ class _ToolCallPlan:
     params: dict[str, Any]
     native_context: _NativeToolContext | None = None
     understanding: dict[str, Any] = field(default_factory=dict)
+    raw_response: str = ""
 
 
 type _AgentPlan = _FinalAnswerPlan | _ToolCallPlan
@@ -439,6 +441,8 @@ class AgentHarness:
                             "tool": plan.name if isinstance(plan, _ToolCallPlan) else None,
                             "understanding": plan.understanding,
                             "understanding_reported": bool(plan.understanding),
+                            "understanding_errors": self._understanding_errors(plan.understanding),
+                            "raw_response": plan.raw_response if self.config.capture_model_context else None,
                         },
                     )
                 if self.config.verbose:
@@ -623,6 +627,7 @@ class AgentHarness:
                         else (
                             "Tool call failed: "
                             + (result.error_code or "tool_failed")
+                            + ". " + self._tool_error_guidance(result.error_code)
                         )
                     )
                     original_content = result_content
@@ -1003,6 +1008,8 @@ class AgentHarness:
                 'route (faq, documents, official, mixed, none), '
                 'answer_mode (answer, clarify, handoff, safety_refusal). '
                 'Use only conditions stated by the user or verified in the conversation. '
+                'Write goal and condition values in the language of the user. '
+                'Distinguish source, destination and the tool performing an operation. '
                 'Keep this record limited to the listed business fields. '
                 'In JSON mode add it as understanding in the decision object. '
                 'In native mode include {"understanding": {...}} in the message content alongside a tool call. '
@@ -1091,7 +1098,7 @@ class AgentHarness:
                 temperature=self.config.planner_temperature,
                 max_tokens=max_tokens or self.config.planner_max_tokens,
             )
-        return self._parse_plan_json(raw)
+        return replace(self._parse_plan_json(raw), raw_response=raw if self.config.capture_model_context else "")
 
     async def _plan_native_async(
         self, messages: list[dict], max_tokens: int | None
@@ -1118,7 +1125,7 @@ class AgentHarness:
             if self.config.observe_decisions and response.content.strip().startswith("{"):
                 plan = self._parse_plan_json(response.content)
                 if isinstance(plan, _FinalAnswerPlan):
-                    return plan
+                    return replace(plan, raw_response=response.content if self.config.capture_model_context else "")
             if response.content.strip() != _ANSWER_READY_MARKER:
                 raise _AgentExecutionError(
                     "invalid_agent_plan",
@@ -1149,6 +1156,7 @@ class AgentHarness:
         return _ToolCallPlan(
             name=registry_name,
             params=arguments,
+            raw_response=response.content if self.config.capture_model_context else "",
             understanding=(self._plan_from_mapping({**self._extract_json_object(response.content or ""),
                                                    "action": "final_answer"}).understanding
                            if self.config.observe_decisions else {}),
@@ -1170,6 +1178,32 @@ class AgentHarness:
                 },
             ),
         )
+
+    @staticmethod
+    def _tool_error_guidance(code: str) -> str:
+        return {
+            "tool_execution_failed": "Execution failed; this does not establish that the source lacks evidence. Avoid repeating an identical failed call.",
+            "local_model_unavailable": "Local model unavailable; use an available lexical retrieval path or report a temporary retrieval failure.",
+            "source_not_in_snapshot": "Use a known source identifier or a supported official article URL.",
+            "tool_timeout": "The call timed out. Consider a narrower query or a different available source.",
+        }.get(code, "Review the tool arguments and available sources before continuing.")
+
+    @staticmethod
+    def _understanding_errors(understanding: dict) -> list[str]:
+        errors = []
+        for key in ("goal", "known_conditions", "missing_conditions", "route", "answer_mode"):
+            value = understanding.get(key)
+            if key in {"known_conditions", "missing_conditions"}:
+                valid = isinstance(value, list) and all(isinstance(item, str) for item in value)
+            else:
+                valid = isinstance(value, str) and bool(value.strip())
+            if not valid:
+                errors.append(key)
+        if "route" not in errors and understanding["route"] not in {"faq", "documents", "official", "mixed", "none"}:
+            errors.append("route")
+        if "answer_mode" not in errors and understanding["answer_mode"] not in {"answer", "clarify", "handoff", "safety_refusal"}:
+            errors.append("answer_mode")
+        return errors
 
     @staticmethod
     def _plan_from_mapping(plan: dict[str, Any]) -> _AgentPlan:

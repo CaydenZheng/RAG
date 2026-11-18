@@ -179,6 +179,9 @@ class Settings(BaseSettings):
     # Rerank (本地模型)
     # ================================================================
     rerank_model: str = Field(default="BAAI/bge-reranker-base", alias="RERANK_MODEL")
+    rerank_batch_size: int = Field(default=1, ge=1, le=32, alias="RERANK_BATCH_SIZE")
+    query_rewrite_enabled: bool = Field(default=True, alias="QUERY_REWRITE_ENABLED")
+    local_model_retry_seconds: float = Field(default=60, ge=0, le=3600, alias="LOCAL_MODEL_RETRY_SECONDS")
     rerank_timeout_seconds: float = Field(
         default=5.0, gt=0, alias="RERANK_TIMEOUT_SECONDS"
     )

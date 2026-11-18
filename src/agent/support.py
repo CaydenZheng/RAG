@@ -4,7 +4,7 @@ import asyncio
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import TypeAdapter
 
@@ -20,6 +20,7 @@ from src.agent.support_instructions import (
 )
 from src.core.knowledge import validate_retrieval_mode
 from src.core.run_options import SkillSnapshot
+from src.infra.errors import LocalModelUnavailable
 
 
 def read_support_configuration(path: Path) -> dict:
@@ -29,14 +30,15 @@ def read_support_configuration(path: Path) -> dict:
     for name in ('corpus', 'metadata', 'runtime_dir', 'official_replay'):
         if document.get(name):
             document[name] = path.parent / document[name]
-    numeric_settings = {'rerank_timeout_seconds', 'vector_top_k', 'bm25_top_k', 'rrf_k'}
+    numeric_settings = {'rerank_timeout_seconds', 'vector_top_k', 'bm25_top_k', 'rrf_k',
+                        'rerank_batch_size', 'query_rewrite_enabled', 'local_model_retry_seconds'}
     overrides = document.get('retrieval_settings', {})
     if set(overrides) - numeric_settings:
         raise ValueError('Unsupported support retrieval setting')
     validated = {}
     for name, value in overrides.items():
         definition = type(settings).model_fields[name]
-        validated[name] = TypeAdapter(Annotated[definition.annotation, *definition.metadata]).validate_python(value)
+        validated[name] = TypeAdapter(definition.rebuild_annotation()).validate_python(value)
     for name, value in validated.items():
         setattr(settings, name, value)
     return document
@@ -48,6 +50,8 @@ def effective_retrieval_settings() -> dict:
         'rerank_timeout_seconds': settings.rerank_timeout_seconds,
         'vector_top_k': settings.vector_top_k, 'bm25_top_k': settings.bm25_top_k,
         'rrf_k': settings.rrf_k, 'evidence_threshold': 'uncalibrated_for_frozen_corpus',
+        'rerank_batch_size': settings.rerank_batch_size,
+        'query_rewrite_enabled': settings.query_rewrite_enabled,
     }
 
 
@@ -85,7 +89,7 @@ class SupportProfile:
     def runtime(self, sources: FrozenSources, memory: MemoryManager, official=None) -> AgentHarness:
         return AgentHarness(
             config=self.config(), memory=memory, tools=sources.registry(official),
-            skills=(SkillSnapshot('support-profile', 'Support assistant', '2', self.instructions),),
+            skills=(SkillSnapshot('support-profile', 'Support assistant', '3', self.instructions),),
         )
 
 
@@ -98,11 +102,19 @@ async def prepare_sources(sources: FrozenSources, retrieval_mode: str, index_dir
         raise ValueError('Vector/hybrid retrieval requires an index directory')
     from src.evaluation.frozen_index import prepare_frozen_knowledge
 
-    sources.knowledge, info = await asyncio.to_thread(prepare_frozen_knowledge, sources, index_dir)
+    try:
+        sources.knowledge, info = await asyncio.to_thread(prepare_frozen_knowledge, sources, index_dir)
+    except LocalModelUnavailable:
+        sources.retrieval_mode = 'bm25_only'
+        sources.warnings = ['dense_unavailable', 'index_preparation_degraded_to_bm25']
+        return {'status': 'degraded', 'retrieval_mode': 'bm25_only', 'warnings': sources.warnings}
     if retrieval_mode == 'hybrid+rerank':
         from src.core.retrieval import _get_reranker
 
-        await asyncio.to_thread(_get_reranker)
+        try:
+            await asyncio.to_thread(_get_reranker)
+        except LocalModelUnavailable:
+            info['warmup_warning'] = 'rerank_unavailable'
     return info
 
 

@@ -31,7 +31,7 @@ def prepare_frozen_knowledge(sources, root: Path):
         raise ValueError('An indexed corpus must contain passages')
     identity = {
         'passages': list(sources.passages.values()), 'metadata': list(sources.metadata.values()),
-        'embedding_model': settings.local_embedding_model, 'format': 'frozen-passages-v2',
+        'embedding_model': settings.local_embedding_model, 'format': 'frozen-passages-v3',
     }
     fingerprint = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     directory = root / fingerprint
@@ -52,6 +52,7 @@ def prepare_frozen_knowledge(sources, root: Path):
             'chunk_id': pid, 'doc_id': meta['source_document_id'],
             'text': passage['title'] + '\n' + passage['text'],
             'metadata': {'source_type': meta['source_type'], 'title': passage['title'],
+                         'retrieval_eligible': meta.get('retrieval_eligible', True),
                          'source_document_id': meta['source_document_id'], 'source': meta.get('url', '')},
         })
     if info_path.exists():

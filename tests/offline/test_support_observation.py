@@ -32,7 +32,7 @@ def shared_trace_instance(tokenizer, monkeypatch):
 
     from src.infra.tracer import tracer
 
-    for name in ('src.agent.harness', 'src.llm.client', 'src.core.knowledge',
+    for name in ('src.agent.harness', 'src.agent.tools', 'src.llm.client', 'src.core.knowledge',
                  'src.api.observability', 'scripts.run_frozen_agent_eval'):
         module = importlib.import_module(name)
         monkeypatch.setattr(module, 'tracer', tracer)
@@ -132,6 +132,8 @@ def test_observation_has_linked_events_intent_visible_evidence_and_usage(tmp_pat
     decision = next(event for event in events if event.kind is AgentEventKind.DECISION)
     assert decision.to_dict()['iteration'] == 1
     assert decision.observation['understanding'] == understanding()
+    assert decision.observation['understanding_errors'] == []
+    assert json.loads(decision.observation['raw_response'])['understanding'] == understanding()
     tool = next(event for event in events if event.kind is AgentEventKind.TOOL_RESULT)
     assert tool.observation['model_content'] in [message['content'] for message in seen[-1]]
     assert 'observation' not in tool.to_dict()
@@ -337,6 +339,66 @@ def test_missing_usage_is_explicit():
     assert not usage['reported']
     assert usage['missing_usage_calls'] == 1
     assert usage['provider_request_attempts'] is None
+
+
+def test_shared_profile_validates_boolean_and_numeric_retrieval_settings(tmp_path, monkeypatch):
+    from config.settings import settings
+    from src.agent.support import read_support_configuration
+
+    monkeypatch.setattr(settings, 'query_rewrite_enabled', True)
+    monkeypatch.setattr(settings, 'rerank_batch_size', 1)
+    profile = tmp_path / 'profile.json'
+    profile.write_text(json.dumps({'retrieval_settings': {'query_rewrite_enabled': False,
+                                                         'rerank_batch_size': 2}}), encoding='utf-8')
+    read_support_configuration(profile)
+    assert settings.query_rewrite_enabled is False
+    assert settings.rerank_batch_size == 2
+
+
+def test_missing_intent_fields_are_observable_without_fabricating_them(tmp_path, monkeypatch):
+    from src.core.agent_runtime import AgentEventKind
+
+    agent = runtime(tmp_path)
+    scripted_model(monkeypatch, [{'action': 'final_answer'}])
+
+    async def run():
+        return [event async for event in agent.events('missing-intent', '权限')]
+
+    events = asyncio.run(run())
+    observation = next(event.observation for event in events if event.kind is AgentEventKind.DECISION)
+    assert observation['understanding'] == {}
+    assert set(observation['understanding_errors']) == {'goal', 'known_conditions', 'missing_conditions', 'route', 'answer_mode'}
+    assert json.loads(observation['raw_response']) == {'action': 'final_answer'}
+    assert not events[-1].response.error_code
+
+
+def test_tool_failure_trace_links_call_and_omits_private_exception_text(tmp_path, monkeypatch):
+    from src.infra.tracer import tracer
+
+    agent = runtime(tmp_path)
+
+    async def broken(params):
+        raise OSError(12, 'PRIVATE_ERROR_PAYLOAD')
+
+    monkeypatch.setattr(agent.tools.get_tool('search_knowledge_base'), 'execute_async_fn', broken)
+    scripted_model(monkeypatch, [tool_plan(query='权限'), final_plan()])
+    trace = tracer.start_trace('diagnostics', 'test')
+
+    async def run():
+        token = tracer.bind(trace)
+        try:
+            return await agent.execute('diagnostics', '权限')
+        finally:
+            tracer.reset(token)
+
+    response = asyncio.run(run())
+    assert response.tool_calls[0].error_code == 'tool_io_failed'
+    failures = [span for span in trace['spans'] if span['name'] == 'tool_exception']
+    assert failures
+    assert all(span['attributes']['call_id'] == response.tool_calls[0].call_id for span in failures)
+    assert failures[0]['attributes']['errno'] == 12
+    assert failures[0]['attributes']['frames'][-1]['function'] == 'broken'
+    assert 'PRIVATE_ERROR_PAYLOAD' not in json.dumps(trace)
 
 
 def test_sdk_retry_attempts_are_observed_without_request_data(monkeypatch):

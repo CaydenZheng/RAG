@@ -36,6 +36,7 @@ from src.agent.tool_schema import (
     validate_tool_arguments,
 )
 from src.core.agent_runtime import ToolResult
+from src.infra.errors import LocalModelUnavailable, exception_details, tool_error_code
 from src.infra.jsonl import append_jsonl
 from src.infra.tracer import tracer
 from src.security.request_authorization import (
@@ -548,7 +549,10 @@ class ToolRegistry:
                 call_hash,
                 start,
             )
+        failure_code = "tool_execution_failed"
+        attempts = 0
         for attempt in range(self._execution_attempts(tool)):
+            attempts = attempt + 1
             try:
                 require_active_authorization()
                 result = tool.execute_fn(params)
@@ -557,22 +561,28 @@ class ToolRegistry:
                     tool, params, result, session_id, call_hash, start
                 )
             except Exception as exc:
+                failure_code = tool_error_code(exc)
+                tracer.add_span(None, "tool_exception", status="error", tool_name=tool_name,
+                                error_code=failure_code, attempt=attempt + 1, **exception_details(exc))
                 logger.warning(
                     "Tool execution failed: tool={} attempt={} "
-                    "error_code=tool_execution_failed exception_type={}",
+                    "error_code={} exception_type={}",
                     _bounded_log_identifier(tool_name),
                     attempt + 1,
+                    failure_code,
                     _bounded_log_identifier(type(exc).__name__),
                 )
+                if isinstance(exc, LocalModelUnavailable):
+                    break
         return self._complete(
             tool,
             params,
             ToolResult(
                 success=False,
                 error="Tool execution failed",
-                error_code="tool_execution_failed",
+                error_code=failure_code,
                 tool_name=tool_name,
-                attempts=self._execution_attempts(tool),
+                attempts=attempts,
             ),
             session_id,
             call_hash,
@@ -743,7 +753,10 @@ class ToolRegistry:
                     call_id=call_id,
                 )
             params = approved_params
+        failure_code = "tool_execution_failed"
+        attempts = 0
         for attempt in range(self._execution_attempts(tool)):
+            attempts = attempt + 1
             session_token = _CURRENT_TOOL_SESSION_ID.set(session_id)
             call_token = _CURRENT_TOOL_CALL_ID.set(call_id or None)
             try:
@@ -797,13 +810,20 @@ class ToolRegistry:
                 )
                 raise
             except Exception as exc:
+                failure_code = tool_error_code(exc)
+                tracer.add_span(None, "tool_exception", status="error", tool_name=tool_name,
+                                call_id=call_id, error_code=failure_code,
+                                attempt=attempt + 1, **exception_details(exc))
                 logger.warning(
                     "Tool async execution failed: tool={} attempt={} "
-                    "error_code=tool_execution_failed exception_type={}",
+                    "error_code={} exception_type={}",
                     _bounded_log_identifier(tool_name),
                     attempt + 1,
+                    failure_code,
                     _bounded_log_identifier(type(exc).__name__),
                 )
+                if isinstance(exc, LocalModelUnavailable):
+                    break
             finally:
                 _CURRENT_TOOL_CALL_ID.reset(call_token)
                 _CURRENT_TOOL_SESSION_ID.reset(session_token)
@@ -813,9 +833,9 @@ class ToolRegistry:
             ToolResult(
                 success=False,
                 error="Tool execution failed",
-                error_code="tool_execution_failed",
+                error_code=failure_code,
                 tool_name=tool_name,
-                attempts=self._execution_attempts(tool),
+                attempts=attempts,
             ),
             session_id,
             call_hash,

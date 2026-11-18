@@ -192,28 +192,37 @@ class OfficialHelp:
             article = self.documents[url]
             query = params.get('query', '').strip()
             offset = params.get('offset', 0)
-            limit = params.get('limit', 3)
+            limit = params.get('limit', 20)
             indices = list(range(len(article['passages'])))
+            scores = {}
             if query:
                 # Rank within the requested article while keeping each returned passage intact.
                 from src.utils.bm25_store import BM25Store
 
                 index = BM25Store()
                 index.build(article['passages'], [str(i) for i in indices])
-                ranked = [int(i) for i, _ in index.search(query, top_k=len(indices))]
+                scores = {int(i): score for i, score in index.search(query, top_k=len(indices))}
+                ranked = list(scores)
                 matched = set(ranked)
                 indices = ranked + [i for i in indices if i not in matched]
             selected = indices[offset:offset + limit]
             article_id = url.rsplit('/', 1)[-1]
             contexts = [{
                 'document_id': f'hc-{article_id}-p{i + 1:03d}', 'source_document_id': article_id,
-                'title': article['title'], 'text': article['passages'][i], 'score': 1.0,
+                'title': article['title'], 'text': article['passages'][i],
+                'score': scores.get(i, 0.0) if query else None,
                 'url': url, 'source_type': 'official', 'source_updated_at': article['source_updated_at'],
             } for i in selected]
+            from src.agent.frozen_sources import FrozenSources
+
+            contexts = FrozenSources.fit_contexts(contexts)
+            next_offset = offset + len(contexts)
             return ToolResult(success=True, data={
                 'contexts': contexts, 'url': url, 'extraction': article['extraction'],
                 'retrieval_mode': 'http_response_replay' if self.replay_dir else 'live_website',
-                'next_offset': offset + limit if offset + limit < len(indices) else None,
+                'next_offset': next_offset if next_offset < len(indices) else None,
+                'complete': offset == 0 and next_offset == len(indices),
+                'ranking': 'bm25' if query else 'document_order',
                 'total_passages': len(article['passages']),
                 'paging_query': query,
                 'pagination': 'Keep the same query while paging. When changing query, restart at offset 0. '
